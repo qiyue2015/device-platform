@@ -8,7 +8,7 @@ This repository is split into a Go backend and a Vue 3 admin frontend. `backend/
 
 Run backend commands from `backend/`: `make run` starts the API server, `make build` writes `bin/device-platform`, `make test` runs short Go tests, `make test-int` runs integration tests with the `integration` tag, `make lint` runs `go vet` plus `staticcheck`, and `make migrate-up` / `make migrate-down` apply database migrations using `DATABASE_URL`.
 
-Run frontend commands from `frontend/`: `pnpm install` installs dependencies, `pnpm dev` starts Vite, `pnpm build` runs `vue-tsc` and a production build, and `pnpm type:check`, `pnpm format`, `pnpm lint:fix`, and `pnpm i18n:check` validate types, formatting, lint, and locale keys.
+Run frontend commands from `frontend/`: `pnpm install` installs dependencies, `pnpm dev` starts Vite, `pnpm build` runs `vue-tsc` and a production build, and `pnpm type:check`, `pnpm format`, `pnpm lint:fix`, and `pnpm i18n:check` validate types, formatting, lint, and locale keys. Before committing frontend work, install dependencies with `pnpm --dir frontend install --frozen-lockfile`; hooks fail fast when dependencies are missing and do not install packages during commit.
 
 ## Coding Style & Naming Conventions
 
@@ -20,7 +20,7 @@ Backend tests should use Go’s standard testing package and be named `TestXxx` 
 
 ## Commit & Pull Request Guidelines
 
-This repository has no commit history yet, so follow the configured frontend commitlint convention: Conventional Commits such as `feat: add device list` or `fix: handle expired token`.
+Follow the configured frontend commitlint convention: Conventional Commits such as `feat: add device list` or `fix: handle expired token`. Local Codex/OMX commits must also use inline `git commit -m ...` paragraphs with a narrative Lore body, Lore trailers, and `Co-authored-by: OmX <omx@oh-my-codex.dev>`.
 
 PRs should include the purpose, affected backend/frontend areas, verification commands, linked issues when available, and screenshots or screen recordings for visible UI changes. Keep changes scoped and update `docs/` when API contracts or behavior change.
 

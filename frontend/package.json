@@ -3,6 +3,7 @@
   "description": "Admin9 Pro - 企业中后台管理系统，基于 Vue 和 Arco Design Pro",
   "version": "1.0.0",
   "private": false,
+  "packageManager": "pnpm@11.1.2",
   "author": "Admin9 Team",
   "license": "MIT",
   "scripts": {
@@ -11,9 +12,9 @@
     "report": "cross-env REPORT=true npm run build",
     "preview": "npm run build && vite preview --host",
     "type:check": "vue-tsc --noEmit --skipLibCheck",
-    "lint-staged": "npx lint-staged",
+    "lint-staged": "lint-staged",
     "lint:fix": "eslint --fix \"./src/**/*.{js,ts,vue}\"",
-    "prepare": "cd .. && husky install frontend/.husky",
+    "prepare": "if [ \"$CI\" = \"true\" ] || [ \"$HUSKY\" = \"0\" ]; then echo \"husky install skipped\"; else cd .. && husky install frontend/.husky; fi",
     "new": "plop",
     "format": "prettier --write ./src && npm run lint:fix",
     "i18n:check": "npx tsx scripts/check-i18n.ts"
@@ -116,7 +117,7 @@
     "vue-tsc": "^1.8.27"
   },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=18.12.0"
   },
   "resolutions": {
     "bin-wrapper": "npm:bin-wrapper-china",

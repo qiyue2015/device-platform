@@ -1,5 +1,13 @@
 #!/bin/sh
 . "$(dirname "$0")/_/husky.sh"
 
-cd frontend
-pnpm commitlint --edit "$1"
+repo_root="$(git rev-parse --show-toplevel)"
+frontend_dir="$repo_root/frontend"
+
+if [ ! -x "$frontend_dir/node_modules/.bin/commitlint" ]; then
+  echo "frontend dependencies are missing. Run: pnpm --dir frontend install --frozen-lockfile" >&2
+  exit 1
+fi
+
+cd "$frontend_dir"
+pnpm exec commitlint --edit "$1"
