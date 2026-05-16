@@ -26,9 +26,6 @@
           <a-descriptions-item :label="t('setup.system.required')">
             PostgreSQL, Redis, JWT secret, admin user
           </a-descriptions-item>
-          <a-descriptions-item label="WWTIOT">
-            {{ form.wwtiot.dry_run ? t('setup.wwtiot.dryRun') : t('setup.wwtiot.live') }}
-          </a-descriptions-item>
         </a-descriptions>
       </section>
 
@@ -85,18 +82,6 @@
               <a-option value="warn">warn</a-option>
               <a-option value="error">error</a-option>
             </a-select>
-          </a-form-item>
-          <a-form-item>
-            <a-checkbox v-model="form.wwtiot.dry_run">{{ t('setup.wwtiot.dryRun') }}</a-checkbox>
-          </a-form-item>
-          <a-form-item label="WWTIOT API URL">
-            <a-input v-model="form.wwtiot.api_url" />
-          </a-form-item>
-          <a-form-item label="WWTIOT User ID">
-            <a-input v-model="form.wwtiot.user_id" />
-          </a-form-item>
-          <a-form-item label="WWTIOT User Key">
-            <a-input-password v-model="form.wwtiot.user_key" />
           </a-form-item>
         </a-form>
       </section>
@@ -160,12 +145,6 @@
       addr: ':8080',
       log_level: 'info',
     },
-    wwtiot: {
-      api_url: 'http://gps.wwtiot.com/api',
-      dry_run: true,
-      user_id: '',
-      user_key: '',
-    },
   });
 
   const steps = computed(() => [
@@ -185,13 +164,7 @@
       form.admin.password === form.admin.confirm_password
   );
 
-  const runtimeValid = computed(
-    () =>
-      form.server.addr.trim() &&
-      form.server.log_level &&
-      form.wwtiot.api_url.trim() &&
-      (form.wwtiot.dry_run || (form.wwtiot.user_id.trim() && form.wwtiot.user_key.trim()))
-  );
+  const runtimeValid = computed(() => form.server.addr.trim() && form.server.log_level);
 
   const canProceed = computed(() => {
     if (currentStep.value === 0) return true;

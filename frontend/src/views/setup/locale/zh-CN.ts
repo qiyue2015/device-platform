@@ -21,8 +21,6 @@ export default {
   'setup.admin.confirmPassword': '确认密码',
   'setup.server.addr': '服务监听地址',
   'setup.server.logLevel': '日志级别',
-  'setup.wwtiot.dryRun': 'WWTIOT 干跑模式',
-  'setup.wwtiot.live': 'WWTIOT 正式模式',
   'setup.action.prev': '上一步',
   'setup.action.next': '下一步',
   'setup.action.install': '开始安装',

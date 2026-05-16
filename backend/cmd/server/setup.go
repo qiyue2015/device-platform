@@ -39,7 +39,6 @@ type setupInstallRequest struct {
 	Redis    redisSetupRequest    `json:"redis"`
 	Admin    adminSetupRequest    `json:"admin"`
 	Server   serverSetupRequest   `json:"server"`
-	WWTIOT   wwtiotSetupRequest   `json:"wwtiot"`
 }
 
 type databaseSetupRequest struct {
@@ -60,13 +59,6 @@ type adminSetupRequest struct {
 type serverSetupRequest struct {
 	Addr     string `json:"addr"`
 	LogLevel string `json:"log_level"`
-}
-
-type wwtiotSetupRequest struct {
-	APIURL  string `json:"api_url"`
-	DryRun  bool   `json:"dry_run"`
-	UserID  string `json:"user_id"`
-	UserKey string `json:"user_key"`
 }
 
 func installLockPath() string {
@@ -134,9 +126,6 @@ func normalizeInstallRequest(req setupInstallRequest) setupInstallRequest {
 	req.Admin.DisplayName = strings.TrimSpace(req.Admin.DisplayName)
 	req.Server.Addr = strings.TrimSpace(req.Server.Addr)
 	req.Server.LogLevel = strings.TrimSpace(req.Server.LogLevel)
-	req.WWTIOT.APIURL = strings.TrimSpace(req.WWTIOT.APIURL)
-	req.WWTIOT.UserID = strings.TrimSpace(req.WWTIOT.UserID)
-	req.WWTIOT.UserKey = strings.TrimSpace(req.WWTIOT.UserKey)
 	if req.Server.Addr == "" {
 		req.Server.Addr = ":8080"
 	}
@@ -145,9 +134,6 @@ func normalizeInstallRequest(req setupInstallRequest) setupInstallRequest {
 	}
 	if req.Admin.DisplayName == "" {
 		req.Admin.DisplayName = "Administrator"
-	}
-	if req.WWTIOT.APIURL == "" {
-		req.WWTIOT.APIURL = "http://gps.wwtiot.com/api"
 	}
 	return req
 }
@@ -173,9 +159,6 @@ func validateInstallRequest(req setupInstallRequest) error {
 	}
 	if req.Server.LogLevel != "debug" && req.Server.LogLevel != "info" && req.Server.LogLevel != "warn" && req.Server.LogLevel != "error" {
 		return fmt.Errorf("invalid log level")
-	}
-	if err := validateWWTIOT(req.WWTIOT); err != nil {
-		return err
 	}
 	return nil
 }
@@ -227,20 +210,6 @@ func validateServerAddr(addr string) error {
 	value, err := strconv.Atoi(port)
 	if err != nil || value <= 0 || value > 65535 {
 		return fmt.Errorf("invalid server port")
-	}
-	return nil
-}
-
-func validateWWTIOT(req wwtiotSetupRequest) error {
-	parsed, err := url.Parse(req.APIURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("invalid WWTIOT API URL")
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("WWTIOT API URL must use http or https")
-	}
-	if !req.DryRun && (req.UserID == "" || req.UserKey == "") {
-		return fmt.Errorf("WWTIOT credentials are required when dry run is disabled")
 	}
 	return nil
 }
@@ -420,10 +389,6 @@ func writeRuntimeEnv(req setupInstallRequest, jwtSecret string) error {
 		"COMMAND_WORKER_INTERVAL=1s",
 		"WEBHOOK_WORKER_INTERVAL=2s",
 		"EXPIRY_CHECK_INTERVAL=30s",
-		"WWTIOT_API_URL=" + shellQuote(req.WWTIOT.APIURL),
-		"WWTIOT_DRY_RUN=" + strconv.FormatBool(req.WWTIOT.DryRun),
-		"WWTIOT_USER_ID=" + shellQuote(req.WWTIOT.UserID),
-		"WWTIOT_USER_KEY=" + shellQuote(req.WWTIOT.UserKey),
 		"",
 	}, "\n")
 	tmp := path + ".tmp"

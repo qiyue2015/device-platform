@@ -14,14 +14,8 @@ import (
 
 const (
 	AccessTypeMockGateway        = "mock_gateway"
-	AccessTypeCloudAPI           = "cloud_api"
 	TransportProtocolSimulator   = "simulator"
-	TransportProtocolHTTP        = "http"
-	TransportProtocolMQTT        = "mqtt"
-	TransportProtocolTCP         = "tcp"
-	TransportProtocolBLE         = "ble"
 	AdapterMockGateway           = "mock_gateway"
-	AdapterWWTIOTCloudAPI        = "wwtiot_cloud_api"
 	ConnectionStatusUnknown      = "unknown"
 	ConnectionStatusOnline       = "online"
 	ConnectionStatusOffline      = "offline"
@@ -180,9 +174,6 @@ func (s *Service) CreateDevice(req CreateDeviceRequest) (Device, error) {
 	providerDeviceID := strings.TrimSpace(req.ProviderDeviceID)
 	if providerDeviceID == "" {
 		providerDeviceID = strings.TrimSpace(req.ExternalID)
-	}
-	if accessType == AccessTypeCloudAPI && providerDeviceID == "" {
-		return Device{}, fmt.Errorf("%w: provider_device_id is required for cloud_api devices", ErrInvalidArgument)
 	}
 	connectionStatus := defaultConnectionStatus(req.ConnectionStatus, req.Online)
 	if !validConnectionStatus(connectionStatus) {
@@ -626,9 +617,6 @@ func defaultTransportProtocol(accessType, requested string) string {
 	if requested != "" {
 		return requested
 	}
-	if accessType == AccessTypeCloudAPI {
-		return TransportProtocolHTTP
-	}
 	return TransportProtocolSimulator
 }
 
@@ -637,9 +625,6 @@ func defaultAdapter(accessType, requested string) string {
 	if requested != "" {
 		return requested
 	}
-	if accessType == AccessTypeCloudAPI {
-		return AdapterWWTIOTCloudAPI
-	}
 	return AdapterMockGateway
 }
 
@@ -647,9 +632,6 @@ func defaultProviderCode(accessType, requested string) string {
 	requested = strings.TrimSpace(requested)
 	if requested != "" {
 		return requested
-	}
-	if accessType == AccessTypeCloudAPI {
-		return "wwtiot"
 	}
 	return defaultSimulatorProviderCode
 }
@@ -667,7 +649,7 @@ func defaultConnectionStatus(requested string, online bool) string {
 
 func validAccessType(value string) bool {
 	switch value {
-	case AccessTypeMockGateway, AccessTypeCloudAPI:
+	case AccessTypeMockGateway:
 		return true
 	default:
 		return false
@@ -676,7 +658,7 @@ func validAccessType(value string) bool {
 
 func validTransportProtocol(value string) bool {
 	switch value {
-	case TransportProtocolSimulator, TransportProtocolHTTP, TransportProtocolMQTT, TransportProtocolTCP, TransportProtocolBLE:
+	case TransportProtocolSimulator:
 		return true
 	default:
 		return false
@@ -685,7 +667,7 @@ func validTransportProtocol(value string) bool {
 
 func validAdapter(value string) bool {
 	switch value {
-	case AdapterMockGateway, AdapterWWTIOTCloudAPI:
+	case AdapterMockGateway:
 		return true
 	default:
 		return false
@@ -696,8 +678,6 @@ func validAccessAdapterPair(accessType, adapter string) bool {
 	switch accessType {
 	case AccessTypeMockGateway:
 		return adapter == AdapterMockGateway
-	case AccessTypeCloudAPI:
-		return adapter == AdapterWWTIOTCloudAPI
 	default:
 		return false
 	}

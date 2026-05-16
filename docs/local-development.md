@@ -9,7 +9,7 @@ status: current
 
 This document is the local development contract for MVP-1. It is intentionally limited to the local simulator-backed loop and does not define production deployment.
 
-MVP-1 does not depend on real `cloud_api`, public callback URLs, vendor credentials, or real hardware. The first closed loop is:
+MVP-1 does not depend on external vendor adapters, public callback URLs, vendor credentials, or real hardware. The first closed loop is:
 
 ```text
 Project -> Device -> Command -> Simulator Gateway -> State/Event -> Webhook
@@ -105,7 +105,7 @@ After the backend and frontend are running, open:
 http://localhost:5173/setup
 ```
 
-The setup wizard checks PostgreSQL, Redis, writable runtime files, WWTIOT mode, and the administrator account. Failed checks stay on the current step and block installation.
+The setup wizard checks PostgreSQL, Redis, writable runtime files, server runtime settings, and the administrator account. Failed checks stay on the current step and block installation.
 
 After installation, open:
 

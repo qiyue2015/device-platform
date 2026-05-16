@@ -21,8 +21,6 @@ export default {
   'setup.admin.confirmPassword': 'Confirm password',
   'setup.server.addr': 'Server address',
   'setup.server.logLevel': 'Log level',
-  'setup.wwtiot.dryRun': 'WWTIOT dry run',
-  'setup.wwtiot.live': 'WWTIOT live mode',
   'setup.action.prev': 'Previous',
   'setup.action.next': 'Next',
   'setup.action.install': 'Install',

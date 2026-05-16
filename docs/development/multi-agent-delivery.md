@@ -10,7 +10,6 @@ This project uses independent agent lanes for device-platform delivery. The deli
 - `device-platform-mock-gateway`: simulator gateway modes, heartbeat, online/offline recovery.
 - `device-platform-webhook-audit`: events, webhook outbox, signatures, retries, audit records.
 - `device-platform-admin-ui`: admin pages, API wiring, route and locale updates.
-- `device-platform-cloud-api-adapter`: `cloud_api` adapter, vendor signing, callbacks, raw messages.
 - `device-platform-verifier`: final evidence, tests, builds, smoke tests, and sensitive scan.
 
 ## Hard Rules
@@ -47,7 +46,7 @@ Review and candidate integration order:
 4. `review/device-simulator-gateway`
 5. `review/device-webhook-audit`
 6. `review/device-admin-console`
-7. `review/device-cloud-api-adapter`
+7. External vendor adapter lane is deferred outside the current MVP implementation.
 8. `review/device-verification`
 
 If a lane fails audit or verification, do not patch it on `master`; return it to the lane branch.

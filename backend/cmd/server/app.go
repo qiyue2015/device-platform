@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qiyue2015/device-platform/internal/cloudapi/wwtiot"
 	"github.com/qiyue2015/device-platform/internal/devicecore"
 	"github.com/qiyue2015/device-platform/internal/gateway"
 	"github.com/qiyue2015/device-platform/internal/httpapi"
@@ -24,7 +23,6 @@ type app struct {
 	deviceService *devicecore.Service
 	gateway       *gateway.Service
 	webhooks      *webhookaudit.Service
-	cloudAPI      *wwtiot.Client
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request) error
@@ -48,25 +46,23 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 	simulatorGateway := gateway.NewSimulatorGateway(gateway.ModeConfig{})
 	gatewayService := gateway.NewService(simulatorGateway, gateway.ServiceConfig{})
 	webhookService := webhookaudit.NewService(http.DefaultClient)
-	cloudClient := wwtiot.NewClient(wwtiot.ConfigFromEnv())
 	startWebhookWorker(context.Background(), webhookService)
-	return newAppWithServices(cfg, logger, db, auth, service, gatewayService, webhookService, cloudClient), nil
+	return newAppWithServices(cfg, logger, db, auth, service, gatewayService, webhookService), nil
 }
 
 func newAppWithDeviceService(cfg config, logger *slog.Logger, service *devicecore.Service) *app {
 	simulatorGateway := gateway.NewSimulatorGateway(gateway.ModeConfig{})
 	gatewayService := gateway.NewService(simulatorGateway, gateway.ServiceConfig{})
 	webhookService := webhookaudit.NewService(http.DefaultClient)
-	cloudClient := wwtiot.NewClient(wwtiot.Config{DryRun: true})
 	secret := cfg.JWTSecret
 	if secret == "" {
 		secret = defaultMemoryJWTSecret
 	}
 	auth, _ := newMemoryAuthenticator("admin@test.local", "Test Admin", "test-admin-password", secret)
-	return newAppWithServices(cfg, logger, nil, auth, service, gatewayService, webhookService, cloudClient)
+	return newAppWithServices(cfg, logger, nil, auth, service, gatewayService, webhookService)
 }
 
-func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authenticator, service *devicecore.Service, gatewayService *gateway.Service, webhookService *webhookaudit.Service, cloudClient *wwtiot.Client) *app {
+func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authenticator, service *devicecore.Service, gatewayService *gateway.Service, webhookService *webhookaudit.Service) *app {
 	return &app{
 		cfg:           cfg,
 		logger:        logger,
@@ -75,7 +71,6 @@ func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authen
 		deviceService: service,
 		gateway:       gatewayService,
 		webhooks:      webhookService,
-		cloudAPI:      cloudClient,
 	}
 }
 
@@ -101,7 +96,6 @@ func (a *app) routes() http.Handler {
 	}))
 	protectedV1 := http.NewServeMux()
 	registerWebhookAuditRoutes(protectedV1, a.webhooks)
-	registerWWTIOTRoutes(protectedV1, a.cloudAPI)
 	gateway.NewHandler(a.gateway).RegisterSimulator(protectedV1)
 	protectedV1.Handle("/v1/", httpapi.NewRouterWithHooks(a.deviceService, httpapi.RouterHooks{
 		OnCommandCreated: a.recordCommandCreated,

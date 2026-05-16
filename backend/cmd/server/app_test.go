@@ -248,95 +248,38 @@ func TestDeviceRoutesPreserveAppFoundation(t *testing.T) {
 	}
 }
 
-func TestCreateDeviceAcceptsMVP15AccessFields(t *testing.T) {
+func TestCreateDeviceAcceptsSimulatorAccessFields(t *testing.T) {
 	server := newTestServer()
 	projectID := createProjectForTest(t, server)
 
-	cases := []struct {
-		name              string
-		body              string
-		wantAccessType    string
-		wantProtocol      string
-		wantAdapter       string
-		wantProviderCode  string
-		wantProviderID    string
-		wantConnection    string
-		wantLifecycle     string
-		wantMetadataModel string
-	}{
-		{
-			name: "cloud api wwtiot",
-			body: `{
-				"project_id":"` + projectID + `",
-				"name":"Smoke Test Lock",
-				"device_type":"smart_lock",
-				"access_type":"cloud_api",
-				"provider_code":"wwtiot",
-				"provider_device_id":"111",
-				"transport_protocol":"http",
-				"adapter":"wwtiot_cloud_api",
-				"metadata":{"model":"wwtiot-lock"}
-			}`,
-			wantAccessType:    "cloud_api",
-			wantProtocol:      "http",
-			wantAdapter:       "wwtiot_cloud_api",
-			wantProviderCode:  "wwtiot",
-			wantProviderID:    "111",
-			wantConnection:    "unknown",
-			wantLifecycle:     "active",
-			wantMetadataModel: "wwtiot-lock",
-		},
-		{
-			name: "mock gateway simulator",
-			body: `{
-				"project_id":"` + projectID + `",
-				"name":"Simulator Lock",
-				"device_type":"smart_lock",
-				"access_type":"mock_gateway",
-				"provider_code":"simulator",
-				"provider_device_id":"sim-001",
-				"transport_protocol":"simulator",
-				"adapter":"mock_gateway",
-				"online":true
-			}`,
-			wantAccessType:   "mock_gateway",
-			wantProtocol:     "simulator",
-			wantAdapter:      "mock_gateway",
-			wantProviderCode: "simulator",
-			wantProviderID:   "sim-001",
-			wantConnection:   "online",
-			wantLifecycle:    "active",
-		},
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/devices", strings.NewReader(`{
+		"project_id":"`+projectID+`",
+		"name":"Simulator Lock",
+		"device_type":"smart_lock",
+		"access_type":"mock_gateway",
+		"provider_code":"simulator",
+		"provider_device_id":"sim-001",
+		"transport_protocol":"simulator",
+		"adapter":"mock_gateway",
+		"online":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	setAdminBearer(req)
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected device 201, got %d: %s", rec.Code, rec.Body.String())
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/v1/devices", strings.NewReader(tc.body))
-			req.Header.Set("Content-Type", "application/json")
-			setAdminBearer(req)
-			server.ServeHTTP(rec, req)
-			if rec.Code != http.StatusCreated {
-				t.Fatalf("expected device 201, got %d: %s", rec.Code, rec.Body.String())
-			}
-			var device map[string]interface{}
-			decodeResponse(t, rec, &device)
-			if device["access_type"] != tc.wantAccessType ||
-				device["transport_protocol"] != tc.wantProtocol ||
-				device["adapter"] != tc.wantAdapter ||
-				device["provider_code"] != tc.wantProviderCode ||
-				device["provider_device_id"] != tc.wantProviderID ||
-				device["connection_status"] != tc.wantConnection ||
-				device["lifecycle_status"] != tc.wantLifecycle {
-				t.Fatalf("unexpected device response: %+v", device)
-			}
-			if tc.wantMetadataModel != "" {
-				metadata, ok := device["metadata"].(map[string]interface{})
-				if !ok || metadata["model"] != tc.wantMetadataModel {
-					t.Fatalf("metadata = %+v, want model %q", device["metadata"], tc.wantMetadataModel)
-				}
-			}
-		})
+	var device map[string]interface{}
+	decodeResponse(t, rec, &device)
+	if device["access_type"] != "mock_gateway" ||
+		device["transport_protocol"] != "simulator" ||
+		device["adapter"] != "mock_gateway" ||
+		device["provider_code"] != "simulator" ||
+		device["provider_device_id"] != "sim-001" ||
+		device["connection_status"] != "online" ||
+		device["lifecycle_status"] != "active" {
+		t.Fatalf("unexpected device response: %+v", device)
 	}
 }
 
@@ -361,32 +304,30 @@ func TestCreateDeviceReportsContractErrorsWithoutInvalidJSON(t *testing.T) {
 			wantError: "unknown_field",
 		},
 		{
-			name: "invalid enum",
+			name: "cloud api unsupported",
 			body: `{
 				"project_id":"` + projectID + `",
-				"name":"Bad Adapter Lock",
+				"name":"Unsupported Access Lock",
 				"device_type":"smart_lock",
 				"access_type":"cloud_api",
-				"provider_code":"wwtiot",
 				"provider_device_id":"111",
-				"transport_protocol":"http",
+				"transport_protocol":"simulator",
+				"adapter":"mock_gateway"
+			}`,
+			wantError: "invalid_argument: unsupported access_type",
+		},
+		{
+			name: "cloud adapter unsupported",
+			body: `{
+				"project_id":"` + projectID + `",
+				"name":"Unsupported Adapter Lock",
+				"device_type":"smart_lock",
+				"access_type":"mock_gateway",
+				"provider_device_id":"111",
+				"transport_protocol":"simulator",
 				"adapter":"cloud_api"
 			}`,
 			wantError: "invalid_argument: unsupported adapter",
-		},
-		{
-			name: "mismatched access adapter",
-			body: `{
-				"project_id":"` + projectID + `",
-				"name":"Mismatched Adapter Lock",
-				"device_type":"smart_lock",
-				"access_type":"cloud_api",
-				"provider_code":"wwtiot",
-				"provider_device_id":"111",
-				"transport_protocol":"http",
-				"adapter":"mock_gateway"
-			}`,
-			wantError: "invalid_argument: adapter does not match access_type",
 		},
 	}
 

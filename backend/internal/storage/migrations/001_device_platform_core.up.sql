@@ -45,13 +45,10 @@ CREATE TABLE devices (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (project_id, provider_code, provider_device_id),
-    CHECK (access_type IN ('mock_gateway', 'cloud_api')),
-    CHECK (transport_protocol IN ('simulator', 'http', 'mqtt', 'tcp', 'ble')),
-    CHECK (adapter IN ('mock_gateway', 'wwtiot_cloud_api')),
-    CHECK (
-        (access_type = 'mock_gateway' AND adapter = 'mock_gateway')
-        OR (access_type = 'cloud_api' AND adapter = 'wwtiot_cloud_api')
-    ),
+    CHECK (access_type IN ('mock_gateway')),
+    CHECK (transport_protocol IN ('simulator')),
+    CHECK (adapter IN ('mock_gateway')),
+    CHECK (access_type = 'mock_gateway' AND adapter = 'mock_gateway'),
     CHECK (connection_status IN ('unknown', 'online', 'offline')),
     CHECK (lifecycle_status IN ('active', 'disabled', 'deleted'))
 );
@@ -106,7 +103,7 @@ CREATE TABLE device_command_attempts (
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at TIMESTAMPTZ,
     UNIQUE (command_id, attempt_no),
-    CHECK (adapter IN ('mock_gateway', 'wwtiot_cloud_api')),
+    CHECK (adapter IN ('mock_gateway')),
     CHECK (status IN ('created', 'sent', 'acked', 'success', 'failed', 'timeout'))
 );
 
@@ -125,13 +122,10 @@ CREATE TABLE device_raw_messages (
     body BYTEA NOT NULL,
     received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (access_type IN ('mock_gateway', 'cloud_api')),
-    CHECK (transport_protocol IN ('simulator', 'http', 'mqtt', 'tcp', 'ble')),
-    CHECK (adapter IN ('mock_gateway', 'wwtiot_cloud_api')),
-    CHECK (
-        (access_type = 'mock_gateway' AND adapter = 'mock_gateway')
-        OR (access_type = 'cloud_api' AND adapter = 'wwtiot_cloud_api')
-    ),
+    CHECK (access_type IN ('mock_gateway')),
+    CHECK (transport_protocol IN ('simulator')),
+    CHECK (adapter IN ('mock_gateway')),
+    CHECK (access_type = 'mock_gateway' AND adapter = 'mock_gateway'),
     CHECK (direction IN ('inbound', 'outbound'))
 );
 

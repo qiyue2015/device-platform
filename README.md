@@ -34,7 +34,7 @@ MVP-1 is a simulator-backed closed loop with no vendor dependency:
 Project -> Device -> Command -> Gateway/Adapter -> State/Event -> Webhook
 ```
 
-MVP-1.5 covers vendor-cloud adapter integration. MVP-2 covers direct-device protocol integration. Both are follow-up stages and still depend on vendor credentials, callback configuration, device ownership confirmation, and real-device protocol verification.
+External-vendor adapter integration and direct-device protocol integration are follow-up stages. They still depend on credentials, callback configuration, device ownership confirmation, and real-device protocol verification.
 
 ## Start Development
 

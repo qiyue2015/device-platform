@@ -98,6 +98,6 @@ MVP-1 is accepted when all of these are true:
 
 ## Later Stages
 
-MVP-1.5 is the vendor-cloud adapter stage. Coding can start for adapter skeleton, signing, callback endpoint, raw message records, and event normalization, but real integration requires vendor credentials, callback URL configuration, source IP confirmation, and test-device ownership confirmation.
+External-vendor adapter integration is deferred beyond the current MVP. Coding should restart only after credentials, callback URL configuration, source IP confirmation, and test-device ownership are available.
 
 MVP-2 is the direct-device protocol stage. Coding can start for parser/encoder skeleton and offline protocol samples, but real gateway integration requires real protocol verification, IMEI/device mapping, device model confirmation, and proof that the test device can point to this platform.

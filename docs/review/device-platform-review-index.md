@@ -12,7 +12,7 @@ This review index is the entrypoint for the responsibility branch set. `master` 
 | 4 | Simulator gateway | `review/device-simulator-gateway` | `0b348c5`, `694163f` | `cd backend && make test`; `cd backend && make lint` | Passed | Review fixed; suggested merge |
 | 5 | Webhook audit | `review/device-webhook-audit` | `306f8f8`, `9dd35c2` | `cd backend && make test`; `cd backend && make lint` | Passed | Review fixed; suggested merge |
 | 6 | Admin console | `review/device-admin-console` | `a17d5d9`, `e87aa5e` | `pnpm --dir frontend type:check`; `pnpm --dir frontend i18n:check`; `pnpm --dir frontend build`; `cd backend && make test` | Passed for device-platform additions | Review fixed; suggested merge |
-| 7 | Cloud API adapter | `review/device-cloud-api-adapter` | `51a5392`, `9c03633` | `cd backend && make test`; `cd backend && make lint` | Passed | Review fixed; suggested merge; live vendor test intentionally not run |
+| 7 | External vendor adapter | Removed from current MVP scope | `51a5392`, `9c03633` | Superseded by current simulator-only contract | N/A | Removed before final verification |
 | 8 | Verification index | `review/device-verification` | `df1202f` | `git diff --check`; final scans; whole-chain backend and frontend checks | Allows documented false positives | Current branch; whole-chain audit candidate |
 
 ## Learning Commit Lines
@@ -23,7 +23,7 @@ This review index is the entrypoint for the responsibility branch set. `master` 
 - Simulator gateway: first add deterministic simulator behavior, then expose simulator controls over HTTP.
 - Webhook audit: first add event/outbox/audit service and migration, then wire command-created observation.
 - Admin console: first name the route/menu/default entrypoint, then add the operations console UI.
-- Cloud API adapter: first add dry-run WWTIOT adapter behavior, then expose preview and callback routes.
+- External vendor adapter: removed from the current MVP implementation so the active code path stays simulator-only.
 
 ## Branch Responsibilities
 
@@ -33,7 +33,7 @@ This review index is the entrypoint for the responsibility branch set. `master` 
 - `device-simulator-gateway`: local simulator modes, heartbeat, online/offline recovery, command dispatch simulation, and simulator HTTP controls.
 - `device-webhook-audit`: event creation, webhook delivery, retry/dead/resend behavior, audit logs, and command-created observation hook.
 - `device-admin-console`: Vue admin route, menu, API client, device console page, simulator controls, webhook/audit tables, and formal UI wording.
-- `device-cloud-api-adapter`: WWTIOT dry-run adapter, signing, command preview, callback normalization, and raw-message redaction.
+- External vendor adapter work is deferred until a real integration scope is approved.
 
 ## Naming Scan Notes
 
