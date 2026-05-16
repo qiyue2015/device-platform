@@ -1,0 +1,27 @@
+import { DEFAULT_LAYOUT } from '../base';
+import { AppRouteRecordRaw } from '../types';
+
+const {{ removeDashAndUpperCase name }}: AppRouteRecordRaw = {
+  path: '/{{ name }}',
+  name: '{{ properCase name }}',
+  redirect: '/{{ name }}/index',
+  component: DEFAULT_LAYOUT,
+  meta: {
+    locale: 'menu.{{ name }}',
+    requiresAuth: true,
+  },
+  children: [
+    {
+      path: 'index',
+      name: '{{ properCase name }}Index',
+      component: () => import('@/views/{{ name }}/index.vue'),
+      meta: {
+        locale: 'menu.{{ name }}.index',
+        requiresAuth: true,
+        roles: ['*'],
+      },
+    },
+  ],
+};
+
+export default {{ removeDashAndUpperCase name }};

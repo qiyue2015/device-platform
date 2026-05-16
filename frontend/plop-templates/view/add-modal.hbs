@@ -1,0 +1,85 @@
+<template>
+  <a-modal v-model:visible="visible" :ok-loading="okLoading" :title="title" @before-ok="save" @close="reset">
+    <a-spin :loading="loading" style="width: 100%">
+      <a-form ref="formRef" :model="formData" layout="vertical">
+        <a-form-item label="标题" asterisk-position="end" field="title" required>
+          <a-input v-model="formData.title" :max-length="20" placeholder="请填写标题" show-word-limit />
+        </a-form-item>
+        <a-form-item label="介绍" asterisk-position="end" field="description" required>
+          <a-textarea
+            v-model="formData.description"
+            :max-length="500"
+            placeholder="请填写介绍，将会展示给用户"
+            show-word-limit
+          />
+        </a-form-item>
+        <a-form-item label="封面" asterisk-position="end" field="thumb" required>
+          <a-upload list-type="picture-card" action="/" image-preview />
+        </a-form-item>
+      </a-form>
+    </a-spin>
+  </a-modal>
+</template>
+
+<script setup lang="ts">
+  import { ref, computed } from 'vue';
+  import { useLoading, useVisible, useForm } from '@/hooks';
+
+  const emits = defineEmits(['onSaveSuccess']);
+
+  const { visible, setVisible } = useVisible(false);
+  const { loading, setLoading } = useLoading(false);
+  const { formData, resetForm } = useForm();
+
+  const formRef = ref();
+  const okLoading = ref(false);
+  const title = computed(() => (formData?.id ? '修改{{ zhName }}' : '新增{{ zhName }}'));
+
+  // 重置
+  const reset = () => {
+    formRef.value?.resetFields();
+    resetForm();
+  };
+
+  const save = async () => {
+    try {
+      const isInvalid = await formRef.value.validate();
+      if (isInvalid) {
+        return false;
+      }
+
+      okLoading.value = true;
+      if (formData?.id) {
+        // 修改
+      } else {
+        // 新增
+      }
+
+      emits('onSaveSuccess');
+
+      return true;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 新增
+  const onAdd = () => {
+    setVisible(true);
+  };
+
+  // 修改
+  const onEdit = async (id: number) => {
+    try {
+      formData.id = id;
+      setVisible(true);
+      setLoading(true);
+      // const { data } = await getActivitieDetail(id);
+      // Object.assign(formData, data);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  defineExpose({ onAdd, onEdit });
+</script>

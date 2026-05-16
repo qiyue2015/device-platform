@@ -1,0 +1,23 @@
+allowBuilds:
+  cwebp-bin: true
+  esbuild: true
+  gifsicle: true
+  jpegtran-bin: true
+  less: true
+  mozjpeg: true
+  optipng-bin: true
+  pngquant-bin: true
+  unrs-resolver: true
+  vue-demi: true
+
+onlyBuiltDependencies:
+  - cwebp-bin
+  - esbuild
+  - gifsicle
+  - jpegtran-bin
+  - less
+  - mozjpeg
+  - optipng-bin
+  - pngquant-bin
+  - unrs-resolver
+  - vue-demi
