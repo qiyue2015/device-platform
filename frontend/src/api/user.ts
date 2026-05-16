@@ -18,11 +18,11 @@ export interface LogoutRes {
 }
 
 export function login(data: LoginData) {
-  return axios.post<LoginRes>('/api/auth/login', data);
+  return axios.post<LoginRes>('/v1/auth/login', data);
 }
 
 export function refreshToken() {
-  return axios.post<LoginRes>('/api/auth/refresh');
+  return axios.post<LoginRes>('/v1/auth/refresh');
 }
 
 export function exchangeToken(code: string) {
@@ -30,15 +30,15 @@ export function exchangeToken(code: string) {
 }
 
 export function logout() {
-  return axios.post<LogoutRes>('/api/auth/logout');
+  return axios.post<LogoutRes>('/v1/auth/logout');
 }
 
 export function getUserInfo() {
-  return axios.get<UserState>('/api/me');
+  return axios.get<UserState>('/v1/auth/me');
 }
 
 export function getMenuList() {
-  return axios.get<RouteRecordNormalized[]>('/api/me/menu');
+  return axios.get<RouteRecordNormalized[]>('/v1/auth/menu');
 }
 
 // 更新当前用户资料

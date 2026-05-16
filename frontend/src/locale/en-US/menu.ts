@@ -11,6 +11,8 @@ export default {
   'menu.visualization': 'Data Visualization',
   'menu.user': 'Account Management',
   'menu.system': 'System',
+  'menu.devicePlatform': 'Device Platform',
+  'menu.devicePlatform.console': 'Device Console',
   'menu.system.dict': 'Dictionary',
   'menu.system.dictItem': 'Dictionary Items',
   'menu.system.log': 'Logs',

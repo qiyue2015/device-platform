@@ -12,10 +12,10 @@ export const NOT_FOUND = {
 
 export const REDIRECT_ROUTE_NAME = 'Redirect';
 
-export const DEFAULT_ROUTE_NAME = 'DashboardWorkplace';
+export const DEFAULT_ROUTE_NAME = 'DevicePlatformConsole';
 
 export const DEFAULT_ROUTE = {
-  title: 'menu.dashboard.workplace',
+  title: 'menu.devicePlatform.console',
   name: DEFAULT_ROUTE_NAME,
-  fullPath: '/dashboard/workplace',
+  fullPath: '/device-platform/console',
 };

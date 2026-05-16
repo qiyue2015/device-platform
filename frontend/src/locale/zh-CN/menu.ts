@@ -11,6 +11,8 @@ export default {
   'menu.visualization': '数据可视化',
   'menu.user': '账号管理',
   'menu.system': '系统管理',
+  'menu.devicePlatform': '设备平台',
+  'menu.devicePlatform.console': '设备控制台',
   'menu.system.dict': '字典管理',
   'menu.system.dictItem': '字典项',
   'menu.system.log': '日志管理',
