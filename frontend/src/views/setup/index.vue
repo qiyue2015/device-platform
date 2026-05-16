@@ -1,125 +1,253 @@
 <template>
   <div class="setup-page">
-    <section class="setup-shell">
-      <header class="setup-header">
-        <div>
-          <p class="eyebrow">{{ t('setup.eyebrow') }}</p>
-          <h1>{{ t('setup.title') }}</h1>
-          <p>{{ t('setup.subtitle') }}</p>
+    <div class="setup-page-grid" />
+    <div class="setup-page-halo setup-page-halo-top" />
+    <div class="setup-page-halo setup-page-halo-bottom" />
+
+    <main class="setup-shell">
+      <aside class="setup-rail">
+        <header class="brand-lockup">
+          <div class="brand-mark">
+            <span class="brand-mark-dot" />
+            <span class="brand-mark-line" />
+          </div>
+          <div>
+            <p class="eyebrow">{{ t('setup.eyebrow') }}</p>
+            <h1>{{ t('setup.title') }}</h1>
+          </div>
+        </header>
+
+        <p class="setup-subtitle">{{ t('setup.subtitle') }}</p>
+
+        <div class="status-chip" :class="{ 'status-chip-ready': status?.needs_setup === false }">
+          <span class="status-chip-pulse" />
+          {{ status?.needs_setup === false ? t('setup.status.installed') : t('setup.status.pending') }}
         </div>
-        <a-tag :color="status?.needs_setup ? 'orange' : 'green'">
-          {{ status?.needs_setup ? t('setup.status.pending') : t('setup.status.installed') }}
-        </a-tag>
-      </header>
 
-      <a-steps :current="currentStep" class="setup-steps">
-        <a-step v-for="step in steps" :key="step.key" :title="step.title" />
-      </a-steps>
+        <nav class="setup-timeline" :aria-label="t('setup.timeline.label')">
+          <button
+            v-for="(step, index) in steps"
+            :key="step.key"
+            class="timeline-step"
+            :class="{
+              'timeline-step-active': currentStep === index,
+              'timeline-step-done': index < currentStep,
+              'timeline-step-locked': index > currentStep && !isStepAvailable(index),
+            }"
+            type="button"
+            :disabled="!isStepAvailable(index)"
+            @click="goToStep(index)"
+          >
+            <span class="timeline-step-index">
+              <icon-check v-if="index < currentStep" />
+              <template v-else>{{ index + 1 }}</template>
+            </span>
+            <span>
+              <strong>{{ step.title }}</strong>
+              <small>{{ step.description }}</small>
+            </span>
+          </button>
+        </nav>
 
-      <a-alert v-if="errorMessage" type="error" class="setup-error" :content="errorMessage" />
+        <section class="signal-panel" aria-label="Setup readiness">
+          <div class="signal-panel-header">
+            <span>{{ t('setup.signal.title') }}</span>
+            <strong>{{ readyCount }}/4</strong>
+          </div>
+          <div class="signal-list">
+            <span v-for="item in readinessItems" :key="item.key" class="signal-item" :class="{ 'signal-item-ok': item.ok }">
+              <icon-check-circle v-if="item.ok" />
+              <icon-clock-circle v-else />
+              {{ item.label }}
+            </span>
+          </div>
+        </section>
+      </aside>
 
-      <section v-if="currentStep === 0" class="setup-panel">
-        <a-descriptions :column="1" bordered>
-          <a-descriptions-item :label="t('setup.system.installDir')">
-            {{ t('setup.system.installDirValue') }}
-          </a-descriptions-item>
-          <a-descriptions-item :label="t('setup.system.required')">
-            PostgreSQL, Redis, JWT secret, admin user
-          </a-descriptions-item>
-          <a-descriptions-item label="WWTIOT">
-            {{ form.wwtiot.dry_run ? t('setup.wwtiot.dryRun') : t('setup.wwtiot.live') }}
-          </a-descriptions-item>
-        </a-descriptions>
-      </section>
+      <section class="setup-workbench">
+        <header class="workbench-header">
+          <div>
+            <p class="section-kicker">{{ activeStep?.kicker }}</p>
+            <h2>{{ activeStep?.heading }}</h2>
+            <p>{{ activeStep?.summary }}</p>
+          </div>
+          <div class="step-meter">
+            <span>{{ currentStep + 1 }}</span>
+            <small>/ {{ steps.length }}</small>
+          </div>
+        </header>
 
-      <section v-if="currentStep === 1" class="setup-panel">
-        <a-form :model="form.database" layout="vertical">
-          <a-form-item :label="t('setup.database.url')">
-            <a-input v-model="form.database.url" allow-clear @input="dbConnected = false" />
-          </a-form-item>
-          <a-button type="primary" :loading="testingDb" @click="testDB">
-            <template #icon><icon-check /></template>
-            {{ dbConnected ? t('setup.action.tested') : t('setup.action.testDatabase') }}
+        <a-alert v-if="errorMessage" type="error" class="setup-error" :content="errorMessage" show-icon />
+
+        <section class="setup-card">
+          <section v-if="currentStep === 0" class="preflight-layout">
+            <div class="preflight-copy">
+              <div class="terminal-card">
+                <div class="terminal-card-bar">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+                <dl>
+                  <div>
+                    <dt>{{ t('setup.system.installDir') }}</dt>
+                    <dd>{{ t('setup.system.installDirValue') }}</dd>
+                  </div>
+                  <div>
+                    <dt>{{ t('setup.system.required') }}</dt>
+                    <dd>PostgreSQL / Redis / JWT / Admin</dd>
+                  </div>
+                  <div>
+                    <dt>WWTIOT</dt>
+                    <dd>{{ form.wwtiot.dry_run ? t('setup.wwtiot.dryRun') : t('setup.wwtiot.live') }}</dd>
+                  </div>
+                </dl>
+              </div>
+            </div>
+
+            <div class="preflight-stack">
+              <article v-for="item in systemCards" :key="item.key" class="preflight-item">
+                <span class="preflight-item-icon"><component :is="item.icon" /></span>
+                <div>
+                  <strong>{{ item.title }}</strong>
+                  <p>{{ item.desc }}</p>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section v-if="currentStep === 1" class="form-stage">
+            <a-form :model="form.database" layout="vertical">
+              <a-form-item :label="t('setup.database.url')">
+                <a-input v-model="form.database.url" allow-clear @input="dbConnected = false" />
+              </a-form-item>
+              <div class="inline-status">
+                <span class="inline-status-text" :class="{ ok: dbConnected }">
+                  <icon-check-circle v-if="dbConnected" />
+                  <icon-clock-circle v-else />
+                  {{ dbConnected ? t('setup.action.tested') : t('setup.hint.needsTest') }}
+                </span>
+                <a-button type="primary" :loading="testingDb" @click="testDB">
+                  <template #icon><icon-check /></template>
+                  {{ dbConnected ? t('setup.action.tested') : t('setup.action.testDatabase') }}
+                </a-button>
+              </div>
+            </a-form>
+          </section>
+
+          <section v-if="currentStep === 2" class="form-stage">
+            <a-form :model="form.redis" layout="vertical">
+              <a-form-item :label="t('setup.redis.url')">
+                <a-input v-model="form.redis.url" allow-clear @input="redisConnected = false" />
+              </a-form-item>
+              <div class="inline-status">
+                <span class="inline-status-text" :class="{ ok: redisConnected }">
+                  <icon-check-circle v-if="redisConnected" />
+                  <icon-clock-circle v-else />
+                  {{ redisConnected ? t('setup.action.tested') : t('setup.hint.needsTest') }}
+                </span>
+                <a-button type="primary" :loading="testingRedis" @click="testRedisConnection">
+                  <template #icon><icon-check /></template>
+                  {{ redisConnected ? t('setup.action.tested') : t('setup.action.testRedis') }}
+                </a-button>
+              </div>
+            </a-form>
+          </section>
+
+          <section v-if="currentStep === 3" class="form-stage">
+            <a-form :model="form.admin" layout="vertical">
+              <div class="form-grid">
+                <a-form-item :label="t('setup.admin.email')">
+                  <a-input v-model="form.admin.email" allow-clear />
+                </a-form-item>
+                <a-form-item :label="t('setup.admin.displayName')">
+                  <a-input v-model="form.admin.display_name" allow-clear />
+                </a-form-item>
+                <a-form-item :label="t('setup.admin.password')">
+                  <a-input-password v-model="form.admin.password" />
+                </a-form-item>
+                <a-form-item :label="t('setup.admin.confirmPassword')">
+                  <a-input-password v-model="form.admin.confirm_password" />
+                </a-form-item>
+              </div>
+            </a-form>
+            <div class="password-rules">
+              <span class="password-rule" :class="{ ok: form.admin.email.includes('@') }">{{
+                t('setup.admin.rule.email')
+              }}</span>
+              <span class="password-rule" :class="{ ok: form.admin.password.length >= 8 }">{{
+                t('setup.admin.rule.password')
+              }}</span>
+              <span
+                class="password-rule"
+                :class="{ ok: form.admin.password === form.admin.confirm_password && form.admin.password.length > 0 }"
+              >
+                {{ t('setup.admin.rule.confirm') }}
+              </span>
+            </div>
+          </section>
+
+          <section v-if="currentStep === 4" class="form-stage">
+            <a-form :model="form" layout="vertical">
+              <div class="form-grid">
+                <a-form-item :label="t('setup.server.addr')">
+                  <a-input v-model="form.server.addr" />
+                </a-form-item>
+                <a-form-item :label="t('setup.server.logLevel')">
+                  <a-select v-model="form.server.log_level">
+                    <a-option value="debug">debug</a-option>
+                    <a-option value="info">info</a-option>
+                    <a-option value="warn">warn</a-option>
+                    <a-option value="error">error</a-option>
+                  </a-select>
+                </a-form-item>
+              </div>
+
+              <div class="mode-switch">
+                <div>
+                  <strong>{{ form.wwtiot.dry_run ? t('setup.wwtiot.dryRun') : t('setup.wwtiot.live') }}</strong>
+                  <p>{{ t('setup.wwtiot.modeHint') }}</p>
+                </div>
+                <a-switch v-model="form.wwtiot.dry_run" />
+              </div>
+
+              <div class="form-grid">
+                <a-form-item label="WWTIOT API URL">
+                  <a-input v-model="form.wwtiot.api_url" />
+                </a-form-item>
+                <a-form-item label="WWTIOT User ID">
+                  <a-input v-model="form.wwtiot.user_id" />
+                </a-form-item>
+                <a-form-item label="WWTIOT User Key" class="form-grid-full">
+                  <a-input-password v-model="form.wwtiot.user_key" />
+                </a-form-item>
+              </div>
+            </a-form>
+          </section>
+
+          <section v-if="currentStep === 5" class="complete">
+            <div class="complete-mark">
+              <icon-check-circle />
+            </div>
+            <h2>{{ t('setup.complete.title') }}</h2>
+            <p>{{ t('setup.complete.desc') }}</p>
+            <a-button type="primary" size="large" @click="router.replace({ name: 'login' })">
+              {{ t('setup.action.login') }}
+            </a-button>
+          </section>
+        </section>
+
+        <footer v-if="currentStep < 5" class="setup-actions">
+          <a-button :disabled="currentStep === 0" @click="currentStep -= 1">{{ t('setup.action.prev') }}</a-button>
+          <a-button v-if="currentStep < 4" type="primary" :disabled="!canProceed" @click="nextStep">
+            {{ t('setup.action.next') }}
           </a-button>
-        </a-form>
-      </section>
-
-      <section v-if="currentStep === 2" class="setup-panel">
-        <a-form :model="form.redis" layout="vertical">
-          <a-form-item :label="t('setup.redis.url')">
-            <a-input v-model="form.redis.url" allow-clear @input="redisConnected = false" />
-          </a-form-item>
-          <a-button type="primary" :loading="testingRedis" @click="testRedisConnection">
-            <template #icon><icon-check /></template>
-            {{ redisConnected ? t('setup.action.tested') : t('setup.action.testRedis') }}
+          <a-button v-else type="primary" :disabled="!canProceed" :loading="installing" @click="performInstall">
+            {{ t('setup.action.install') }}
           </a-button>
-        </a-form>
+        </footer>
       </section>
-
-      <section v-if="currentStep === 3" class="setup-panel">
-        <a-form :model="form.admin" layout="vertical">
-          <a-form-item :label="t('setup.admin.email')">
-            <a-input v-model="form.admin.email" allow-clear />
-          </a-form-item>
-          <a-form-item :label="t('setup.admin.displayName')">
-            <a-input v-model="form.admin.display_name" allow-clear />
-          </a-form-item>
-          <a-form-item :label="t('setup.admin.password')">
-            <a-input-password v-model="form.admin.password" />
-          </a-form-item>
-          <a-form-item :label="t('setup.admin.confirmPassword')">
-            <a-input-password v-model="form.admin.confirm_password" />
-          </a-form-item>
-        </a-form>
-      </section>
-
-      <section v-if="currentStep === 4" class="setup-panel">
-        <a-form :model="form" layout="vertical">
-          <a-form-item :label="t('setup.server.addr')">
-            <a-input v-model="form.server.addr" />
-          </a-form-item>
-          <a-form-item :label="t('setup.server.logLevel')">
-            <a-select v-model="form.server.log_level">
-              <a-option value="debug">debug</a-option>
-              <a-option value="info">info</a-option>
-              <a-option value="warn">warn</a-option>
-              <a-option value="error">error</a-option>
-            </a-select>
-          </a-form-item>
-          <a-form-item>
-            <a-checkbox v-model="form.wwtiot.dry_run">{{ t('setup.wwtiot.dryRun') }}</a-checkbox>
-          </a-form-item>
-          <a-form-item label="WWTIOT API URL">
-            <a-input v-model="form.wwtiot.api_url" />
-          </a-form-item>
-          <a-form-item label="WWTIOT User ID">
-            <a-input v-model="form.wwtiot.user_id" />
-          </a-form-item>
-          <a-form-item label="WWTIOT User Key">
-            <a-input-password v-model="form.wwtiot.user_key" />
-          </a-form-item>
-        </a-form>
-      </section>
-
-      <section v-if="currentStep === 5" class="setup-panel complete">
-        <icon-check-circle class="complete-icon" />
-        <h2>{{ t('setup.complete.title') }}</h2>
-        <p>{{ t('setup.complete.desc') }}</p>
-        <a-button type="primary" @click="router.replace({ name: 'login' })">
-          {{ t('setup.action.login') }}
-        </a-button>
-      </section>
-
-      <footer v-if="currentStep < 5" class="setup-actions">
-        <a-button :disabled="currentStep === 0" @click="currentStep -= 1">{{ t('setup.action.prev') }}</a-button>
-        <a-button v-if="currentStep < 4" type="primary" :disabled="!canProceed" @click="nextStep">
-          {{ t('setup.action.next') }}
-        </a-button>
-        <a-button v-else type="primary" :disabled="!canProceed" :loading="installing" @click="performInstall">
-          {{ t('setup.action.install') }}
-        </a-button>
-      </footer>
-    </section>
+    </main>
   </div>
 </template>
 
@@ -169,13 +297,57 @@
   });
 
   const steps = computed(() => [
-    { key: 'system', title: t('setup.step.system') },
-    { key: 'database', title: t('setup.step.database') },
-    { key: 'redis', title: t('setup.step.redis') },
-    { key: 'admin', title: t('setup.step.admin') },
-    { key: 'install', title: t('setup.step.install') },
-    { key: 'complete', title: t('setup.step.complete') },
+    {
+      key: 'system',
+      title: t('setup.step.system'),
+      description: t('setup.step.system.desc'),
+      kicker: t('setup.kicker.system'),
+      heading: t('setup.heading.system'),
+      summary: t('setup.summary.system'),
+    },
+    {
+      key: 'database',
+      title: t('setup.step.database'),
+      description: t('setup.step.database.desc'),
+      kicker: t('setup.kicker.database'),
+      heading: t('setup.heading.database'),
+      summary: t('setup.summary.database'),
+    },
+    {
+      key: 'redis',
+      title: t('setup.step.redis'),
+      description: t('setup.step.redis.desc'),
+      kicker: t('setup.kicker.redis'),
+      heading: t('setup.heading.redis'),
+      summary: t('setup.summary.redis'),
+    },
+    {
+      key: 'admin',
+      title: t('setup.step.admin'),
+      description: t('setup.step.admin.desc'),
+      kicker: t('setup.kicker.admin'),
+      heading: t('setup.heading.admin'),
+      summary: t('setup.summary.admin'),
+    },
+    {
+      key: 'install',
+      title: t('setup.step.install'),
+      description: t('setup.step.install.desc'),
+      kicker: t('setup.kicker.install'),
+      heading: t('setup.heading.install'),
+      summary: t('setup.summary.install'),
+    },
+    {
+      key: 'complete',
+      title: t('setup.step.complete'),
+      description: t('setup.step.complete.desc'),
+      kicker: t('setup.kicker.complete'),
+      heading: t('setup.heading.complete'),
+      summary: t('setup.summary.complete'),
+    },
   ]);
+
+  const activeStep = computed(() => steps.value[currentStep.value]);
 
   const adminValid = computed(
     () =>
@@ -201,6 +373,37 @@
     if (currentStep.value === 4) return dbConnected.value && redisConnected.value && adminValid.value && runtimeValid.value;
     return true;
   });
+
+  const readinessItems = computed(() => [
+    { key: 'database', label: t('setup.signal.database'), ok: dbConnected.value },
+    { key: 'redis', label: t('setup.signal.redis'), ok: redisConnected.value },
+    { key: 'admin', label: t('setup.signal.admin'), ok: adminValid.value },
+    { key: 'runtime', label: t('setup.signal.runtime'), ok: runtimeValid.value },
+  ]);
+
+  const readyCount = computed(() => readinessItems.value.filter((item) => item.ok).length);
+
+  const systemCards = computed(() => [
+    { key: 'database', icon: 'icon-storage', title: t('setup.card.database.title'), desc: t('setup.card.database.desc') },
+    { key: 'cache', icon: 'icon-thunderbolt', title: t('setup.card.redis.title'), desc: t('setup.card.redis.desc') },
+    { key: 'admin', icon: 'icon-user', title: t('setup.card.admin.title'), desc: t('setup.card.admin.desc') },
+  ]);
+
+  const isStepAvailable = (index: number) => {
+    if (index <= currentStep.value) return true;
+    if (index === 1) return true;
+    if (index === 2) return dbConnected.value;
+    if (index === 3) return dbConnected.value && redisConnected.value;
+    if (index === 4) return dbConnected.value && redisConnected.value && adminValid.value;
+    if (index === 5) return currentStep.value === 5;
+    return false;
+  };
+
+  const goToStep = (index: number) => {
+    if (!isStepAvailable(index)) return;
+    errorMessage.value = '';
+    currentStep.value = index;
+  };
 
   const showError = (error: unknown, fallback: string) => {
     const err = error as { response?: { data?: { message?: string; data?: { error?: string } } }; message?: string };
@@ -269,73 +472,751 @@
 
 <style lang="less" scoped>
   .setup-page {
+    position: relative;
     min-height: 100vh;
-    padding: 32px;
-    background: var(--color-fill-2);
+    padding: 40px;
+    overflow: hidden;
+    background: linear-gradient(135deg, rgb(13 22 34 / 96%), rgb(16 27 37 / 94%) 52%, rgb(22 35 32 / 96%)), #101822;
+  }
+
+  .setup-page-grid {
+    position: absolute;
+    inset: 0;
+    background-image: linear-gradient(rgb(255 255 255 / 4.5%) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(255 255 255 / 4.5%) 1px, transparent 1px);
+    background-size: 36px 36px;
+    mask-image: linear-gradient(to bottom, rgb(0 0 0 / 90%), transparent 86%);
+    pointer-events: none;
+  }
+
+  .setup-page-halo {
+    position: absolute;
+    width: 360px;
+    height: 360px;
+    border-radius: 999px;
+    opacity: 0.28;
+    filter: blur(48px);
+    pointer-events: none;
+  }
+
+  .setup-page-halo-top {
+    top: -120px;
+    right: 12%;
+    background: #3cc6a4;
+  }
+
+  .setup-page-halo-bottom {
+    bottom: -160px;
+    left: 8%;
+    background: #d8a54d;
   }
 
   .setup-shell {
-    max-width: 920px;
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    max-width: 1180px;
+    min-height: calc(100vh - 80px);
     margin: 0 auto;
-    padding: 28px;
-    background: var(--color-bg-2);
-    border: 1px solid var(--color-border-2);
-    border-radius: 8px;
+    overflow: hidden;
+    background: rgb(247 249 246 / 96%);
+    border: 1px solid rgb(255 255 255 / 46%);
+    border-radius: 18px;
+    box-shadow: 0 30px 80px rgb(0 0 0 / 32%);
   }
 
-  .setup-header {
+  .setup-rail {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    padding: 32px;
+    color: #edf4ef;
+    background: linear-gradient(160deg, rgb(15 32 43 / 96%), rgb(12 25 30 / 98%)), #0d1d26;
+
+    &::after {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      width: 68%;
+      height: 38%;
+      background: linear-gradient(135deg, transparent 0 44%, rgb(96 218 184 / 12%) 44% 46%, transparent 46%),
+        linear-gradient(45deg, transparent 0 58%, rgb(231 178 75 / 12%) 58% 60%, transparent 60%);
+      content: '';
+      pointer-events: none;
+    }
+  }
+
+  .brand-lockup {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+
+    h1 {
+      margin: 4px 0 0;
+      color: #fff;
+      font-weight: 700;
+      font-size: 28px;
+      line-height: 34px;
+      letter-spacing: 0;
+    }
+  }
+
+  .brand-mark {
+    position: relative;
+    display: grid;
+    flex: 0 0 52px;
+    width: 52px;
+    height: 52px;
+    place-items: center;
+    background: linear-gradient(145deg, #f3c96c, #74dec0);
+    border-radius: 14px;
+    box-shadow: 0 18px 34px rgb(58 209 172 / 22%);
+  }
+
+  .brand-mark-dot {
+    width: 14px;
+    height: 14px;
+    background: #0f2029;
+    border-radius: 999px;
+    box-shadow: 13px 0 0 #0f2029, 0 13px 0 #0f2029, 13px 13px 0 #0f2029;
+  }
+
+  .brand-mark-line {
+    position: absolute;
+    right: 7px;
+    bottom: 7px;
+    width: 18px;
+    height: 3px;
+    background: #0f2029;
+    border-radius: 999px;
+  }
+
+  .eyebrow,
+  .section-kicker {
+    margin: 0;
+    color: #5fcfb0;
+    font-weight: 700;
+    font-size: 12px;
+    line-height: 18px;
+    letter-spacing: 0;
+    text-transform: uppercase;
+  }
+
+  .setup-subtitle {
+    position: relative;
+    z-index: 1;
+    max-width: 280px;
+    margin: 0;
+    color: rgb(237 244 239 / 72%);
+    line-height: 22px;
+  }
+
+  .status-chip {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+    width: fit-content;
+    padding: 8px 12px;
+    color: #f3c96c;
+    font-weight: 600;
+    background: rgb(243 201 108 / 10%);
+    border: 1px solid rgb(243 201 108 / 28%);
+    border-radius: 999px;
+  }
+
+  .status-chip-ready {
+    color: #72dcbc;
+    background: rgb(114 220 188 / 10%);
+    border-color: rgb(114 220 188 / 30%);
+  }
+
+  .status-chip-pulse {
+    width: 8px;
+    height: 8px;
+    background: currentcolor;
+    border-radius: 999px;
+    box-shadow: 0 0 0 6px rgb(243 201 108 / 12%);
+  }
+
+  .setup-timeline {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    gap: 10px;
+  }
+
+  .timeline-step {
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 12px;
+    width: 100%;
+    padding: 12px;
+    color: rgb(237 244 239 / 62%);
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+
+    strong,
+    small {
+      display: block;
+      letter-spacing: 0;
+    }
+
+    strong {
+      color: inherit;
+      font-size: 14px;
+      line-height: 20px;
+    }
+
+    small {
+      margin-top: 2px;
+      color: rgb(237 244 239 / 48%);
+      font-size: 12px;
+      line-height: 17px;
+    }
+
+    &:disabled {
+      cursor: not-allowed;
+    }
+
+    &:not(:disabled):hover {
+      background: rgb(255 255 255 / 7%);
+      transform: translateX(2px);
+    }
+  }
+
+  .timeline-step-active {
+    color: #fff;
+    background: rgb(255 255 255 / 10%);
+    border-color: rgb(114 220 188 / 34%);
+  }
+
+  .timeline-step-done {
+    color: #7de0c1;
+  }
+
+  .timeline-step-locked {
+    opacity: 0.48;
+  }
+
+  .timeline-step-index {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    color: #102029;
+    font-weight: 800;
+    background: rgb(237 244 239 / 84%);
+    border-radius: 10px;
+    place-items: center;
+  }
+
+  .timeline-step-active .timeline-step-index,
+  .timeline-step-done .timeline-step-index {
+    background: linear-gradient(145deg, #f3c96c, #70dcbc);
+  }
+
+  .signal-panel {
+    position: relative;
+    z-index: 1;
+    margin-top: auto;
+    padding: 16px;
+    background: rgb(255 255 255 / 7%);
+    border: 1px solid rgb(255 255 255 / 10%);
+    border-radius: 14px;
+  }
+
+  .signal-panel-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    color: rgb(237 244 239 / 72%);
+
+    strong {
+      color: #fff;
+      font-size: 18px;
+    }
+  }
+
+  .signal-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .signal-item {
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+    min-width: 0;
+    padding: 8px;
+    color: rgb(237 244 239 / 58%);
+    font-size: 12px;
+    background: rgb(255 255 255 / 5%);
+    border-radius: 8px;
+
+    svg {
+      flex: 0 0 auto;
+    }
+  }
+
+  .signal-item-ok {
+    color: #7de0c1;
+    background: rgb(125 224 193 / 10%);
+  }
+
+  .setup-workbench {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    padding: 34px;
+    background: linear-gradient(180deg, rgb(255 255 255 / 64%), rgb(247 249 246 / 98%)), #f7f9f6;
+  }
+
+  .workbench-header {
     display: flex;
     gap: 24px;
     align-items: flex-start;
     justify-content: space-between;
+    padding-bottom: 24px;
+    border-bottom: 1px solid rgb(16 32 41 / 8%);
 
-    h1 {
+    h2 {
       margin: 4px 0 8px;
-      color: var(--color-text-1);
-      font-size: 26px;
-      line-height: 34px;
+      color: #16232a;
+      font-weight: 750;
+      font-size: 30px;
+      line-height: 38px;
+      letter-spacing: 0;
     }
 
     p {
+      max-width: 560px;
       margin: 0;
-      color: var(--color-text-2);
+      color: #617079;
+      line-height: 22px;
     }
   }
 
-  .eyebrow {
-    color: rgb(var(--primary-6));
-    font-weight: 600;
-    font-size: 12px;
-  }
+  .step-meter {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: baseline;
+    padding: 10px 14px;
+    color: #617079;
+    background: #fff;
+    border: 1px solid rgb(16 32 41 / 8%);
+    border-radius: 12px;
 
-  .setup-steps {
-    margin-top: 28px;
+    span {
+      color: #16232a;
+      font-weight: 800;
+      font-size: 26px;
+      line-height: 1;
+    }
+
+    small {
+      margin-left: 3px;
+    }
   }
 
   .setup-error {
-    margin-top: 20px;
+    margin-top: 18px;
   }
 
-  .setup-panel {
-    margin-top: 24px;
-    padding: 20px;
-    background: var(--color-fill-1);
-    border-radius: 8px;
+  .setup-card {
+    flex: 0 0 auto;
+    margin-top: 22px;
+    padding: 24px;
+    background: linear-gradient(180deg, rgb(255 255 255 / 96%), rgb(252 253 249 / 96%)), #fff;
+    border: 1px solid rgb(16 32 41 / 8%);
+    border-radius: 16px;
+    box-shadow: 0 18px 48px rgb(16 32 41 / 8%);
+  }
+
+  .preflight-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(240px, 0.9fr);
+    gap: 22px;
+    align-items: stretch;
+  }
+
+  .terminal-card {
+    height: 100%;
+    min-height: 300px;
+    padding: 18px;
+    color: #dfeee9;
+    background: linear-gradient(145deg, rgb(13 28 36 / 98%), rgb(18 39 44 / 98%)), #0e1e27;
+    border: 1px solid rgb(114 220 188 / 18%);
+    border-radius: 14px;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 4%);
+
+    dl {
+      display: grid;
+      gap: 18px;
+      margin: 26px 0 0;
+    }
+
+    dl div {
+      padding-bottom: 18px;
+      border-bottom: 1px solid rgb(255 255 255 / 8%);
+    }
+
+    dt {
+      color: rgb(223 238 233 / 54%);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    dd {
+      margin: 6px 0 0;
+      color: #fff;
+      font-weight: 650;
+      overflow-wrap: anywhere;
+    }
+  }
+
+  .terminal-card-bar {
+    display: flex;
+    gap: 7px;
+
+    .inline-status-text {
+      width: 10px;
+      height: 10px;
+      background: rgb(255 255 255 / 26%);
+      border-radius: 999px;
+
+      &:nth-child(1) {
+        background: #f3c96c;
+      }
+
+      &:nth-child(2) {
+        background: #70dcbc;
+      }
+    }
+  }
+
+  .preflight-stack {
+    display: grid;
+    gap: 12px;
+  }
+
+  .preflight-item {
+    display: grid;
+    grid-template-columns: 42px 1fr;
+    gap: 14px;
+    padding: 16px;
+    background: #f6f8f3;
+    border: 1px solid rgb(16 32 41 / 8%);
+    border-radius: 12px;
+
+    strong {
+      display: block;
+      color: #16232a;
+      line-height: 20px;
+    }
+
+    p {
+      margin: 5px 0 0;
+      color: #65737a;
+      line-height: 20px;
+    }
+  }
+
+  .preflight-item-icon {
+    display: grid;
+    width: 42px;
+    height: 42px;
+    color: #17302f;
+    font-size: 20px;
+    background: linear-gradient(145deg, rgb(243 201 108 / 80%), rgb(112 220 188 / 80%));
+    border-radius: 12px;
+    place-items: center;
+  }
+
+  .form-stage {
+    max-width: 720px;
+  }
+
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px 18px;
+  }
+
+  .form-grid-full {
+    grid-column: 1 / -1;
+  }
+
+  .inline-status {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px;
+    background: #f5f7f2;
+    border: 1px solid rgb(16 32 41 / 8%);
+    border-radius: 12px;
+
+    .password-rule {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      color: #7a8588;
+    }
+
+    .ok {
+      color: #118263;
+    }
+  }
+
+  .password-rules {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+
+    > span {
+      padding: 6px 10px;
+      color: #7a8588;
+      font-size: 12px;
+      background: #f5f7f2;
+      border-radius: 999px;
+    }
+
+    .ok {
+      color: #0f765b;
+      background: rgb(112 220 188 / 18%);
+    }
+  }
+
+  .mode-switch {
+    display: flex;
+    gap: 18px;
+    align-items: center;
+    justify-content: space-between;
+    margin: 6px 0 20px;
+    padding: 16px;
+    background: #f5f7f2;
+    border: 1px solid rgb(16 32 41 / 8%);
+    border-radius: 12px;
+
+    strong {
+      display: block;
+      color: #16232a;
+    }
+
+    p {
+      margin: 4px 0 0;
+      color: #65737a;
+    }
+  }
+
+  .complete {
+    display: grid;
+    min-height: 360px;
+    place-items: center;
+    text-align: center;
+
+    h2 {
+      margin: 18px 0 8px;
+      color: #16232a;
+      font-size: 30px;
+      line-height: 38px;
+    }
+
+    p {
+      max-width: 420px;
+      margin: 0 0 24px;
+      color: #65737a;
+      line-height: 22px;
+    }
+  }
+
+  .complete-mark {
+    display: grid;
+    width: 82px;
+    height: 82px;
+    color: #113027;
+    font-size: 46px;
+    background: linear-gradient(145deg, #f3c96c, #70dcbc);
+    border-radius: 24px;
+    box-shadow: 0 20px 36px rgb(77 185 153 / 24%);
+    place-items: center;
   }
 
   .setup-actions {
     display: flex;
     gap: 12px;
     justify-content: flex-end;
-    margin-top: 24px;
+    margin-top: 22px;
   }
 
-  .complete {
-    text-align: center;
+  :deep(.arco-input-wrapper),
+  :deep(.arco-select-view-single) {
+    min-height: 42px;
+    background: #fbfcf8;
+    border-color: rgb(16 32 41 / 12%);
+    border-radius: 10px;
   }
 
-  .complete-icon {
-    color: rgb(var(--green-6));
-    font-size: 48px;
+  :deep(.arco-form-item-label-col > label) {
+    color: #34454d;
+    font-weight: 650;
+  }
+
+  :deep(.arco-btn) {
+    border-radius: 10px;
+  }
+
+  :deep(.arco-btn-primary) {
+    color: #102029;
+    font-weight: 700;
+    background: linear-gradient(145deg, #f3c96c, #70dcbc);
+    border: 0;
+
+    &:hover {
+      color: #102029;
+      background: linear-gradient(145deg, #ffd67a, #7de6c8);
+    }
+
+    &[disabled] {
+      color: rgb(16 32 41 / 38%);
+      background: #d9ddd7;
+    }
+  }
+
+  @media (width <= 980px) {
+    .setup-page {
+      padding: 20px;
+    }
+
+    .setup-shell {
+      grid-template-columns: 1fr;
+      min-height: auto;
+    }
+
+    .setup-rail {
+      padding: 26px;
+    }
+
+    .setup-timeline {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .signal-panel {
+      margin-top: 0;
+    }
+
+    .preflight-layout {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (width <= 640px) {
+    .setup-page {
+      padding: 0;
+    }
+
+    .setup-shell {
+      border-radius: 0;
+    }
+
+    .setup-workbench,
+    .setup-rail {
+      gap: 16px;
+      padding: 22px;
+    }
+
+    .workbench-header,
+    .inline-status,
+    .mode-switch {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .brand-lockup {
+      gap: 12px;
+      align-items: center;
+
+      h1 {
+        font-size: 24px;
+        line-height: 30px;
+      }
+    }
+
+    .brand-mark {
+      flex-basis: 46px;
+      width: 46px;
+      height: 46px;
+      border-radius: 13px;
+    }
+
+    .setup-subtitle {
+      max-width: none;
+    }
+
+    .setup-timeline,
+    .signal-list,
+    .form-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .setup-timeline {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .timeline-step {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 72px;
+      padding: 9px;
+
+      small {
+        display: none;
+      }
+
+      strong {
+        font-size: 13px;
+      }
+    }
+
+    .timeline-step-index {
+      width: 30px;
+      height: 30px;
+      border-radius: 9px;
+    }
+
+    .signal-panel {
+      display: none;
+    }
+
+    .status-chip {
+      display: none;
+    }
+
+    .setup-card {
+      padding: 18px;
+    }
+
+    .workbench-header h2 {
+      font-size: 24px;
+      line-height: 31px;
+    }
+
+    .setup-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
   }
 </style>
