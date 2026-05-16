@@ -84,6 +84,17 @@ export interface CommandDetail {
   events: Array<Record<string, unknown>>;
 }
 
+interface ListEnvelope<T> {
+  items: T[];
+}
+
+function normalizeList<T>(value: T[] | ListEnvelope<T>): T[] {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  return value.items || [];
+}
+
 export function queryProjects() {
   return axios.get<ProjectRecord[]>('/v1/projects');
 }
@@ -136,7 +147,10 @@ export function queryCommandDetail(id: string) {
 }
 
 export function queryWebhookDeliveries() {
-  return axios.get<WebhookDeliveryRecord[]>('/v1/webhook-deliveries');
+  return axios.get<WebhookDeliveryRecord[] | ListEnvelope<WebhookDeliveryRecord>>('/v1/webhook-deliveries').then((res) => ({
+    ...res,
+    data: normalizeList(res.data),
+  }));
 }
 
 export function resendWebhookDelivery(id: string) {
@@ -144,7 +158,10 @@ export function resendWebhookDelivery(id: string) {
 }
 
 export function queryAuditLogs() {
-  return axios.get<AuditLogRecord[]>('/v1/audit-logs');
+  return axios.get<AuditLogRecord[] | ListEnvelope<AuditLogRecord>>('/v1/audit-logs').then((res) => ({
+    ...res,
+    data: normalizeList(res.data),
+  }));
 }
 
 export function getSimulator() {

@@ -8,15 +8,6 @@
         <a-input-password v-model="userInfo.password" :placeholder="t('auth.login.password.placeholder')" />
       </a-form-item>
       <a-form-item hide-label>
-        <div class="flex justify-between w-full text-sm">
-          <span
-            >{{ t('auth.noAccount') }}
-            <a-link class="text-sm" @click="$router.push({ name: 'register' })">{{ t('auth.registerNow') }}</a-link></span
-          >
-          <a-link class="text-sm" @click="$router.push({ name: 'forgot-password' })">{{ t('auth.forgot.title') }}</a-link>
-        </div>
-      </a-form-item>
-      <a-form-item hide-label>
         <a-button type="primary" html-type="submit" long :loading="loading"> {{ t('login.form.login') }} </a-button>
       </a-form-item>
       <a-form-item hide-label>

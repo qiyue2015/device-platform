@@ -81,7 +81,7 @@ pnpm preview
 
 ## 认证说明
 
-- `local`：使用账号密码登录接口
+- `local`：首次运行先访问 `/setup` 创建管理员账号，之后使用 `/auth/login` 登录
 - `oidc`：走 OIDC 授权流程，前端会跳转至后端 `/auth/redirect`，并在回调后调用 `/api/auth/exchange` 完成登录
 
 ## 项目结构

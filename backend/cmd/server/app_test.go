@@ -15,17 +15,19 @@ import (
 	"github.com/qiyue2015/device-platform/internal/devicecore"
 )
 
+const testJWTSecret = defaultMemoryJWTSecret
+
 func TestLoadConfigLoadsEnvFilesWithoutOverridingProcessEnv(t *testing.T) {
 	t.Setenv("SERVER_ADDR", ":9090")
+	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
 
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, ".env")
 	if err := os.WriteFile(envPath, []byte(`
 SERVER_ADDR=:8081
-ADMIN_EMAIL=file-admin@example.com
-ADMIN_PASSWORD=file-admin-password
-ADMIN_ACCESS_TOKEN=file-token
-OPEN_API_KEYS=project-a:key-a,project-b:key-b
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/device_platform?sslmode=disable
+REDIS_URL=redis://localhost:6379/0
+JWT_SECRET=0123456789abcdef0123456789abcdef
 LOG_LEVEL=debug
 READ_HEADER_TIMEOUT=3s
 `), 0o600); err != nil {
@@ -40,17 +42,48 @@ READ_HEADER_TIMEOUT=3s
 	if cfg.ServerAddr != ":9090" {
 		t.Fatalf("expected process env to win, got %q", cfg.ServerAddr)
 	}
-	if cfg.AdminAccessToken != "file-token" {
-		t.Fatalf("expected admin token from env file, got %q", cfg.AdminAccessToken)
-	}
-	if cfg.AdminEmail != "file-admin@example.com" || cfg.AdminPassword != "file-admin-password" {
-		t.Fatalf("expected admin credentials from env file, got %q/%q", cfg.AdminEmail, cfg.AdminPassword)
-	}
-	if cfg.OpenAPIKeys["key-b"] != "project-b" {
-		t.Fatalf("expected parsed open api project id, got %q", cfg.OpenAPIKeys["key-b"])
+	if cfg.DatabaseURL == "" || cfg.RedisURL == "" || cfg.JWTSecret == "" {
+		t.Fatalf("expected runtime connection fields from env file, got %+v", cfg)
 	}
 	if cfg.ReadHeaderTimeout != 3*time.Second {
 		t.Fatalf("expected parsed read header timeout, got %s", cfg.ReadHeaderTimeout)
+	}
+}
+
+func TestLoadConfigRequiresRuntimeFieldsAfterInstall(t *testing.T) {
+	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
+	t.Setenv("DEVICE_PLATFORM_INSTALLED", "true")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("REDIS_URL", "")
+	t.Setenv("JWT_SECRET", "")
+
+	_, err := loadConfig()
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Fatalf("expected DATABASE_URL error after install, got %v", err)
+	}
+}
+
+func TestNewAppRequiresRuntimeDependenciesAfterInstall(t *testing.T) {
+	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
+	cfg := config{
+		DatabaseURL:       "postgres://postgres:postgres@127.0.0.1:1/device_platform?sslmode=disable",
+		RedisURL:          "redis://127.0.0.1:1/0",
+		JWTSecret:         testJWTSecret,
+		Installed:         true,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	if _, err := newApp(cfg, logger); err == nil || !strings.Contains(err.Error(), "database unavailable after installation") {
+		t.Fatalf("expected installed app startup to fail on unavailable database, got %v", err)
+	}
+}
+
+func TestValidateServerAddrRejectsInvalidPort(t *testing.T) {
+	for _, addr := range []string{":0", ":99999", "127.0.0.1:0", "127.0.0.1:99999"} {
+		if err := validateServerAddr(addr); err == nil {
+			t.Fatalf("expected invalid server address %q to fail", addr)
+		}
 	}
 }
 
@@ -78,35 +111,42 @@ func TestAuthCompatibilityLoginMeAndBearerGate(t *testing.T) {
 	server := newTestServer()
 
 	missingCredentials := httptest.NewRecorder()
-	server.ServeHTTP(missingCredentials, httptest.NewRequest(http.MethodPost, "/api/auth/login", nil))
+	server.ServeHTTP(missingCredentials, httptest.NewRequest(http.MethodPost, "/v1/auth/login", nil))
 	if missingCredentials.Code != http.StatusUnauthorized {
 		t.Fatalf("expected missing credentials 401, got %d", missingCredentials.Code)
 	}
 
+	legacyLogin := httptest.NewRecorder()
+	server.ServeHTTP(legacyLogin, httptest.NewRequest(http.MethodPost, "/api/auth/login", nil))
+	if legacyLogin.Code != http.StatusNotFound {
+		t.Fatalf("expected legacy login 404, got %d", legacyLogin.Code)
+	}
+
 	invalidCredentials := httptest.NewRecorder()
-	server.ServeHTTP(invalidCredentials, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"email":"admin@example.com","password":"wrong-password"}`)))
+	server.ServeHTTP(invalidCredentials, httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(`{"email":"admin@test.local","password":"wrong-password"}`)))
 	if invalidCredentials.Code != http.StatusUnauthorized {
 		t.Fatalf("expected invalid credentials 401, got %d", invalidCredentials.Code)
 	}
 
 	login := httptest.NewRecorder()
-	server.ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"email":"admin@example.com","password":"test-admin-password"}`)))
+	server.ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(`{"email":"admin@test.local","password":"test-admin-password"}`)))
 	if login.Code != http.StatusOK {
 		t.Fatalf("expected login 200, got %d", login.Code)
 	}
 	var loginBody jsonResponse
 	decodeResponse(t, login, &loginBody)
 	data, ok := loginBody.Data.(map[string]interface{})
-	if !ok || data["access_token"] != "test-admin-token" || data["token_type"] != "Bearer" {
+	token, _ := data["access_token"].(string)
+	if !ok || token == "" || data["token_type"] != "Bearer" {
 		t.Fatalf("unexpected login response: %+v", loginBody.Data)
 	}
 
 	legacyMe := httptest.NewRecorder()
 	legacyReq := httptest.NewRequest(http.MethodGet, "/api/me", nil)
-	legacyReq.Header.Set("Authorization", "Bearer test-admin-token")
+	legacyReq.Header.Set("Authorization", "Bearer "+token)
 	server.ServeHTTP(legacyMe, legacyReq)
-	if legacyMe.Code != http.StatusOK {
-		t.Fatalf("expected legacy me 200, got %d", legacyMe.Code)
+	if legacyMe.Code != http.StatusNotFound {
+		t.Fatalf("expected legacy me 404, got %d", legacyMe.Code)
 	}
 
 	blocked := httptest.NewRecorder()
@@ -117,21 +157,21 @@ func TestAuthCompatibilityLoginMeAndBearerGate(t *testing.T) {
 
 	allowed := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/auth/me", nil)
-	req.Header.Set("Authorization", "Bearer test-admin-token")
+	req.Header.Set("Authorization", "Bearer "+token)
 	server.ServeHTTP(allowed, req)
 	if allowed.Code != http.StatusOK {
 		t.Fatalf("expected v1 me with bearer 200, got %d", allowed.Code)
 	}
 
 	refreshBlocked := httptest.NewRecorder()
-	server.ServeHTTP(refreshBlocked, httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil))
+	server.ServeHTTP(refreshBlocked, httptest.NewRequest(http.MethodPost, "/v1/auth/refresh", nil))
 	if refreshBlocked.Code != http.StatusUnauthorized {
 		t.Fatalf("expected refresh without bearer 401, got %d", refreshBlocked.Code)
 	}
 
 	refreshAllowed := httptest.NewRecorder()
-	refreshReq := httptest.NewRequest(http.MethodPost, "/api/auth/refresh", nil)
-	refreshReq.Header.Set("Authorization", "Bearer test-admin-token")
+	refreshReq := httptest.NewRequest(http.MethodPost, "/v1/auth/refresh", nil)
+	refreshReq.Header.Set("Authorization", "Bearer "+token)
 	server.ServeHTTP(refreshAllowed, refreshReq)
 	if refreshAllowed.Code != http.StatusOK {
 		t.Fatalf("expected refresh with bearer 200, got %d", refreshAllowed.Code)
@@ -174,7 +214,7 @@ func TestDeviceRoutesPreserveAppFoundation(t *testing.T) {
 	}
 
 	login := httptest.NewRecorder()
-	server.ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"email":"admin@example.com","password":"test-admin-password"}`)))
+	server.ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/v1/auth/login", strings.NewReader(`{"email":"admin@test.local","password":"test-admin-password"}`)))
 	if login.Code != http.StatusOK {
 		t.Fatalf("expected login 200, got %d", login.Code)
 	}
@@ -306,10 +346,8 @@ func newTestServerWithDeviceService(service *devicecore.Service) http.Handler {
 	cfg := config{
 		ServerAddr:        ":0",
 		LogLevel:          "error",
-		AdminEmail:        "admin@example.com",
-		AdminPassword:     "test-admin-password",
-		AdminAccessToken:  "test-admin-token",
-		OpenAPIKeys:       map[string]string{"test-open-key": "local-project"},
+		JWTSecret:         testJWTSecret,
+		Installed:         true,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -428,7 +466,18 @@ func decodeResponse(t *testing.T, body *httptest.ResponseRecorder, dest interfac
 }
 
 func setAdminBearer(req *http.Request) {
-	req.Header.Set("Authorization", "Bearer test-admin-token")
+	token, err := createJWT(currentUser{
+		ID:          "test-admin",
+		Name:        "Test Admin",
+		Nickname:    "Test Admin",
+		Email:       "admin@test.local",
+		DisplayName: "Test Admin",
+		IsAdmin:     true,
+	}, testJWTSecret, time.Now().UTC())
+	if err != nil {
+		panic(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
 }
 
 func decodeBody(t *testing.T, body io.Reader, dest interface{}) {

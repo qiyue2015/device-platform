@@ -63,6 +63,8 @@ The backend reads `backend/.env` by default. The default local values are:
 ```text
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/device_platform?sslmode=disable
 REDIS_URL=redis://localhost:6379/0
+JWT_SECRET=replace-with-a-random-32-character-minimum-secret
+DEVICE_PLATFORM_INSTALLED=false
 SERVER_ADDR=:8080
 ```
 
@@ -72,7 +74,7 @@ Health check:
 curl http://localhost:8080/healthz
 ```
 
-`/healthz` only proves that the process is alive. A future `/readyz` endpoint can check PostgreSQL and Redis once those clients are wired into the service.
+`/healthz` only proves that the process is alive. `/readyz` reports `setup_required` until the first-run setup is complete.
 
 ## Frontend
 
@@ -84,7 +86,7 @@ cp .env.example .env.development
 pnpm dev
 ```
 
-For local integration, frontend API calls should use relative `/v1/...` paths. Vite proxies `/v1` to `http://localhost:8080`.
+For local integration, frontend API calls should use relative `/v1/...` and `/setup/...` paths. Vite proxies both namespaces to `http://localhost:8080`.
 
 Local `.env.development` should keep `VITE_API_BASE_URL` empty unless a special debugging scenario needs direct absolute API URLs:
 
@@ -93,7 +95,25 @@ VITE_API_BASE_URL=''
 VITE_AUTH_STRATEGY='local'
 ```
 
-New MVP-1 API modules should use `/v1/...`. Existing template APIs using `/api/...` are not the contract for new device-platform work and can be cleaned up when those template surfaces are replaced.
+New MVP-1 API modules should use `/v1/...`. Setup APIs use `/setup/...`. Existing template APIs using `/api/...` are not the contract for new device-platform work and can be cleaned up when those template surfaces are replaced.
+
+## First-Run Setup
+
+After the backend and frontend are running, open:
+
+```text
+http://localhost:5173/setup
+```
+
+The setup wizard checks PostgreSQL, Redis, writable runtime files, WWTIOT mode, and the administrator account. Failed checks stay on the current step and block installation.
+
+After installation, open:
+
+```text
+http://localhost:5173/auth/login
+```
+
+Use the administrator account created in the setup wizard. If the Vite dev server prints a different local URL, use that URL with the same path.
 
 ## Root Commands
 

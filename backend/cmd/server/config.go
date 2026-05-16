@@ -11,10 +11,10 @@ import (
 type config struct {
 	ServerAddr        string
 	LogLevel          string
-	AdminEmail        string
-	AdminPassword     string
-	AdminAccessToken  string
-	OpenAPIKeys       map[string]string
+	DatabaseURL       string
+	RedisURL          string
+	JWTSecret         string
+	Installed         bool
 	ReadHeaderTimeout time.Duration
 }
 
@@ -26,22 +26,28 @@ func loadConfig(envFiles ...string) (config, error) {
 	cfg := config{
 		ServerAddr:        envDefault("SERVER_ADDR", ":8080"),
 		LogLevel:          envDefault("LOG_LEVEL", "info"),
-		AdminEmail:        envDefault("ADMIN_EMAIL", "admin@example.com"),
-		AdminPassword:     envDefault("ADMIN_PASSWORD", "local-admin-password"),
-		AdminAccessToken:  envDefault("ADMIN_ACCESS_TOKEN", "dev-admin-token"),
-		OpenAPIKeys:       parseOpenAPIKeys(envDefault("OPEN_API_KEYS", "local-project:local-open-api-key")),
+		DatabaseURL:       strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		RedisURL:          strings.TrimSpace(os.Getenv("REDIS_URL")),
+		JWTSecret:         strings.TrimSpace(os.Getenv("JWT_SECRET")),
+		Installed:         envBool("DEVICE_PLATFORM_INSTALLED", false),
 		ReadHeaderTimeout: envDuration("READ_HEADER_TIMEOUT", 5*time.Second),
 	}
-	if cfg.AdminEmail == "" {
-		return config{}, fmt.Errorf("ADMIN_EMAIL must not be empty")
-	}
-	if cfg.AdminPassword == "" {
-		return config{}, fmt.Errorf("ADMIN_PASSWORD must not be empty")
-	}
-	if cfg.AdminAccessToken == "" {
-		return config{}, fmt.Errorf("ADMIN_ACCESS_TOKEN must not be empty")
+	if cfg.isInstalled() {
+		if cfg.DatabaseURL == "" {
+			return config{}, fmt.Errorf("DATABASE_URL must not be empty after installation")
+		}
+		if cfg.RedisURL == "" {
+			return config{}, fmt.Errorf("REDIS_URL must not be empty after installation")
+		}
+		if len(cfg.JWTSecret) < minJWTSecretLength {
+			return config{}, fmt.Errorf("JWT_SECRET must be at least %d characters after installation", minJWTSecretLength)
+		}
 	}
 	return cfg, nil
+}
+
+func (cfg config) isInstalled() bool {
+	return cfg.Installed || installLockExists()
 }
 
 func loadEnvFiles(paths ...string) error {
@@ -116,27 +122,19 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 	return value
 }
 
-func parseOpenAPIKeys(raw string) map[string]string {
-	keys := map[string]string{}
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-
-		projectID, apiKey, ok := strings.Cut(part, ":")
-		if !ok {
-			projectID = "default"
-			apiKey = part
-		}
-		projectID = strings.TrimSpace(projectID)
-		apiKey = strings.TrimSpace(apiKey)
-		if projectID == "" || apiKey == "" {
-			continue
-		}
-		keys[apiKey] = projectID
+func envBool(key string, fallback bool) bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if raw == "" {
+		return fallback
 	}
-	return keys
+	switch raw {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func stripInlineEnvComment(value string) string {

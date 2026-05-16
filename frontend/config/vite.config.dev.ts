@@ -15,6 +15,10 @@ export default mergeConfig(
           target: 'http://localhost:8080',
           changeOrigin: true,
         },
+        '/setup': {
+          target: 'http://localhost:8080',
+          changeOrigin: true,
+        },
       },
     },
     plugins: [

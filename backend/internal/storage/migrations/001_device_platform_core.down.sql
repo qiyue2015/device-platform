@@ -1,0 +1,12 @@
+DROP TABLE IF EXISTS audit_logs;
+DROP TABLE IF EXISTS webhook_deliveries;
+DROP TABLE IF EXISTS device_events;
+ALTER TABLE IF EXISTS device_states DROP CONSTRAINT IF EXISTS fk_device_states_raw_message;
+DROP TABLE IF EXISTS device_raw_messages;
+DROP TABLE IF EXISTS device_command_attempts;
+DROP TABLE IF EXISTS device_commands;
+DROP TABLE IF EXISTS device_states;
+DROP TABLE IF EXISTS devices;
+DROP TABLE IF EXISTS device_types;
+DROP TABLE IF EXISTS projects;
+DROP TABLE IF EXISTS users;

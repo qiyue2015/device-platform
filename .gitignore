@@ -4,6 +4,10 @@ Thumbs.db
 
 # Local agent/runtime state
 .omx/
+.installed
+backend/.installed
+data/
+backend/data/
 
 # Environment
 .env

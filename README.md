@@ -22,15 +22,11 @@ The first hardware sample is a smart lock, but the platform should stay device-t
 - [Backend README](./backend/README.md): backend local commands.
 - [Frontend README](./frontend/README.md): frontend local commands and UI project conventions.
 
-The full project knowledge base, including background, decisions, vendor materials, and long-form rationale, stays in Obsidian:
-
-```text
-/Users/fengqiyue/Documents/Obsidian Vault/Projects/设备平台/
-```
+Private background notes, decisions, vendor materials, and long-form rationale should stay outside this repository.
 
 ## Current Stage
 
-MVP-1 is ready for implementation.
+MVP-1 is the active implementation stage.
 
 MVP-1 is a simulator-backed closed loop with no vendor dependency:
 
@@ -40,190 +36,97 @@ Project -> Device -> Command -> Gateway/Adapter -> State/Event -> Webhook
 
 MVP-1.5 covers vendor-cloud adapter integration. MVP-2 covers direct-device protocol integration. Both are follow-up stages and still depend on vendor credentials, callback configuration, device ownership confirmation, and real-device protocol verification.
 
-## Quick Start
+## Start Development
 
-Use this path to get the local MVP-1 development skeleton running.
+Start by reading the implementation contracts:
 
-### 1. Prerequisites
+- [MVP-1 contract](./docs/mvp-1-contract.md): what must be built and accepted in the current stage.
+- [API contract](./docs/api-contract.md): API namespaces, command lifecycle, delivery policy, offline queue, and webhook rules.
+- [Local development](./docs/local-development.md): detailed local setup and acceptance flow.
 
-Install or prepare:
-
-- Go `1.23+`
-- Node.js and pnpm
-- PostgreSQL on `localhost:5432`
-- Redis on `localhost:6379`
-
-Create the local database if it does not exist:
+Prepare local services and env files from the repository root:
 
 ```bash
 createdb device_platform
-```
-
-### 2. Prepare Local Env Files
-
-From the repository root:
-
-```bash
 make setup-local
+make check-services
+make check-db
+pnpm --dir frontend install
 ```
 
-This creates the ignored local env files when they do not already exist:
+`make setup-local` creates ignored local env files:
 
 ```text
 backend/.env
 frontend/.env.development
 ```
 
-Backend defaults:
-
-```text
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/device_platform?sslmode=disable
-REDIS_URL=redis://localhost:6379/0
-SERVER_ADDR=:8080
-```
-
-Frontend local development keeps `VITE_API_BASE_URL` empty so browser requests use relative `/v1/...` paths through the Vite proxy.
-
-### 3. Verify PostgreSQL and Redis
-
-First verify that the local services are reachable:
-
-```bash
-make check-services
-```
-
-Expected result:
-
-```text
-localhost:5432 - accepting connections
-PONG
-```
-
-Then verify that `backend/.env` can connect to the target application database:
-
-```bash
-make check-db
-```
-
-Expected result:
-
-```text
-device_platform
-```
-
-If `make check-db` fails with a password or database error, update `DATABASE_URL` in `backend/.env` to match the local PostgreSQL user, password, host, port, and database name.
-
-Create the database when needed:
-
-```bash
-createdb device_platform
-```
-
-The current skeleton has the migration directory and rules, but no schema SQL yet. `make migrate-up` becomes meaningful once the first migration file is added under `backend/internal/storage/migrations/`.
-
-Current local verification note: `make check-services` is the required skeleton check for PostgreSQL/Redis service availability. `make check-db` is the stricter credential/database check and depends on the developer's local PostgreSQL password and database setup.
-
-### 4. Install Frontend Dependencies
-
-```bash
-pnpm --dir frontend install
-```
-
-### 5. Run Checks
-
-```bash
-make check
-```
-
-This runs:
-
-- Backend tests and lint.
-- Frontend type check, production build, and i18n key check.
-- PostgreSQL and Redis service reachability.
-
-`staticcheck` is optional locally. If it is not installed, backend lint still runs `go vet` and prints a skip message for `staticcheck`.
-
-### 6. Run Backend
+Run the backend in one terminal:
 
 ```bash
 make dev-backend
-```
-
-In another terminal, verify the health check:
-
-```bash
 curl http://localhost:8080/healthz
 ```
 
-Expected response:
-
-```json
-{"status":"ok"}
-```
-
-`/healthz` only proves the backend process is alive. PostgreSQL/Redis readiness will be covered later by `/readyz` after those clients are wired in.
-
-### 7. Run Frontend
+Run the frontend in another terminal:
 
 ```bash
 make dev-frontend
 ```
 
-The frontend dev server proxies `/v1` to `http://localhost:8080`, so MVP-1 frontend API modules should use relative `/v1/...` paths.
+The frontend dev server proxies relative `/v1/...` requests to `http://localhost:8080`.
 
-### Current Local Skeleton Boundary
+Open the first-run setup wizard in the browser:
 
-The local skeleton is ready when `make check` passes and `/healthz` returns `{"status":"ok"}`.
-
-MVP-1 is still simulator-backed and local-only at this stage. It does not require real `cloud_api`, real hardware, public callback URLs, Docker Compose, Nginx, or CI/CD.
-
-## Backend
-
-Run backend commands from `backend/`.
-
-```bash
-cp .env.example .env
-make migrate-up
-make run
+```text
+http://localhost:5173/setup
 ```
 
-Useful commands:
+Complete the database, Redis, runtime, and administrator-account checks. After installation, open:
+
+```text
+http://localhost:5173/auth/login
+```
+
+Use the administrator account created in the setup wizard. If Vite starts on another port because `5173` is occupied, use the URL printed by `make dev-frontend` with the same path.
+
+Before handing off changes, run:
+
+```bash
+make check
+```
+
+This verifies backend tests and lint, frontend type checking and build, i18n keys, and PostgreSQL/Redis service reachability.
+
+## Where To Make Changes
+
+- Backend HTTP entrypoint and handlers: `backend/cmd/server/`.
+- Backend domain logic: `backend/internal/devicecore/`, `backend/internal/gateway/`, and `backend/internal/webhookaudit/`.
+- Backend migrations and storage contracts: `backend/internal/storage/`.
+- Frontend API modules: `frontend/src/api/`.
+- Frontend pages and reusable UI: `frontend/src/views/` and `frontend/src/components/`.
+- Frontend routes, state, utilities, and locale text: `frontend/src/router/`, `frontend/src/store/`, `frontend/src/utils/`, and `frontend/src/locale/`.
+- Implementation contracts: `docs/`.
+
+Update `docs/` whenever behavior, API shape, database semantics, local commands, or acceptance criteria change.
+
+## Common Commands
+
+Run backend commands from `backend/` when using the backend Makefile directly:
 
 ```bash
 make build
 make test
 make test-int
 make lint
+make migrate-up
 make migrate-down
 ```
 
-Health check:
+Run frontend commands from `frontend/` when using package scripts directly:
 
 ```bash
-curl http://localhost:8080/healthz
-```
-
-Backend entrypoint:
-
-```text
-backend/cmd/server/main.go
-```
-
-## Frontend
-
-Run frontend commands from `frontend/`.
-
-```bash
-pnpm install
-cp .env.example .env.development
 pnpm dev
-```
-
-Local development uses relative `/v1/...` API requests through the Vite proxy to `http://localhost:8080`. Keep `VITE_API_BASE_URL` empty in `.env.development` unless a special debugging scenario needs absolute API URLs.
-
-Useful commands:
-
-```bash
 pnpm build
 pnpm type:check
 pnpm lint:fix
@@ -247,5 +150,5 @@ pnpm i18n:check
 Keep repository docs focused on implementation contracts.
 
 - Update `docs/` when code behavior, API contracts, database semantics, runtime commands, tests, deployment, or acceptance criteria change.
-- Update Obsidian when project background, vendor facts, scope decisions, rationale, or pending questions change.
+- Update the private knowledge base when project background, vendor facts, scope decisions, rationale, or pending questions change.
 - Update both only when a design decision changes and the implementation contract also changes.

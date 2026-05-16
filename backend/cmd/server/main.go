@@ -21,7 +21,10 @@ func run() error {
 	}
 
 	logger := newLogger(cfg.LogLevel)
-	app := newApp(cfg, logger)
+	app, err := newApp(cfg, logger)
+	if err != nil {
+		return err
+	}
 	logger.Info("device-platform listening", slog.String("addr", cfg.ServerAddr))
 
 	server := &http.Server{

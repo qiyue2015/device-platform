@@ -9,18 +9,23 @@ status: current
 
 This document records implementation-facing contracts for the current repository.
 
-Long-form rationale, vendor background, and source attachments remain in the Obsidian project knowledge base.
+Long-form rationale, vendor background, and source attachments remain in the private project knowledge base.
 
 ## API Namespaces
 
 Version comes first in every API path.
 
 ```text
+/setup/...        First-run installation checks and install action.
 /v1/auth/...      Backend user authentication.
 /v1/...           Logged-in backend APIs for normal project work.
 /v1/admin/...     Platform administrator and operations APIs only.
 /v1/open/...      Business-system Open API, authenticated by Project API Key.
 ```
+
+`/setup/...` is available only before installation, except `GET /setup/status`. Setup writes runtime config, applies migrations, verifies PostgreSQL and Redis, and creates the first administrator in `users`.
+
+`/v1/auth/login` authenticates against `users.email` and `users.password_hash`; admin passwords must not be stored in environment configuration.
 
 Do not put all backend UI APIs under `/v1/admin/`. `admin` means platform-level administration, not simply "has login state".
 

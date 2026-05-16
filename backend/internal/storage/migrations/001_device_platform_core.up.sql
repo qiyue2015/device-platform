@@ -44,12 +44,7 @@ CREATE TABLE devices (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (project_id, provider_code, provider_device_id),
-    CHECK (access_type IN ('mock_gateway', 'cloud_api')),
-    CHECK (transport_protocol IN ('simulator', 'http', 'mqtt', 'tcp', 'ble')),
-    CHECK (adapter IN ('mock_gateway', 'cloud_api')),
-    CHECK (connection_status IN ('unknown', 'online', 'offline')),
-    CHECK (lifecycle_status IN ('active', 'disabled', 'deleted'))
+    UNIQUE (project_id, provider_code, provider_device_id)
 );
 
 CREATE INDEX idx_devices_project_id ON devices(project_id);
@@ -83,11 +78,7 @@ CREATE TABLE device_commands (
     finished_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (project_id, idempotency_key),
-    CHECK (command_type IN ('unlock', 'lock', 'query_status', 'set_config', 'reboot')),
-    CHECK (status IN ('created', 'queued', 'sent', 'acked', 'success', 'failed', 'timeout', 'cancelled', 'offline')),
-    CHECK (delivery_policy IN ('online_only', 'queue_until_expire', 'replace_latest')),
-    CHECK ((idempotency_key IS NULL AND request_hash IS NULL) OR (idempotency_key IS NOT NULL AND request_hash IS NOT NULL))
+    UNIQUE (project_id, idempotency_key)
 );
 
 CREATE INDEX idx_device_commands_project_created ON device_commands(project_id, created_at DESC);
@@ -105,9 +96,7 @@ CREATE TABLE device_command_attempts (
     error_message TEXT,
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at TIMESTAMPTZ,
-    UNIQUE (command_id, attempt_no),
-    CHECK (adapter IN ('mock_gateway', 'cloud_api')),
-    CHECK (status IN ('created', 'sent', 'acked', 'success', 'failed', 'timeout'))
+    UNIQUE (command_id, attempt_no)
 );
 
 CREATE INDEX idx_device_command_attempts_command_id ON device_command_attempts(command_id);
@@ -124,11 +113,7 @@ CREATE TABLE device_raw_messages (
     headers JSONB NOT NULL DEFAULT '{}'::jsonb,
     body BYTEA NOT NULL,
     received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (access_type IN ('mock_gateway', 'cloud_api')),
-    CHECK (transport_protocol IN ('simulator', 'http', 'mqtt', 'tcp', 'ble')),
-    CHECK (adapter IN ('mock_gateway', 'cloud_api')),
-    CHECK (direction IN ('inbound', 'outbound'))
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_device_raw_messages_device_received ON device_raw_messages(device_id, received_at DESC);
@@ -137,15 +122,14 @@ CREATE INDEX idx_device_raw_messages_provider_identity ON device_raw_messages(pr
 CREATE TABLE device_events (
     id UUID PRIMARY KEY,
     project_id UUID NOT NULL REFERENCES projects(id),
-    device_id UUID NOT NULL REFERENCES devices(id),
+    device_id UUID REFERENCES devices(id),
     command_id UUID REFERENCES device_commands(id),
     event_type TEXT NOT NULL,
     source TEXT NOT NULL,
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     raw_message_id UUID REFERENCES device_raw_messages(id),
     occurred_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (source IN ('mock_gateway', 'cloud_api', 'system'))
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_device_events_project_created ON device_events(project_id, created_at DESC);
@@ -169,9 +153,7 @@ CREATE TABLE webhook_deliveries (
     next_attempt_at TIMESTAMPTZ,
     delivered_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (attempt_count >= 0),
-    CHECK (status IN ('pending', 'sending', 'delivered', 'failed', 'dead'))
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_webhook_deliveries_project_created ON webhook_deliveries(project_id, created_at DESC);

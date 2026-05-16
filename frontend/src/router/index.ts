@@ -15,7 +15,16 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: { name: DEFAULT_ROUTE_NAME },
+      redirect: '/dashboard/workplace',
+    },
+    {
+      path: '/setup',
+      name: 'setup',
+      component: () => import('@/views/setup/index.vue'),
+      meta: {
+        requiresAuth: false,
+        locale: 'setup.title',
+      },
     },
     {
       path: '/auth/login',

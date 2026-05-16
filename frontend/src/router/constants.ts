@@ -1,9 +1,7 @@
 export const WHITE_LIST = [
   { name: 'notFound', children: [] },
+  { name: 'setup', children: [] },
   { name: 'login', children: [] },
-  { name: 'register', children: [] },
-  { name: 'forgot-password', children: [] },
-  { name: 'reset-password', children: [] },
 ];
 
 export const NOT_FOUND = {
@@ -12,10 +10,10 @@ export const NOT_FOUND = {
 
 export const REDIRECT_ROUTE_NAME = 'Redirect';
 
-export const DEFAULT_ROUTE_NAME = 'DevicePlatformConsole';
+export const DEFAULT_ROUTE_NAME = 'DashboardWorkplace';
 
 export const DEFAULT_ROUTE = {
-  title: 'menu.devicePlatform.console',
+  title: 'menu.dashboard.workplace',
   name: DEFAULT_ROUTE_NAME,
-  fullPath: '/device-platform/console',
+  fullPath: '/dashboard/workplace',
 };
