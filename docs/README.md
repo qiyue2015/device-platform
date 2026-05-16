@@ -34,10 +34,10 @@ When something changes:
 
 MVP-1 can enter implementation.
 
-MVP-1 is a simulator-backed closed loop with no external vendor dependency. It should prove the platform skeleton before real vendor-cloud or direct-device integration:
+MVP-1 is a simulator-backed closed loop with no external vendor dependency. It should prove the platform skeleton before external adapter or direct-device integration:
 
 ```text
 Project -> Device -> Command -> Gateway/Adapter -> State/Event -> Webhook
 ```
 
-MVP-1.5 and MVP-2 are documented as follow-up stages, but their real integration and acceptance still depend on vendor credentials, callback configuration, device ownership confirmation, and real-device protocol verification.
+Future external-vendor and direct-device integrations are follow-up stages. Their real integration and acceptance still depend on credentials, callback configuration, device ownership confirmation, and real-device protocol verification.

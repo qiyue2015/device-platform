@@ -15,7 +15,6 @@
             <a-form-item label="Access type">
               <a-select v-model="deviceForm.access_type" data-testid="device-access-type">
                 <a-option value="mock_gateway">mock_gateway</a-option>
-                <a-option value="cloud_api">cloud_api</a-option>
               </a-select>
             </a-form-item>
             <a-form-item label="Provider device ID">
@@ -83,16 +82,15 @@
   const handleCreateDevice = async () => {
     setLoading(true);
     try {
-      const accessType = deviceForm.access_type;
       await createDevice({
         project_id: selectedProjectId.value,
         name: deviceForm.name,
         device_type: 'smart_lock',
-        access_type: accessType,
+        access_type: deviceForm.access_type,
         provider_device_id: deviceForm.provider_device_id,
-        provider_code: accessType === 'cloud_api' ? 'wwtiot' : 'simulator',
-        transport_protocol: accessType === 'cloud_api' ? 'http' : 'simulator',
-        adapter: accessType === 'cloud_api' ? 'wwtiot_cloud_api' : 'mock_gateway',
+        provider_code: 'simulator',
+        transport_protocol: 'simulator',
+        adapter: 'mock_gateway',
       });
       await refresh();
       Message.success('Device created');

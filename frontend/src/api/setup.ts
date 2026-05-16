@@ -23,12 +23,6 @@ export interface SetupInstallRequest {
     addr: string;
     log_level: string;
   };
-  wwtiot: {
-    api_url: string;
-    dry_run: boolean;
-    user_id: string;
-    user_key: string;
-  };
 }
 
 export function getSetupStatus() {

@@ -106,10 +106,6 @@
                       <dt>{{ t('setup.system.required') }}</dt>
                       <dd>PostgreSQL / Redis / JWT / Admin</dd>
                     </div>
-                    <div>
-                      <dt>WWTIOT</dt>
-                      <dd>{{ form.wwtiot.dry_run ? t('setup.wwtiot.dryRun') : t('setup.wwtiot.live') }}</dd>
-                    </div>
                   </dl>
                 </div>
               </div>
@@ -211,26 +207,6 @@
                     </a-select>
                   </a-form-item>
                 </div>
-
-                <div class="mode-switch">
-                  <div>
-                    <strong>{{ form.wwtiot.dry_run ? t('setup.wwtiot.dryRun') : t('setup.wwtiot.live') }}</strong>
-                    <p>{{ t('setup.wwtiot.modeHint') }}</p>
-                  </div>
-                  <a-switch v-model="form.wwtiot.dry_run" />
-                </div>
-
-                <div class="form-grid">
-                  <a-form-item label="WWTIOT API URL">
-                    <a-input v-model="form.wwtiot.api_url" />
-                  </a-form-item>
-                  <a-form-item label="WWTIOT User ID">
-                    <a-input v-model="form.wwtiot.user_id" />
-                  </a-form-item>
-                  <a-form-item label="WWTIOT User Key" class="form-grid-full">
-                    <a-input-password v-model="form.wwtiot.user_key" />
-                  </a-form-item>
-                </div>
               </a-form>
             </section>
 
@@ -298,12 +274,6 @@
       addr: ':8080',
       log_level: 'info',
     },
-    wwtiot: {
-      api_url: 'http://gps.wwtiot.com/api',
-      dry_run: true,
-      user_id: '',
-      user_key: '',
-    },
   });
 
   const steps = computed(() => [
@@ -367,13 +337,7 @@
       form.admin.password === form.admin.confirm_password
   );
 
-  const runtimeValid = computed(
-    () =>
-      form.server.addr.trim() &&
-      form.server.log_level &&
-      form.wwtiot.api_url.trim() &&
-      (form.wwtiot.dry_run || (form.wwtiot.user_id.trim() && form.wwtiot.user_key.trim()))
-  );
+  const runtimeValid = computed(() => form.server.addr.trim() && form.server.log_level);
 
   const canProceed = computed(() => {
     if (currentStep.value === 0) return true;

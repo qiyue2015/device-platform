@@ -6,24 +6,18 @@ type AccessType string
 
 const (
 	AccessTypeMockGateway AccessType = "mock_gateway"
-	AccessTypeCloudAPI    AccessType = "cloud_api"
 )
 
 type TransportProtocol string
 
 const (
 	TransportProtocolSimulator TransportProtocol = "simulator"
-	TransportProtocolHTTP      TransportProtocol = "http"
-	TransportProtocolMQTT      TransportProtocol = "mqtt"
-	TransportProtocolTCP       TransportProtocol = "tcp"
-	TransportProtocolBLE       TransportProtocol = "ble"
 )
 
 type Adapter string
 
 const (
-	AdapterMockGateway    Adapter = "mock_gateway"
-	AdapterWWTIOTCloudAPI Adapter = "wwtiot_cloud_api"
+	AdapterMockGateway Adapter = "mock_gateway"
 )
 
 type ConnectionStatus string
@@ -89,7 +83,6 @@ type EventSource string
 
 const (
 	EventSourceMockGateway EventSource = "mock_gateway"
-	EventSourceCloudAPI    EventSource = "cloud_api"
 	EventSourceSystem      EventSource = "system"
 )
 
