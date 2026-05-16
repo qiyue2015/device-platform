@@ -60,6 +60,15 @@ axios.interceptors.request.use(
 axios.interceptors.response.use(
   (response: AxiosResponse<HttpResponse>) => {
     const res = response.data;
+    if (!res || typeof res.code === 'undefined') {
+      return {
+        success: true,
+        status: response.status,
+        message: 'OK',
+        code: 0,
+        data: res,
+      };
+    }
     // if the custom code is not 0, it is judged as an error.
     if (res.code !== 0) {
       Message.error({
