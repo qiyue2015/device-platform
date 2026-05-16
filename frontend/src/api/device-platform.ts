@@ -107,16 +107,20 @@ export function updateProject(id: string, data: Partial<ProjectRecord>) {
   return axios.patch<ProjectRecord>(`/v1/projects/${id}`, data);
 }
 
-export function queryDevices() {
-  return axios.get<DeviceRecord[]>('/v1/devices');
+export function queryDevices(projectId?: string) {
+  return axios.get<DeviceRecord[]>('/v1/devices', {
+    params: projectId ? { project_id: projectId } : undefined,
+  });
 }
 
 export function createDevice(data: Partial<DeviceRecord>) {
   return axios.post<DeviceRecord>('/v1/devices', data);
 }
 
-export function queryCommands() {
-  return axios.get<CommandRecord[]>('/v1/device-commands');
+export function queryCommands(projectId?: string) {
+  return axios.get<CommandRecord[]>('/v1/device-commands', {
+    params: projectId ? { project_id: projectId } : undefined,
+  });
 }
 
 export function createCommand(data: {
@@ -142,8 +146,10 @@ export function createCommand(data: {
   );
 }
 
-export function queryCommandDetail(id: string) {
-  return axios.get<CommandDetail>(`/v1/device-commands/${id}`);
+export function queryCommandDetail(id: string, projectId?: string) {
+  return axios.get<CommandDetail>(`/v1/device-commands/${id}`, {
+    params: projectId ? { project_id: projectId } : undefined,
+  });
 }
 
 export function queryWebhookDeliveries() {

@@ -13,16 +13,25 @@ type Project struct {
 }
 
 type Device struct {
-	ID           string         `json:"id"`
-	ProjectID    string         `json:"project_id"`
-	ExternalID   string         `json:"external_id,omitempty"`
-	Name         string         `json:"name"`
-	DeviceType   string         `json:"device_type"`
-	Online       bool           `json:"online"`
-	CurrentState map[string]any `json:"current_state,omitempty"`
-	LastSeenAt   *time.Time     `json:"last_seen_at,omitempty"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
+	ID                string         `json:"id"`
+	ProjectID         string         `json:"project_id"`
+	ExternalID        string         `json:"external_id,omitempty"`
+	DeviceTypeID      string         `json:"device_type_id,omitempty"`
+	Name              string         `json:"name"`
+	DeviceType        string         `json:"device_type"`
+	ProviderCode      string         `json:"provider_code"`
+	ProviderDeviceID  string         `json:"provider_device_id"`
+	AccessType        string         `json:"access_type"`
+	TransportProtocol string         `json:"transport_protocol"`
+	Adapter           string         `json:"adapter"`
+	ConnectionStatus  string         `json:"connection_status"`
+	LifecycleStatus   string         `json:"lifecycle_status"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
+	Online            bool           `json:"online"`
+	CurrentState      map[string]any `json:"current_state,omitempty"`
+	LastSeenAt        *time.Time     `json:"last_seen_at,omitempty"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
 }
 
 type CommandStatus string
@@ -96,12 +105,21 @@ type UpdateProjectRequest struct {
 }
 
 type CreateDeviceRequest struct {
-	ProjectID    string         `json:"project_id"`
-	ExternalID   string         `json:"external_id"`
-	Name         string         `json:"name"`
-	DeviceType   string         `json:"device_type"`
-	Online       bool           `json:"online"`
-	CurrentState map[string]any `json:"current_state"`
+	ProjectID         string         `json:"project_id"`
+	ExternalID        string         `json:"external_id"`
+	DeviceTypeID      string         `json:"device_type_id"`
+	Name              string         `json:"name"`
+	DeviceType        string         `json:"device_type"`
+	ProviderCode      string         `json:"provider_code"`
+	ProviderDeviceID  string         `json:"provider_device_id"`
+	AccessType        string         `json:"access_type"`
+	TransportProtocol string         `json:"transport_protocol"`
+	Adapter           string         `json:"adapter"`
+	ConnectionStatus  string         `json:"connection_status"`
+	LifecycleStatus   string         `json:"lifecycle_status"`
+	Metadata          map[string]any `json:"metadata"`
+	Online            bool           `json:"online"`
+	CurrentState      map[string]any `json:"current_state"`
 }
 
 type CreateCommandRequest struct {

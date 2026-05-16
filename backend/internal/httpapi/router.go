@@ -310,6 +310,10 @@ func decodeJSON(w http.ResponseWriter, req *http.Request, out any) bool {
 	decoder := json.NewDecoder(req.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(out); err != nil {
+		if strings.HasPrefix(err.Error(), "json: unknown field ") {
+			writeError(w, http.StatusBadRequest, "unknown_field")
+			return false
+		}
 		writeError(w, http.StatusBadRequest, "invalid_json")
 		return false
 	}

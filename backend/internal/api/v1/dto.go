@@ -52,6 +52,7 @@ type DeviceResponse struct {
 	Adapter           domain.Adapter           `json:"adapter"`
 	ConnectionStatus  domain.ConnectionStatus  `json:"connection_status"`
 	LifecycleStatus   domain.LifecycleStatus   `json:"lifecycle_status"`
+	Metadata          map[string]any           `json:"metadata,omitempty"`
 	CurrentState      *DeviceStateResponse     `json:"current_state,omitempty"`
 	CreatedAt         time.Time                `json:"created_at"`
 	UpdatedAt         time.Time                `json:"updated_at"`
@@ -67,6 +68,8 @@ type CreateDeviceRequest struct {
 	TransportProtocol domain.TransportProtocol `json:"transport_protocol"`
 	Adapter           domain.Adapter           `json:"adapter"`
 	Metadata          map[string]any           `json:"metadata,omitempty"`
+	ConnectionStatus  domain.ConnectionStatus  `json:"connection_status,omitempty"`
+	LifecycleStatus   domain.LifecycleStatus   `json:"lifecycle_status,omitempty"`
 }
 
 type DeviceStateResponse struct {

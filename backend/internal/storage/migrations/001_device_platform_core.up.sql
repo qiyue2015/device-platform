@@ -44,7 +44,16 @@ CREATE TABLE devices (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (project_id, provider_code, provider_device_id)
+    UNIQUE (project_id, provider_code, provider_device_id),
+    CHECK (access_type IN ('mock_gateway', 'cloud_api')),
+    CHECK (transport_protocol IN ('simulator', 'http', 'mqtt', 'tcp', 'ble')),
+    CHECK (adapter IN ('mock_gateway', 'wwtiot_cloud_api')),
+    CHECK (
+        (access_type = 'mock_gateway' AND adapter = 'mock_gateway')
+        OR (access_type = 'cloud_api' AND adapter = 'wwtiot_cloud_api')
+    ),
+    CHECK (connection_status IN ('unknown', 'online', 'offline')),
+    CHECK (lifecycle_status IN ('active', 'disabled', 'deleted'))
 );
 
 CREATE INDEX idx_devices_project_id ON devices(project_id);
@@ -96,7 +105,9 @@ CREATE TABLE device_command_attempts (
     error_message TEXT,
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at TIMESTAMPTZ,
-    UNIQUE (command_id, attempt_no)
+    UNIQUE (command_id, attempt_no),
+    CHECK (adapter IN ('mock_gateway', 'wwtiot_cloud_api')),
+    CHECK (status IN ('created', 'sent', 'acked', 'success', 'failed', 'timeout'))
 );
 
 CREATE INDEX idx_device_command_attempts_command_id ON device_command_attempts(command_id);
@@ -113,7 +124,15 @@ CREATE TABLE device_raw_messages (
     headers JSONB NOT NULL DEFAULT '{}'::jsonb,
     body BYTEA NOT NULL,
     received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (access_type IN ('mock_gateway', 'cloud_api')),
+    CHECK (transport_protocol IN ('simulator', 'http', 'mqtt', 'tcp', 'ble')),
+    CHECK (adapter IN ('mock_gateway', 'wwtiot_cloud_api')),
+    CHECK (
+        (access_type = 'mock_gateway' AND adapter = 'mock_gateway')
+        OR (access_type = 'cloud_api' AND adapter = 'wwtiot_cloud_api')
+    ),
+    CHECK (direction IN ('inbound', 'outbound'))
 );
 
 CREATE INDEX idx_device_raw_messages_device_received ON device_raw_messages(device_id, received_at DESC);

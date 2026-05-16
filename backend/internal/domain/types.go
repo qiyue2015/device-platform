@@ -22,8 +22,8 @@ const (
 type Adapter string
 
 const (
-	AdapterMockGateway Adapter = "mock_gateway"
-	AdapterCloudAPI    Adapter = "cloud_api"
+	AdapterMockGateway    Adapter = "mock_gateway"
+	AdapterWWTIOTCloudAPI Adapter = "wwtiot_cloud_api"
 )
 
 type ConnectionStatus string

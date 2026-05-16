@@ -14,7 +14,7 @@
             </a-form-item>
             <a-form-item label="Access type">
               <a-select v-model="deviceForm.access_type" data-testid="device-access-type">
-                <a-option value="simulator_gateway">simulator_gateway</a-option>
+                <a-option value="mock_gateway">mock_gateway</a-option>
                 <a-option value="cloud_api">cloud_api</a-option>
               </a-select>
             </a-form-item>
@@ -60,7 +60,7 @@
   const selectedProjectId = ref('');
   const deviceForm = reactive({
     name: 'Smoke Test Lock',
-    access_type: 'simulator_gateway',
+    access_type: 'mock_gateway',
     provider_device_id: '',
   });
 
@@ -91,8 +91,8 @@
         access_type: accessType,
         provider_device_id: deviceForm.provider_device_id,
         provider_code: accessType === 'cloud_api' ? 'wwtiot' : 'simulator',
-        transport_protocol: 'http',
-        adapter: accessType === 'cloud_api' ? 'wwtiot_cloud_api' : 'simulator_http',
+        transport_protocol: accessType === 'cloud_api' ? 'http' : 'simulator',
+        adapter: accessType === 'cloud_api' ? 'wwtiot_cloud_api' : 'mock_gateway',
       });
       await refresh();
       Message.success('Device created');

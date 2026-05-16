@@ -12,6 +12,25 @@ import (
 	"time"
 )
 
+const (
+	AccessTypeMockGateway        = "mock_gateway"
+	AccessTypeCloudAPI           = "cloud_api"
+	TransportProtocolSimulator   = "simulator"
+	TransportProtocolHTTP        = "http"
+	TransportProtocolMQTT        = "mqtt"
+	TransportProtocolTCP         = "tcp"
+	TransportProtocolBLE         = "ble"
+	AdapterMockGateway           = "mock_gateway"
+	AdapterWWTIOTCloudAPI        = "wwtiot_cloud_api"
+	ConnectionStatusUnknown      = "unknown"
+	ConnectionStatusOnline       = "online"
+	ConnectionStatusOffline      = "offline"
+	LifecycleStatusActive        = "active"
+	LifecycleStatusDisabled      = "disabled"
+	LifecycleStatusDeleted       = "deleted"
+	defaultSimulatorProviderCode = "simulator"
+)
+
 type Clock interface {
 	Now() time.Time
 }
@@ -142,6 +161,37 @@ func (s *Service) CreateDevice(req CreateDeviceRequest) (Device, error) {
 	if deviceType == "" {
 		deviceType = "generic"
 	}
+	accessType := defaultString(strings.TrimSpace(req.AccessType), AccessTypeMockGateway)
+	if !validAccessType(accessType) {
+		return Device{}, fmt.Errorf("%w: unsupported access_type", ErrInvalidArgument)
+	}
+	protocol := defaultTransportProtocol(accessType, req.TransportProtocol)
+	if !validTransportProtocol(protocol) {
+		return Device{}, fmt.Errorf("%w: unsupported transport_protocol", ErrInvalidArgument)
+	}
+	adapter := defaultAdapter(accessType, req.Adapter)
+	if !validAdapter(adapter) {
+		return Device{}, fmt.Errorf("%w: unsupported adapter", ErrInvalidArgument)
+	}
+	if !validAccessAdapterPair(accessType, adapter) {
+		return Device{}, fmt.Errorf("%w: adapter does not match access_type", ErrInvalidArgument)
+	}
+	providerCode := defaultProviderCode(accessType, req.ProviderCode)
+	providerDeviceID := strings.TrimSpace(req.ProviderDeviceID)
+	if providerDeviceID == "" {
+		providerDeviceID = strings.TrimSpace(req.ExternalID)
+	}
+	if accessType == AccessTypeCloudAPI && providerDeviceID == "" {
+		return Device{}, fmt.Errorf("%w: provider_device_id is required for cloud_api devices", ErrInvalidArgument)
+	}
+	connectionStatus := defaultConnectionStatus(req.ConnectionStatus, req.Online)
+	if !validConnectionStatus(connectionStatus) {
+		return Device{}, fmt.Errorf("%w: unsupported connection_status", ErrInvalidArgument)
+	}
+	lifecycleStatus := defaultString(strings.TrimSpace(req.LifecycleStatus), LifecycleStatusActive)
+	if !validLifecycleStatus(lifecycleStatus) {
+		return Device{}, fmt.Errorf("%w: unsupported lifecycle_status", ErrInvalidArgument)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -149,18 +199,31 @@ func (s *Service) CreateDevice(req CreateDeviceRequest) (Device, error) {
 		return Device{}, ErrNotFound
 	}
 
-	device := Device{
-		ID:           newID("dev"),
-		ProjectID:    projectID,
-		ExternalID:   strings.TrimSpace(req.ExternalID),
-		Name:         name,
-		DeviceType:   deviceType,
-		Online:       req.Online,
-		CurrentState: cloneMap(req.CurrentState),
-		CreatedAt:    now,
-		UpdatedAt:    now,
+	deviceID := newID("dev")
+	if providerDeviceID == "" {
+		providerDeviceID = deviceID
 	}
-	if req.Online {
+	device := Device{
+		ID:                deviceID,
+		ProjectID:         projectID,
+		ExternalID:        strings.TrimSpace(req.ExternalID),
+		DeviceTypeID:      strings.TrimSpace(req.DeviceTypeID),
+		Name:              name,
+		DeviceType:        deviceType,
+		ProviderCode:      providerCode,
+		ProviderDeviceID:  providerDeviceID,
+		AccessType:        accessType,
+		TransportProtocol: protocol,
+		Adapter:           adapter,
+		ConnectionStatus:  connectionStatus,
+		LifecycleStatus:   lifecycleStatus,
+		Metadata:          cloneMap(req.Metadata),
+		Online:            connectionStatus == ConnectionStatusOnline,
+		CurrentState:      cloneMap(req.CurrentState),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	if device.Online {
 		device.LastSeenAt = &now
 	}
 	s.devices[device.ID] = device
@@ -202,6 +265,11 @@ func (s *Service) SetDeviceOnline(projectID, deviceID string, online bool) error
 
 	now := s.clock.Now()
 	device.Online = online
+	if online {
+		device.ConnectionStatus = ConnectionStatusOnline
+	} else {
+		device.ConnectionStatus = ConnectionStatusOffline
+	}
 	device.UpdatedAt = now
 	if online {
 		device.LastSeenAt = &now
@@ -544,6 +612,113 @@ func compensationUntil(now time.Time, lowRisk bool) *time.Time {
 	}
 	until := now.Add(5 * time.Minute)
 	return &until
+}
+
+func defaultString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(value)
+}
+
+func defaultTransportProtocol(accessType, requested string) string {
+	requested = strings.TrimSpace(requested)
+	if requested != "" {
+		return requested
+	}
+	if accessType == AccessTypeCloudAPI {
+		return TransportProtocolHTTP
+	}
+	return TransportProtocolSimulator
+}
+
+func defaultAdapter(accessType, requested string) string {
+	requested = strings.TrimSpace(requested)
+	if requested != "" {
+		return requested
+	}
+	if accessType == AccessTypeCloudAPI {
+		return AdapterWWTIOTCloudAPI
+	}
+	return AdapterMockGateway
+}
+
+func defaultProviderCode(accessType, requested string) string {
+	requested = strings.TrimSpace(requested)
+	if requested != "" {
+		return requested
+	}
+	if accessType == AccessTypeCloudAPI {
+		return "wwtiot"
+	}
+	return defaultSimulatorProviderCode
+}
+
+func defaultConnectionStatus(requested string, online bool) string {
+	requested = strings.TrimSpace(requested)
+	if requested != "" {
+		return requested
+	}
+	if online {
+		return ConnectionStatusOnline
+	}
+	return ConnectionStatusUnknown
+}
+
+func validAccessType(value string) bool {
+	switch value {
+	case AccessTypeMockGateway, AccessTypeCloudAPI:
+		return true
+	default:
+		return false
+	}
+}
+
+func validTransportProtocol(value string) bool {
+	switch value {
+	case TransportProtocolSimulator, TransportProtocolHTTP, TransportProtocolMQTT, TransportProtocolTCP, TransportProtocolBLE:
+		return true
+	default:
+		return false
+	}
+}
+
+func validAdapter(value string) bool {
+	switch value {
+	case AdapterMockGateway, AdapterWWTIOTCloudAPI:
+		return true
+	default:
+		return false
+	}
+}
+
+func validAccessAdapterPair(accessType, adapter string) bool {
+	switch accessType {
+	case AccessTypeMockGateway:
+		return adapter == AdapterMockGateway
+	case AccessTypeCloudAPI:
+		return adapter == AdapterWWTIOTCloudAPI
+	default:
+		return false
+	}
+}
+
+func validConnectionStatus(value string) bool {
+	switch value {
+	case ConnectionStatusUnknown, ConnectionStatusOnline, ConnectionStatusOffline:
+		return true
+	default:
+		return false
+	}
+}
+
+func validLifecycleStatus(value string) bool {
+	switch value {
+	case LifecycleStatusActive, LifecycleStatusDisabled, LifecycleStatusDeleted:
+		return true
+	default:
+		return false
+	}
 }
 
 func idempotencyScope(projectID, key string) string {
