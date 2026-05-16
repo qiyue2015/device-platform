@@ -1,0 +1,46 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Local agent/runtime state
+.omx/
+
+# Environment
+.env
+.env.*
+!.env.example
+*.local
+
+# Dependencies
+node_modules/
+
+# Frontend build/cache output
+dist/
+dist-ssr/
+.vite/
+.turbo/
+.cache/
+
+# Backend build/test output
+bin/
+backend/server
+*.test
+*.out
+coverage.out
+
+# Logs
+*.log
+logs/
+
+# Local databases and temporary files
+*.db
+*.sqlite
+*.sqlite3
+tmp/
+temp/
+
+# IDE/editor
+.idea/
+.vscode/
+*.swp
+*.swo
