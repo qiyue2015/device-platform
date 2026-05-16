@@ -125,15 +125,3 @@ func (a *app) handleAdminPlaceholder(w http.ResponseWriter, r *http.Request) err
 	})
 	return nil
 }
-
-func (a *app) handleOpenPlaceholder(w http.ResponseWriter, r *http.Request) error {
-	if r.Method != http.MethodGet {
-		return newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
-	}
-	writeOK(w, map[string]string{
-		"namespace":  "open",
-		"path":       strings.TrimPrefix(r.URL.Path, "/v1/open/"),
-		"project_id": projectIDFromContext(r.Context()),
-	})
-	return nil
-}

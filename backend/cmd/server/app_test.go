@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/qiyue2015/device-platform/internal/devicecore"
 )
 
 func TestLoadConfigLoadsEnvFilesWithoutOverridingProcessEnv(t *testing.T) {
@@ -137,26 +139,89 @@ func TestAuthCompatibilityLoginMeAndBearerGate(t *testing.T) {
 }
 
 func TestOpenAPIKeyGate(t *testing.T) {
-	server := newTestServer()
+	service := devicecore.NewService()
+	project, err := service.CreateProject(devicecore.CreateProjectRequest{Name: "Hotel A"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	server := newTestServerWithDeviceService(service)
 
 	blocked := httptest.NewRecorder()
-	server.ServeHTTP(blocked, httptest.NewRequest(http.MethodGet, "/v1/open/projects/local-project", nil))
+	server.ServeHTTP(blocked, httptest.NewRequest(http.MethodGet, "/v1/open/projects/"+project.ID, nil))
 	if blocked.Code != http.StatusUnauthorized {
 		t.Fatalf("expected missing api key 401, got %d", blocked.Code)
 	}
 
 	allowed := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/open/projects/local-project", nil)
-	req.Header.Set("X-API-Key", "test-open-key")
+	req := httptest.NewRequest(http.MethodGet, "/v1/open/projects/"+project.ID, nil)
+	req.Header.Set("X-API-Key", project.APIKey)
 	server.ServeHTTP(allowed, req)
 	if allowed.Code != http.StatusOK {
 		t.Fatalf("expected api key 200, got %d", allowed.Code)
 	}
-	var body jsonResponse
+	var body devicecore.Project
 	decodeResponse(t, allowed, &body)
-	data, ok := body.Data.(map[string]interface{})
-	if !ok || data["project_id"] != "local-project" {
-		t.Fatalf("expected project id in open api context, got %+v", body.Data)
+	if body.ID != project.ID {
+		t.Fatalf("expected project id %q, got %+v", project.ID, body)
+	}
+}
+
+func TestDeviceRoutesPreserveAppFoundation(t *testing.T) {
+	service := devicecore.NewService()
+	project, err := service.CreateProject(devicecore.CreateProjectRequest{Name: "Hotel A"})
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	device, err := service.CreateDevice(devicecore.CreateDeviceRequest{
+		ProjectID:  project.ID,
+		Name:       "Front Door",
+		DeviceType: "smart_lock",
+		Online:     true,
+	})
+	if err != nil {
+		t.Fatalf("create device: %v", err)
+	}
+
+	server := newTestServerWithDeviceService(service)
+
+	ready := httptest.NewRecorder()
+	server.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if ready.Code != http.StatusOK {
+		t.Fatalf("expected readyz 200, got %d", ready.Code)
+	}
+
+	login := httptest.NewRecorder()
+	server.ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"email":"admin@example.com","password":"test-admin-password"}`)))
+	if login.Code != http.StatusOK {
+		t.Fatalf("expected login 200, got %d", login.Code)
+	}
+
+	adminBlocked := httptest.NewRecorder()
+	server.ServeHTTP(adminBlocked, httptest.NewRequest(http.MethodGet, "/v1/projects", nil))
+	if adminBlocked.Code != http.StatusUnauthorized {
+		t.Fatalf("expected admin projects without bearer 401, got %d", adminBlocked.Code)
+	}
+
+	adminAllowed := httptest.NewRecorder()
+	adminReq := httptest.NewRequest(http.MethodGet, "/v1/projects", nil)
+	adminReq.Header.Set("Authorization", "Bearer test-admin-token")
+	server.ServeHTTP(adminAllowed, adminReq)
+	if adminAllowed.Code != http.StatusOK {
+		t.Fatalf("expected admin projects with bearer 200, got %d", adminAllowed.Code)
+	}
+
+	openBlocked := httptest.NewRecorder()
+	server.ServeHTTP(openBlocked, httptest.NewRequest(http.MethodGet, "/v1/open/device-commands", nil))
+	if openBlocked.Code != http.StatusUnauthorized {
+		t.Fatalf("expected open commands without api key 401, got %d", openBlocked.Code)
+	}
+
+	openCreate := httptest.NewRecorder()
+	openReq := httptest.NewRequest(http.MethodPost, "/v1/open/device-commands", strings.NewReader(`{"device_id":"`+device.ID+`","command_type":"query_status"}`))
+	openReq.Header.Set("X-API-Key", project.APIKey)
+	server.ServeHTTP(openCreate, openReq)
+	if openCreate.Code != http.StatusCreated {
+		t.Fatalf("expected open command create 201, got %d body=%s", openCreate.Code, openCreate.Body.String())
 	}
 }
 
@@ -175,6 +240,10 @@ func TestCORSPreflight(t *testing.T) {
 }
 
 func newTestServer() http.Handler {
+	return newTestServerWithDeviceService(devicecore.NewService())
+}
+
+func newTestServerWithDeviceService(service *devicecore.Service) http.Handler {
 	cfg := config{
 		ServerAddr:        ":0",
 		LogLevel:          "error",
@@ -185,7 +254,7 @@ func newTestServer() http.Handler {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return newApp(cfg, logger).routes()
+	return newAppWithDeviceService(cfg, logger, service).routes()
 }
 
 func decodeResponse(t *testing.T, body *httptest.ResponseRecorder, dest interface{}) {

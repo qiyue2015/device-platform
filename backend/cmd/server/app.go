@@ -1,26 +1,29 @@
 package main
 
 import (
-	"context"
 	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/qiyue2015/device-platform/internal/devicecore"
+	"github.com/qiyue2015/device-platform/internal/httpapi"
 )
 
 type app struct {
-	cfg    config
-	logger *slog.Logger
+	cfg     config
+	logger  *slog.Logger
+	devices *devicecore.Service
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request) error
 
-type contextKey string
-
-const projectIDContextKey contextKey = "project_id"
-
 func newApp(cfg config, logger *slog.Logger) *app {
-	return &app{cfg: cfg, logger: logger}
+	return newAppWithDeviceService(cfg, logger, devicecore.NewService())
+}
+
+func newAppWithDeviceService(cfg config, logger *slog.Logger, devices *devicecore.Service) *app {
+	return &app{cfg: cfg, logger: logger, devices: devices}
 }
 
 func (a *app) routes() http.Handler {
@@ -42,7 +45,8 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/v1/auth/menu", a.handle(a.requireBearer(a.handleMenu)))
 
 	mux.HandleFunc("/v1/admin/", a.handle(a.requireBearer(a.handleAdminPlaceholder)))
-	mux.HandleFunc("/v1/open/", a.handle(a.requireOpenAPIKey(a.handleOpenPlaceholder)))
+	mux.Handle("/v1/open/", httpapi.NewOpenRouter(a.devices))
+	mux.Handle("/v1/", a.requireBearerHandler(httpapi.NewRouter(a.devices)))
 
 	return withRequestLogging(a.logger, withCORS(mux))
 }
@@ -70,21 +74,13 @@ func (a *app) requireBearer(next handlerFunc) handlerFunc {
 	}
 }
 
-func (a *app) requireOpenAPIKey(next handlerFunc) handlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) error {
-		apiKey := strings.TrimSpace(r.Header.Get("X-API-Key"))
-		projectID, ok := a.cfg.OpenAPIKeys[apiKey]
-		if !ok || apiKey == "" {
-			return newAPIError(http.StatusUnauthorized, "invalid_api_key", "invalid API key")
-		}
-		ctx := context.WithValue(r.Context(), projectIDContextKey, projectID)
-		return next(w, r.WithContext(ctx))
-	}
-}
-
-func projectIDFromContext(ctx context.Context) string {
-	projectID, _ := ctx.Value(projectIDContextKey).(string)
-	return projectID
+func (a *app) requireBearerHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a.handle(a.requireBearer(func(w http.ResponseWriter, r *http.Request) error {
+			next.ServeHTTP(w, r)
+			return nil
+		}))(w, r)
+	})
 }
 
 func withCORS(next http.Handler) http.Handler {
