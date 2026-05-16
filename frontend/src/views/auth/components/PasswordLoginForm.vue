@@ -11,7 +11,9 @@
         <a-button type="primary" html-type="submit" long :loading="loading"> {{ t('login.form.login') }} </a-button>
       </a-form-item>
       <a-form-item hide-label>
-        <AgreementNotice type="login" />
+        <div class="auth-helper">
+          <a-link @click="$router.push({ name: 'forgot-password' })">{{ t('login.form.forgetPassword') }}</a-link>
+        </div>
       </a-form-item>
     </a-form>
   </div>
@@ -25,7 +27,6 @@
   import { DEFAULT_ROUTE_NAME } from '@/router/constants';
   import useLoading from '@/hooks/loading';
   import { useUserStore } from '@/store';
-  import AgreementNotice from './AgreementNotice.vue';
 
   const { t } = useI18n();
   const { loading, setLoading } = useLoading();
@@ -72,4 +73,11 @@
   };
 </script>
 
-<style lang="less" scoped></style>
+<style lang="less" scoped>
+  .auth-helper {
+    display: flex;
+    justify-content: flex-end;
+    width: 100%;
+    font-size: 14px;
+  }
+</style>

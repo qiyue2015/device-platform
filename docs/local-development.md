@@ -92,7 +92,6 @@ Local `.env.development` should keep `VITE_API_BASE_URL` empty unless a special 
 
 ```text
 VITE_API_BASE_URL=''
-VITE_AUTH_STRATEGY='local'
 ```
 
 New MVP-1 API modules should use `/v1/...`. Setup APIs use `/setup/...`. Existing template APIs using `/api/...` are not the contract for new device-platform work and can be cleaned up when those template surfaces are replaced.

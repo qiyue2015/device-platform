@@ -3,7 +3,6 @@ import type { AxiosRequestConfig, AxiosResponse } from 'axios';
 import { Message, Modal } from '@arco-design/web-vue';
 import { useUserStore } from '@/store';
 import { getToken } from '@/utils/auth';
-import { isOidc } from '@/utils/auth-strategy';
 
 export interface PaginationMeta {
   pagination: string;
@@ -85,10 +84,7 @@ axios.interceptors.response.use(
             const userStore = useUserStore();
 
             await userStore.logout();
-            // OIDC mode: store.logout handles redirect to OIDC provider
-            if (!isOidc()) {
-              window.location.reload();
-            }
+            window.location.reload();
           },
         });
       }

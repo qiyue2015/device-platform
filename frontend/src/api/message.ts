@@ -55,25 +55,3 @@ export interface MessageRecord {
   messageType?: number;
 }
 export type MessageListType = MessageRecord[];
-
-/** @deprecated Use queryNotificationList instead */
-export function queryMessageList() {
-  return axios.post<MessageListType>('/api/message/list');
-}
-
-/** @deprecated Use markNotificationRead / markAllNotificationsRead instead */
-export function setMessageStatus(data: { ids: number[] }) {
-  return axios.post<MessageListType>('/api/message/read', data);
-}
-
-export interface ChatRecord {
-  id: number;
-  username: string;
-  content: string;
-  time: string;
-  isCollect: boolean;
-}
-
-export function queryChatList() {
-  return axios.post<ChatRecord[]>('/api/chat/list');
-}

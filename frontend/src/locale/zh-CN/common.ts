@@ -20,7 +20,6 @@ export default {
   'common.action.close': '关闭',
   'common.action.reload': '重新加载',
   'common.action.login': '登录',
-  'common.action.register': '注册',
 
   // 确认弹窗
   'common.confirm.delete.title': '删除确认',

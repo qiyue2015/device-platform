@@ -12,6 +12,12 @@ export default function setupPermissionGuard(router: Router) {
     const userStore = useUserStore();
     const Permission = usePermission();
     const permissionsAllow = Permission.accessRouter(to);
+    if (!to.meta.requiresAuth) {
+      next();
+      NProgress.done();
+      return;
+    }
+
     if (appStore.menuFromServer) {
       // 针对来自服务端的菜单配置进行处理
       // Handle routing configuration from the server
