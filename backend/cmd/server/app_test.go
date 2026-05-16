@@ -139,50 +139,33 @@ func TestAuthCompatibilityLoginMeAndBearerGate(t *testing.T) {
 }
 
 func TestOpenAPIKeyGate(t *testing.T) {
-	service := devicecore.NewService()
-	project, err := service.CreateProject(devicecore.CreateProjectRequest{Name: "Hotel A"})
-	if err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	server := newTestServerWithDeviceService(service)
+	server := newTestServer()
+	projectID, apiKey := createProjectForOpenAPITest(t, server)
 
 	blocked := httptest.NewRecorder()
-	server.ServeHTTP(blocked, httptest.NewRequest(http.MethodGet, "/v1/open/projects/"+project.ID, nil))
+	server.ServeHTTP(blocked, httptest.NewRequest(http.MethodGet, "/v1/open/projects/"+projectID, nil))
 	if blocked.Code != http.StatusUnauthorized {
 		t.Fatalf("expected missing api key 401, got %d", blocked.Code)
 	}
 
 	allowed := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/open/projects/"+project.ID, nil)
-	req.Header.Set("X-API-Key", project.APIKey)
+	req := httptest.NewRequest(http.MethodGet, "/v1/open/projects/"+projectID, nil)
+	req.Header.Set("X-API-Key", apiKey)
 	server.ServeHTTP(allowed, req)
 	if allowed.Code != http.StatusOK {
 		t.Fatalf("expected api key 200, got %d", allowed.Code)
 	}
 	var body devicecore.Project
 	decodeResponse(t, allowed, &body)
-	if body.ID != project.ID {
-		t.Fatalf("expected project id %q, got %+v", project.ID, body)
+	if body.ID != projectID {
+		t.Fatalf("expected open api project id %q, got %+v", projectID, body)
 	}
 }
 
 func TestDeviceRoutesPreserveAppFoundation(t *testing.T) {
-	service := devicecore.NewService()
-	project, err := service.CreateProject(devicecore.CreateProjectRequest{Name: "Hotel A"})
-	if err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	device, err := service.CreateDevice(devicecore.CreateDeviceRequest{
-		ProjectID:  project.ID,
-		Name:       "Front Door",
-		DeviceType: "smart_lock",
-		Online:     true,
-	})
-	if err != nil {
-		t.Fatalf("create device: %v", err)
-	}
-
-	server := newTestServerWithDeviceService(service)
+	server := newTestServer()
+	projectID, apiKey := createProjectForOpenAPITest(t, server)
+	deviceID := createDeviceForTest(t, server, projectID)
 
 	ready := httptest.NewRecorder()
 	server.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
@@ -204,7 +187,7 @@ func TestDeviceRoutesPreserveAppFoundation(t *testing.T) {
 
 	adminAllowed := httptest.NewRecorder()
 	adminReq := httptest.NewRequest(http.MethodGet, "/v1/projects", nil)
-	adminReq.Header.Set("Authorization", "Bearer test-admin-token")
+	setAdminBearer(adminReq)
 	server.ServeHTTP(adminAllowed, adminReq)
 	if adminAllowed.Code != http.StatusOK {
 		t.Fatalf("expected admin projects with bearer 200, got %d", adminAllowed.Code)
@@ -217,8 +200,8 @@ func TestDeviceRoutesPreserveAppFoundation(t *testing.T) {
 	}
 
 	openCreate := httptest.NewRecorder()
-	openReq := httptest.NewRequest(http.MethodPost, "/v1/open/device-commands", strings.NewReader(`{"device_id":"`+device.ID+`","command_type":"query_status"}`))
-	openReq.Header.Set("X-API-Key", project.APIKey)
+	openReq := httptest.NewRequest(http.MethodPost, "/v1/open/device-commands", strings.NewReader(`{"device_id":"`+deviceID+`","command_type":"query_status"}`))
+	openReq.Header.Set("X-API-Key", apiKey)
 	server.ServeHTTP(openCreate, openReq)
 	if openCreate.Code != http.StatusCreated {
 		t.Fatalf("expected open command create 201, got %d body=%s", openCreate.Code, openCreate.Body.String())
@@ -236,6 +219,82 @@ func TestCORSPreflight(t *testing.T) {
 	}
 	if rec.Header().Get("Access-Control-Allow-Headers") == "" {
 		t.Fatal("expected CORS headers")
+	}
+}
+
+func TestControlRoutesRequireAdminBearer(t *testing.T) {
+	server := newTestServer()
+
+	cases := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: "/v1/simulator"},
+		{method: http.MethodGet, path: "/v1/webhook-deliveries"},
+		{method: http.MethodGet, path: "/v1/audit-logs"},
+		{method: http.MethodPost, path: "/v1/events", body: `{"project_id":"proj_1","event_type":"state_changed"}`},
+		{method: http.MethodPost, path: "/v1/projects/webhook-endpoints", body: `{"project_id":"proj_1","webhook_url":"https://example.invalid/hook"}`},
+	}
+
+	for _, tc := range cases {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s without bearer = %d, want 401", tc.method, tc.path, rec.Code)
+		}
+	}
+}
+
+func TestCommandCreationRecordsWebhookDeliveryAndAudit(t *testing.T) {
+	server := newTestServer()
+
+	projectID := createProjectForTest(t, server)
+	configureWebhookForTest(t, server, projectID)
+	deviceID := createDeviceForTest(t, server, projectID)
+
+	command := httptest.NewRecorder()
+	commandReq := httptest.NewRequest(http.MethodPost, "/v1/device-commands", strings.NewReader(`{
+		"project_id":"`+projectID+`",
+		"device_id":"`+deviceID+`",
+		"command_type":"query_status"
+	}`))
+	commandReq.Header.Set("Content-Type", "application/json")
+	setAdminBearer(commandReq)
+	server.ServeHTTP(command, commandReq)
+	if command.Code != http.StatusCreated {
+		t.Fatalf("expected command 201, got %d: %s", command.Code, command.Body.String())
+	}
+	var commandBody map[string]interface{}
+	decodeResponse(t, command, &commandBody)
+	commandID, _ := commandBody["id"].(string)
+	if commandID == "" {
+		t.Fatalf("command id missing: %+v", commandBody)
+	}
+	deliveryBody := waitForWebhookDelivery(t, server)
+	if len(deliveryBody.Items) == 0 {
+		t.Fatal("expected command event to create a webhook delivery")
+	}
+
+	audits := httptest.NewRecorder()
+	auditReq := httptest.NewRequest(http.MethodGet, "/v1/audit-logs", nil)
+	setAdminBearer(auditReq)
+	server.ServeHTTP(audits, auditReq)
+	var auditBody struct {
+		Items []map[string]interface{} `json:"items"`
+	}
+	decodeResponse(t, audits, &auditBody)
+	found := false
+	for _, item := range auditBody.Items {
+		if item["action"] == "command.created" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected command.created audit, got %+v", auditBody.Items)
 	}
 }
 
@@ -257,9 +316,119 @@ func newTestServerWithDeviceService(service *devicecore.Service) http.Handler {
 	return newAppWithDeviceService(cfg, logger, service).routes()
 }
 
+type webhookDeliveryListForTest struct {
+	Items []map[string]interface{} `json:"items"`
+}
+
+func waitForWebhookDelivery(t *testing.T, server http.Handler) webhookDeliveryListForTest {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	var last webhookDeliveryListForTest
+	for {
+		deliveries := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/v1/webhook-deliveries", nil)
+		setAdminBearer(req)
+		server.ServeHTTP(deliveries, req)
+		if deliveries.Code != http.StatusOK {
+			t.Fatalf("expected deliveries 200, got %d", deliveries.Code)
+		}
+		decodeResponse(t, deliveries, &last)
+		if len(last.Items) > 0 {
+			return last
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for webhook delivery, got %+v", last.Items)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func createProjectForTest(t *testing.T, server http.Handler) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects", strings.NewReader(`{"name":"hook project"}`))
+	req.Header.Set("Content-Type", "application/json")
+	setAdminBearer(req)
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected project 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var project map[string]interface{}
+	decodeResponse(t, rec, &project)
+	id, _ := project["id"].(string)
+	if id == "" {
+		t.Fatalf("project id missing: %+v", project)
+	}
+	return id
+}
+
+func createProjectForOpenAPITest(t *testing.T, server http.Handler) (string, string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects", strings.NewReader(`{"name":"open api project"}`))
+	req.Header.Set("Content-Type", "application/json")
+	setAdminBearer(req)
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected project 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var project map[string]interface{}
+	decodeResponse(t, rec, &project)
+	id, _ := project["id"].(string)
+	apiKey, _ := project["api_key"].(string)
+	if id == "" || apiKey == "" {
+		t.Fatalf("project open api fields missing: %+v", project)
+	}
+	return id, apiKey
+}
+
+func configureWebhookForTest(t *testing.T, server http.Handler, projectID string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/projects/webhook-endpoints", strings.NewReader(`{
+		"project_id":"`+projectID+`",
+		"webhook_url":"https://example.invalid/device-webhook",
+		"webhook_secret":"test-secret"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	setAdminBearer(req)
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected webhook config 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func createDeviceForTest(t *testing.T, server http.Handler, projectID string) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/devices", strings.NewReader(`{
+		"project_id":"`+projectID+`",
+		"name":"hook lock",
+		"device_type":"smart_lock",
+		"online":true
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	setAdminBearer(req)
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected device 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var device map[string]interface{}
+	decodeResponse(t, rec, &device)
+	id, _ := device["id"].(string)
+	if id == "" {
+		t.Fatalf("device id missing: %+v", device)
+	}
+	return id
+}
+
 func decodeResponse(t *testing.T, body *httptest.ResponseRecorder, dest interface{}) {
 	t.Helper()
 	decodeBody(t, body.Body, dest)
+}
+
+func setAdminBearer(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer test-admin-token")
 }
 
 func decodeBody(t *testing.T, body io.Reader, dest interface{}) {

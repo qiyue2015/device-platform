@@ -1,29 +1,53 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/qiyue2015/device-platform/internal/devicecore"
+	"github.com/qiyue2015/device-platform/internal/gateway"
 	"github.com/qiyue2015/device-platform/internal/httpapi"
+	"github.com/qiyue2015/device-platform/internal/webhookaudit"
 )
 
 type app struct {
-	cfg     config
-	logger  *slog.Logger
-	devices *devicecore.Service
+	cfg           config
+	logger        *slog.Logger
+	deviceService *devicecore.Service
+	gateway       *gateway.Service
+	webhooks      *webhookaudit.Service
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request) error
 
 func newApp(cfg config, logger *slog.Logger) *app {
-	return newAppWithDeviceService(cfg, logger, devicecore.NewService())
+	service := devicecore.NewService()
+	simulatorGateway := gateway.NewSimulatorGateway(gateway.ModeConfig{})
+	gatewayService := gateway.NewService(simulatorGateway, gateway.ServiceConfig{})
+	webhookService := webhookaudit.NewService(http.DefaultClient)
+	startWebhookWorker(context.Background(), webhookService)
+	return newAppWithServices(cfg, logger, service, gatewayService, webhookService)
 }
 
-func newAppWithDeviceService(cfg config, logger *slog.Logger, devices *devicecore.Service) *app {
-	return &app{cfg: cfg, logger: logger, devices: devices}
+func newAppWithDeviceService(cfg config, logger *slog.Logger, service *devicecore.Service) *app {
+	simulatorGateway := gateway.NewSimulatorGateway(gateway.ModeConfig{})
+	gatewayService := gateway.NewService(simulatorGateway, gateway.ServiceConfig{})
+	webhookService := webhookaudit.NewService(http.DefaultClient)
+	return newAppWithServices(cfg, logger, service, gatewayService, webhookService)
+}
+
+func newAppWithServices(cfg config, logger *slog.Logger, service *devicecore.Service, gatewayService *gateway.Service, webhookService *webhookaudit.Service) *app {
+	return &app{
+		cfg:           cfg,
+		logger:        logger,
+		deviceService: service,
+		gateway:       gatewayService,
+		webhooks:      webhookService,
+	}
 }
 
 func (a *app) routes() http.Handler {
@@ -45,10 +69,62 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/v1/auth/menu", a.handle(a.requireBearer(a.handleMenu)))
 
 	mux.HandleFunc("/v1/admin/", a.handle(a.requireBearer(a.handleAdminPlaceholder)))
-	mux.Handle("/v1/open/", httpapi.NewOpenRouter(a.devices))
-	mux.Handle("/v1/", a.requireBearerHandler(httpapi.NewRouter(a.devices)))
+	mux.Handle("/v1/open/", httpapi.NewOpenRouterWithHooks(a.deviceService, httpapi.RouterHooks{
+		OnCommandCreated: a.recordCommandCreated,
+	}))
+	protectedV1 := http.NewServeMux()
+	registerWebhookAuditRoutes(protectedV1, a.webhooks)
+	gateway.NewHandler(a.gateway).RegisterSimulator(protectedV1)
+	protectedV1.Handle("/v1/", httpapi.NewRouterWithHooks(a.deviceService, httpapi.RouterHooks{
+		OnCommandCreated: a.recordCommandCreated,
+	}))
+	mux.Handle("/v1/", a.requireBearerHandler(protectedV1))
 
 	return withRequestLogging(a.logger, withCORS(mux))
+}
+
+func (a *app) recordCommandCreated(r *http.Request, command devicecore.Command) {
+	payload := map[string]any{
+		"command_type":    command.CommandType,
+		"delivery_policy": string(command.DeliveryPolicy),
+		"status":          string(command.Status),
+		"reason":          command.Reason,
+	}
+	_, _, _ = a.webhooks.CreateEvent(r.Context(), webhookaudit.CreateEventRequest{
+		ProjectID: command.ProjectID,
+		DeviceID:  command.DeviceID,
+		CommandID: command.ID,
+		EventType: "command.created",
+		Source:    "device-platform",
+		Payload:   payload,
+	})
+	actorType := "admin"
+	if strings.HasPrefix(r.URL.Path, "/v1/open/") {
+		actorType = "open-api"
+	}
+	_, _ = a.webhooks.RecordAudit(withHTTPAuditFields(webhookaudit.AuditRequest{
+		Action:       "command.created",
+		ActorType:    actorType,
+		ProjectID:    command.ProjectID,
+		ResourceType: "device_command",
+		ResourceID:   command.ID,
+		Metadata:     payload,
+	}, r))
+}
+
+func startWebhookWorker(ctx context.Context, service *webhookaudit.Service) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				service.RetryDue(ctx)
+			}
+		}
+	}()
 }
 
 func (a *app) handle(fn handlerFunc) http.HandlerFunc {

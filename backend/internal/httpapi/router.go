@@ -10,21 +10,36 @@ import (
 )
 
 type Router struct {
-	service *devicecore.Service
+	service          *devicecore.Service
+	onCommandCreated func(*http.Request, devicecore.Command)
+}
+
+type RouterHooks struct {
+	OnCommandCreated func(*http.Request, devicecore.Command)
 }
 
 func NewRouter(service *devicecore.Service) http.Handler {
-	r := &Router{service: service}
+	return NewRouterWithHooks(service, RouterHooks{})
+}
+
+func NewRouterWithHooks(service *devicecore.Service, hooks RouterHooks) http.Handler {
+	r := &Router{service: service, onCommandCreated: hooks.OnCommandCreated}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/projects", r.handleProjects)
 	mux.HandleFunc("/v1/projects/", r.handleProjectByID)
 	mux.HandleFunc("/v1/devices", r.handleDevices)
 	mux.HandleFunc("/v1/devices/", r.handleDeviceByID)
+	mux.HandleFunc("/v1/device-commands", r.handleAdminCommands)
+	mux.HandleFunc("/v1/device-commands/", r.handleAdminCommandByID)
 	return mux
 }
 
 func NewOpenRouter(service *devicecore.Service) http.Handler {
-	r := &Router{service: service}
+	return NewOpenRouterWithHooks(service, RouterHooks{})
+}
+
+func NewOpenRouterWithHooks(service *devicecore.Service, hooks RouterHooks) http.Handler {
+	r := &Router{service: service, onCommandCreated: hooks.OnCommandCreated}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/open/projects/", r.handleOpenProjectByID)
 	mux.HandleFunc("/v1/open/devices", r.handleOpenDevices)
@@ -32,6 +47,68 @@ func NewOpenRouter(service *devicecore.Service) http.Handler {
 	mux.HandleFunc("/v1/open/device-commands", r.handleOpenCommands)
 	mux.HandleFunc("/v1/open/device-commands/", r.handleOpenCommandByID)
 	return mux
+}
+
+func (r *Router) handleAdminCommands(w http.ResponseWriter, req *http.Request) {
+	projectID := strings.TrimSpace(req.Header.Get("X-Project-ID"))
+	if projectID == "" {
+		projectID = strings.TrimSpace(req.URL.Query().Get("project_id"))
+	}
+	switch req.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, r.service.ListCommands(projectID))
+	case http.MethodPost:
+		var body devicecore.CreateCommandRequest
+		if !decodeJSON(w, req, &body) {
+			return
+		}
+		if body.ProjectID == "" {
+			body.ProjectID = projectID
+		}
+		command, err := r.service.CreateCommand(body)
+		if err == nil && r.onCommandCreated != nil {
+			r.onCommandCreated(req, command)
+		}
+		writeResult(w, command, err, http.StatusCreated)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (r *Router) handleAdminCommandByID(w http.ResponseWriter, req *http.Request) {
+	projectID := strings.TrimSpace(req.Header.Get("X-Project-ID"))
+	if projectID == "" {
+		projectID = strings.TrimSpace(req.URL.Query().Get("project_id"))
+	}
+	path := strings.TrimPrefix(req.URL.Path, "/v1/device-commands/")
+	commandID, action, _ := strings.Cut(path, "/")
+	if commandID == "" {
+		notFound(w)
+		return
+	}
+	if action == "cancel" {
+		if req.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		command, err := r.service.CancelCommand(projectID, commandID)
+		writeResult(w, command, err, http.StatusOK)
+		return
+	}
+	if action != "" || req.Method != http.MethodGet {
+		notFound(w)
+		return
+	}
+	command, err := r.service.GetCommand(projectID, commandID)
+	if err != nil {
+		writeResult(w, nil, err, http.StatusOK)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"command":  command,
+		"attempts": command.Attempts,
+		"events":   command.Events,
+	})
 }
 
 func (r *Router) handleProjects(w http.ResponseWriter, req *http.Request) {
@@ -177,6 +254,9 @@ func (r *Router) handleOpenCommands(w http.ResponseWriter, req *http.Request) {
 		}
 		body.ProjectID = project.ID
 		command, err := r.service.CreateCommand(body)
+		if err == nil && r.onCommandCreated != nil {
+			r.onCommandCreated(req, command)
+		}
 		writeResult(w, command, err, http.StatusCreated)
 	default:
 		methodNotAllowed(w)
