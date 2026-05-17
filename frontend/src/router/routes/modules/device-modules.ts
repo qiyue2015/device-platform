@@ -10,6 +10,8 @@ const routes: AppRouteRecordRaw[] = [
       locale: 'menu.projects',
       icon: 'icon-folder',
       requiresAuth: true,
+      menuGroup: 'menu.group.resources',
+      menuGroupOrder: 1,
       order: 1,
     },
     children: [
@@ -29,6 +31,8 @@ const routes: AppRouteRecordRaw[] = [
       locale: 'menu.devices',
       icon: 'icon-storage',
       requiresAuth: true,
+      menuGroup: 'menu.group.resources',
+      menuGroupOrder: 1,
       order: 2,
     },
     children: [
@@ -48,6 +52,8 @@ const routes: AppRouteRecordRaw[] = [
       locale: 'menu.commands',
       icon: 'icon-send',
       requiresAuth: true,
+      menuGroup: 'menu.group.commands',
+      menuGroupOrder: 2,
       order: 3,
     },
     children: [
@@ -67,6 +73,8 @@ const routes: AppRouteRecordRaw[] = [
       locale: 'menu.webhooks',
       icon: 'icon-link',
       requiresAuth: true,
+      menuGroup: 'menu.group.commands',
+      menuGroupOrder: 2,
       order: 4,
     },
     children: [
@@ -86,6 +94,8 @@ const routes: AppRouteRecordRaw[] = [
       locale: 'menu.auditLogs',
       icon: 'icon-file',
       requiresAuth: true,
+      menuGroup: 'menu.group.operations',
+      menuGroupOrder: 3,
       order: 5,
     },
     children: [
@@ -105,6 +115,8 @@ const routes: AppRouteRecordRaw[] = [
       locale: 'menu.simulator',
       icon: 'icon-thunderbolt',
       requiresAuth: true,
+      menuGroup: 'menu.group.operations',
+      menuGroupOrder: 3,
       order: 6,
     },
     children: [

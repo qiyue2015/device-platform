@@ -9,6 +9,8 @@ const SYSTEM: AppRouteRecordRaw = {
     locale: 'menu.system',
     icon: 'icon-settings',
     requiresAuth: true,
+    menuGroup: 'menu.group.account',
+    menuGroupOrder: 4,
     order: 8,
   },
   children: [

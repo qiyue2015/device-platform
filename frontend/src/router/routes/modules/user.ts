@@ -9,6 +9,8 @@ const USER: AppRouteRecordRaw = {
     locale: 'menu.user',
     icon: 'icon-user',
     requiresAuth: true,
+    menuGroup: 'menu.group.account',
+    menuGroupOrder: 4,
     order: 7,
   },
   children: [
