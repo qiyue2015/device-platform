@@ -178,7 +178,7 @@
             :loading="currentStep === 0 && checkingServices"
             @click="nextStep"
           >
-            {{ t('setup.action.next') }}
+            {{ serviceActionLabel }}
           </a-button>
           <a-button v-else type="primary" :disabled="!canProceed" :loading="installing" @click="performInstall">
             {{ t('setup.action.install') }}
@@ -259,6 +259,9 @@
   ]);
 
   const servicesValid = computed(() => dbConnected.value && redisConnected.value);
+  const serviceActionLabel = computed(() =>
+    currentStep.value === 0 && !servicesValid.value ? t('setup.action.detect') : t('setup.action.next')
+  );
   const isValidPort = (value?: number) => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535;
   const isValidRedisDatabase = (value?: number) => typeof value === 'number' && Number.isInteger(value) && value >= 0;
   const servicesFormValid = computed(() =>
@@ -407,7 +410,10 @@
   const nextStep = async () => {
     if (!canProceed.value) return;
     errorMessage.value = '';
-    if (currentStep.value === 0 && !(await verifyServices())) return;
+    if (currentStep.value === 0 && !servicesValid.value) {
+      await verifyServices();
+      return;
+    }
     currentStep.value += 1;
   };
 

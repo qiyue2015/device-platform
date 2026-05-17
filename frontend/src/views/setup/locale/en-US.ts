@@ -24,6 +24,7 @@ export default {
   'setup.server.addr': 'Server address',
   'setup.server.logLevel': 'Log level',
   'setup.action.prev': 'Previous',
+  'setup.action.detect': 'Detect',
   'setup.action.next': 'Next',
   'setup.action.install': 'Install',
   'setup.action.login': 'Go to login',

@@ -24,6 +24,7 @@ export default {
   'setup.server.addr': '服务监听地址',
   'setup.server.logLevel': '日志级别',
   'setup.action.prev': '上一步',
+  'setup.action.detect': '检测',
   'setup.action.next': '下一步',
   'setup.action.install': '开始安装',
   'setup.action.login': '去登录',
