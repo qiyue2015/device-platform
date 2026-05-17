@@ -6,7 +6,7 @@
       </header>
 
       <section class="setup-steps" :aria-label="t('setup.timeline.label')">
-        <a-steps :current="currentStep + 1" type="navigation" small changeable @change="handleStepChange">
+        <a-steps :current="currentStep + 1" label-placement="vertical" small changeable @change="handleStepChange">
           <a-step v-for="(step, index) in steps" :key="step.key" :title="step.title" :disabled="!isStepAvailable(index)" />
         </a-steps>
       </section>
@@ -14,20 +14,18 @@
       <a-alert v-if="errorMessage" type="error" class="setup-error" :content="errorMessage" show-icon />
 
       <section class="setup-card">
-        <section v-if="currentStep === 0" class="welcome-stage">
-          <div class="welcome-copy">
-            <h2>{{ t('setup.welcome.title') }}</h2>
-            <p>{{ t('setup.welcome.copy') }}</p>
-            <p class="welcome-note">{{ t('setup.welcome.note') }}</p>
-          </div>
-        </section>
-
-        <section v-if="currentStep === 1" class="form-stage">
+        <section v-if="currentStep === 0" class="form-stage">
           <a-form :model="form" layout="vertical">
             <div class="connection-list">
               <section class="connection-block">
                 <a-form-item :label="t('setup.database.url')">
-                  <a-input v-model="form.database.url" allow-clear @input="dbConnected = false" />
+                  <a-input v-model="form.database.url" allow-clear @input="dbConnected = false">
+                    <template #append>
+                      <a-button class="connection-test-button" type="primary" :loading="testingDb" @click="testDB">
+                        {{ t('setup.action.test') }}
+                      </a-button>
+                    </template>
+                  </a-input>
                 </a-form-item>
                 <div class="inline-status" aria-live="polite">
                   <span class="inline-status-text" :class="{ ok: dbConnected }">
@@ -35,16 +33,23 @@
                     <icon-clock-circle v-else />
                     {{ dbConnected ? t('setup.action.tested') : t('setup.hint.needsTest') }}
                   </span>
-                  <a-button type="primary" :loading="testingDb" @click="testDB">
-                    <template #icon><icon-check /></template>
-                    {{ t('setup.action.testDatabase') }}
-                  </a-button>
                 </div>
               </section>
 
               <section class="connection-block">
                 <a-form-item :label="t('setup.redis.url')">
-                  <a-input v-model="form.redis.url" allow-clear @input="redisConnected = false" />
+                  <a-input v-model="form.redis.url" allow-clear @input="redisConnected = false">
+                    <template #append>
+                      <a-button
+                        class="connection-test-button"
+                        type="primary"
+                        :loading="testingRedis"
+                        @click="testRedisConnection"
+                      >
+                        {{ t('setup.action.test') }}
+                      </a-button>
+                    </template>
+                  </a-input>
                 </a-form-item>
                 <div class="inline-status" aria-live="polite">
                   <span class="inline-status-text" :class="{ ok: redisConnected }">
@@ -52,17 +57,13 @@
                     <icon-clock-circle v-else />
                     {{ redisConnected ? t('setup.action.tested') : t('setup.hint.needsTest') }}
                   </span>
-                  <a-button type="primary" :loading="testingRedis" @click="testRedisConnection">
-                    <template #icon><icon-check /></template>
-                    {{ t('setup.action.testRedis') }}
-                  </a-button>
                 </div>
               </section>
             </div>
           </a-form>
         </section>
 
-        <section v-if="currentStep === 2" class="form-stage">
+        <section v-if="currentStep === 1" class="form-stage">
           <a-form :model="form.admin" layout="vertical">
             <div class="form-grid">
               <a-form-item :label="t('setup.admin.email')">
@@ -93,7 +94,7 @@
           </div>
         </section>
 
-        <section v-if="currentStep === 3" class="form-stage">
+        <section v-if="currentStep === 2" class="form-stage">
           <a-form :model="form.server" layout="vertical">
             <div class="form-grid">
               <a-form-item :label="t('setup.server.addr')">
@@ -111,7 +112,7 @@
           </a-form>
         </section>
 
-        <section v-if="currentStep === 4" class="complete">
+        <section v-if="currentStep === 3" class="complete">
           <div class="complete-mark">
             <icon-check-circle />
           </div>
@@ -126,7 +127,7 @@
       <footer v-if="currentStep < completeStepIndex" class="setup-actions">
         <a-button v-if="currentStep > 0" @click="currentStep -= 1">{{ t('setup.action.prev') }}</a-button>
         <a-button v-if="currentStep < installStepIndex" type="primary" :disabled="!canProceed" @click="nextStep">
-          {{ currentStep === 0 ? t('setup.action.start') : t('setup.action.next') }}
+          {{ t('setup.action.next') }}
         </a-button>
         <a-button v-else type="primary" :disabled="!canProceed" :loading="installing" @click="performInstall">
           {{ t('setup.action.install') }}
@@ -154,8 +155,8 @@
   const testingRedis = ref(false);
   const installing = ref(false);
   const errorMessage = ref('');
-  const installStepIndex = 3;
-  const completeStepIndex = 4;
+  const installStepIndex = 2;
+  const completeStepIndex = 3;
 
   const form = reactive({
     database: {
@@ -177,10 +178,6 @@
   });
 
   const steps = computed(() => [
-    {
-      key: 'welcome',
-      title: t('setup.step.welcome'),
-    },
     {
       key: 'services',
       title: t('setup.step.services'),
@@ -212,17 +209,15 @@
   const runtimeValid = computed(() => Boolean(form.server.addr.trim() && form.server.log_level));
 
   const canProceed = computed(() => {
-    if (currentStep.value === 0) return true;
-    if (currentStep.value === 1) return servicesValid.value;
-    if (currentStep.value === 2) return adminValid.value;
+    if (currentStep.value === 0) return servicesValid.value;
+    if (currentStep.value === 1) return adminValid.value;
     if (currentStep.value === installStepIndex) return servicesValid.value && adminValid.value && runtimeValid.value;
     return true;
   });
 
   const isStepAvailable = (index: number) => {
     if (index <= currentStep.value) return true;
-    if (index === 1) return true;
-    if (index === 2) return servicesValid.value;
+    if (index === 1) return servicesValid.value;
     if (index === installStepIndex) return servicesValid.value && adminValid.value;
     if (index === completeStepIndex) return currentStep.value === completeStepIndex;
     return false;
@@ -363,38 +358,6 @@
     border-radius: 8px;
   }
 
-  .welcome-stage {
-    display: grid;
-    min-height: 258px;
-    place-items: center;
-  }
-
-  .welcome-copy {
-    max-width: 456px;
-    text-align: left;
-
-    h2 {
-      margin: 0 0 12px;
-      color: #0f172a;
-      font-weight: 750;
-      font-size: 22px;
-      line-height: 30px;
-      letter-spacing: 0;
-    }
-
-    p {
-      margin: 0;
-      color: #334155;
-      font-size: 15px;
-      line-height: 24px;
-    }
-
-    .welcome-note {
-      margin-top: 8px;
-      color: #64748b;
-    }
-  }
-
   .connection-list {
     display: grid;
     gap: 18px;
@@ -414,6 +377,12 @@
     }
   }
 
+  .connection-test-button {
+    min-width: 72px;
+    height: 42px;
+    border-radius: 0 8px 8px 0;
+  }
+
   .form-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -421,11 +390,7 @@
   }
 
   .inline-status {
-    display: flex;
-    gap: 16px;
-    align-items: center;
-    justify-content: space-between;
-    min-height: 42px;
+    min-height: 22px;
   }
 
   .inline-status-text {
@@ -509,21 +474,6 @@
     width: 100%;
   }
 
-  :deep(.arco-steps-mode-navigation .arco-steps-item) {
-    min-width: 0;
-    margin-right: 14px;
-    padding-right: 6px;
-    padding-left: 10px;
-  }
-
-  :deep(.arco-steps-mode-navigation .arco-steps-item:not(:last-child) .arco-steps-item-content::after) {
-    right: 12px;
-  }
-
-  :deep(.arco-steps-mode-navigation .arco-steps-item-active::after) {
-    right: 12px;
-  }
-
   :deep(.arco-steps-item-content) {
     min-width: 0;
   }
@@ -545,11 +495,22 @@
   }
 
   :deep(.arco-input-wrapper),
+  :deep(.arco-input-outer),
   :deep(.arco-select-view-single) {
     min-height: 42px;
     background: #fff;
     border-color: #cbd5e1;
     border-radius: 8px;
+  }
+
+  :deep(.arco-input-outer .arco-input-wrapper) {
+    border-radius: 8px 0 0 8px;
+  }
+
+  :deep(.arco-input-append) {
+    padding: 0;
+    background: transparent;
+    border-color: #2563eb;
   }
 
   :deep(.arco-form-item-label-col > label) {
