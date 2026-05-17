@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 const testJWTSecret = defaultMemoryJWTSecret
 
 func TestLoadConfigLoadsEnvFilesWithoutOverridingProcessEnv(t *testing.T) {
+	unsetEnvForTest(t, "DATABASE_URL", "REDIS_URL", "JWT_SECRET", "LOG_LEVEL", "READ_HEADER_TIMEOUT", "DEVICE_PLATFORM_INSTALLED")
 	t.Setenv("SERVER_ADDR", ":9090")
 	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
 
@@ -30,6 +32,10 @@ REDIS_URL=redis://localhost:6379/0
 JWT_SECRET=0123456789abcdef0123456789abcdef
 LOG_LEVEL=debug
 READ_HEADER_TIMEOUT=3s
+WWTIOT_PROVIDER_CODE=hotel-wwtiot
+WWTIOT_PROVIDER_NAME=Hotel WWTIOT
+WWTIOT_USER_ID=env-user
+WWTIOT_USER_KEY=env-key
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -47,6 +53,29 @@ READ_HEADER_TIMEOUT=3s
 	}
 	if cfg.ReadHeaderTimeout != 3*time.Second {
 		t.Fatalf("expected parsed read header timeout, got %s", cfg.ReadHeaderTimeout)
+	}
+	if cfg.WWTIOTProviderCode != "hotel-wwtiot" || cfg.WWTIOTProviderName != "Hotel WWTIOT" {
+		t.Fatalf("unexpected wwtiot provider config: %+v", cfg)
+	}
+	if cfg.WWTIOTUserID != "env-user" || cfg.WWTIOTUserKey != "env-key" {
+		t.Fatal("expected WWTIOT credentials from env file")
+	}
+}
+
+func unsetEnvForTest(t *testing.T, keys ...string) {
+	t.Helper()
+	for _, key := range keys {
+		value, existed := os.LookupEnv(key)
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset env %s: %v", key, err)
+		}
+		t.Cleanup(func() {
+			if existed {
+				_ = os.Setenv(key, value)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		})
 	}
 }
 
@@ -332,6 +361,122 @@ func TestCreateDeviceAcceptsSimulatorAccessFields(t *testing.T) {
 	}
 }
 
+func TestCreateDeviceAcceptsCloudAPIAccessFields(t *testing.T) {
+	server := newTestServer()
+	projectID := createProjectForTest(t, server)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/devices", strings.NewReader(`{
+		"project_id":"`+projectID+`",
+		"name":"WWTIOT Lock",
+		"device_type":"smart_lock",
+		"access_type":"cloud_api",
+		"provider_code":"wwtiot",
+		"provider_device_id":"768901037824",
+		"transport_protocol":"http",
+		"adapter":"wwtiot_cloud_api"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	setAdminBearer(req)
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected device 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var device map[string]interface{}
+	decodeResponseData(t, rec, &device)
+	if device["access_type"] != "cloud_api" ||
+		device["transport_protocol"] != "http" ||
+		device["adapter"] != "wwtiot_cloud_api" ||
+		device["provider_code"] != "wwtiot" ||
+		device["provider_device_id"] != "768901037824" ||
+		device["connection_status"] != "unknown" ||
+		device["lifecycle_status"] != "active" {
+		t.Fatalf("unexpected cloud api device response: %+v", device)
+	}
+}
+
+func TestCreateDeviceRejectsDuplicateProviderIdentity(t *testing.T) {
+	server := newTestServer()
+	projectID := createProjectForTest(t, server)
+	token := testAdminToken(t)
+	body := `{
+		"project_id":"` + projectID + `",
+		"name":"WWTIOT Lock",
+		"device_type":"smart_lock",
+		"access_type":"cloud_api",
+		"provider_code":"wwtiot",
+		"provider_device_id":"768901037824",
+		"transport_protocol":"http",
+		"adapter":"wwtiot_cloud_api"
+	}`
+
+	first := doRequest(t, server, http.MethodPost, "/v1/devices", body, map[string]string{"Authorization": "Bearer " + token})
+	assertEnvelope(t, first, http.StatusCreated, true)
+	second := doRequest(t, server, http.MethodPost, "/v1/devices", body, map[string]string{"Authorization": "Bearer " + token})
+	envelope := assertEnvelope(t, second, http.StatusConflict, false)
+	if envelope.ErrorCode != "duplicate_device" {
+		t.Fatalf("error_code = %q, want duplicate_device", envelope.ErrorCode)
+	}
+}
+
+func TestCloudProviderEndpointExposesConfigMetadataOnly(t *testing.T) {
+	cfg := config{
+		ServerAddr:         ":0",
+		LogLevel:           "error",
+		JWTSecret:          testJWTSecret,
+		Installed:          true,
+		ReadHeaderTimeout:  5 * time.Second,
+		WWTIOTProviderCode: "hotel-wwtiot",
+		WWTIOTProviderName: "Hotel WWTIOT",
+		WWTIOTAPIURL:       "https://example.invalid/api",
+		WWTIOTUserID:       "test-user",
+		WWTIOTUserKey:      "secret-key",
+		WWTIOTTimeout:      2 * time.Second,
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := newAppWithDeviceService(cfg, logger, devicecore.NewService()).routes()
+
+	rec := doRequest(t, server, http.MethodGet, "/v1/cloud-providers", "", map[string]string{"Authorization": "Bearer " + testAdminToken(t)})
+	envelope := assertEnvelope(t, rec, http.StatusOK, true)
+	payload, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatalf("marshal providers: %v", err)
+	}
+	if strings.Contains(string(payload), "secret-key") || strings.Contains(string(payload), "test-user") {
+		t.Fatalf("provider endpoint leaked credentials: %s", payload)
+	}
+	var providers []map[string]interface{}
+	if err := json.Unmarshal(payload, &providers); err != nil {
+		t.Fatalf("decode providers: %v", err)
+	}
+	if len(providers) != 1 ||
+		providers[0]["code"] != "hotel-wwtiot" ||
+		providers[0]["adapter"] != devicecore.AdapterWWTIOTCloudAPI ||
+		providers[0]["configured"] != true {
+		t.Fatalf("unexpected providers: %+v", providers)
+	}
+}
+
+func TestCreateDeviceRejectsUnknownCloudProvider(t *testing.T) {
+	server := newTestServer()
+	projectID := createProjectForTest(t, server)
+
+	rec := doRequest(t, server, http.MethodPost, "/v1/devices", `{
+		"project_id":"`+projectID+`",
+		"name":"Unknown Provider Lock",
+		"device_type":"smart_lock",
+		"access_type":"cloud_api",
+		"provider_code":"missing-provider",
+		"provider_device_id":"768901037824",
+		"transport_protocol":"http",
+		"adapter":"wwtiot_cloud_api"
+	}`, map[string]string{"Authorization": "Bearer " + testAdminToken(t)})
+	envelope := assertEnvelope(t, rec, http.StatusBadRequest, false)
+	if envelope.ErrorCode != "invalid_argument" || !strings.Contains(envelope.Message, "unknown cloud provider") {
+		t.Fatalf("unexpected envelope: %+v", envelope)
+	}
+}
+
 func TestCreateDeviceReportsContractErrorsWithoutInvalidJSON(t *testing.T) {
 	server := newTestServer()
 	projectID := createProjectForTest(t, server)
@@ -353,30 +498,30 @@ func TestCreateDeviceReportsContractErrorsWithoutInvalidJSON(t *testing.T) {
 			wantError: `json: unknown field "surprise"`,
 		},
 		{
-			name: "cloud api unsupported",
+			name: "cloud api transport mismatch",
 			body: `{
 				"project_id":"` + projectID + `",
-				"name":"Unsupported Access Lock",
+				"name":"Mismatched Transport Lock",
 				"device_type":"smart_lock",
 				"access_type":"cloud_api",
 				"provider_device_id":"111",
 				"transport_protocol":"simulator",
-				"adapter":"mock_gateway"
+				"adapter":"wwtiot_cloud_api"
 			}`,
-			wantError: "invalid_argument: unsupported access_type",
+			wantError: "invalid_argument: transport_protocol does not match access_type",
 		},
 		{
-			name: "cloud adapter unsupported",
+			name: "cloud adapter mismatch",
 			body: `{
 				"project_id":"` + projectID + `",
-				"name":"Unsupported Adapter Lock",
+				"name":"Mismatched Adapter Lock",
 				"device_type":"smart_lock",
-				"access_type":"mock_gateway",
+				"access_type":"cloud_api",
 				"provider_device_id":"111",
-				"transport_protocol":"simulator",
-				"adapter":"cloud_api"
+				"transport_protocol":"http",
+				"adapter":"mock_gateway"
 			}`,
-			wantError: "invalid_argument: unsupported adapter",
+			wantError: "invalid_argument: adapter does not match access_type",
 		},
 	}
 
@@ -492,6 +637,95 @@ func TestCommandCreationRecordsWebhookDeliveryAndAudit(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected command.created audit, got %+v", auditBody.Items)
+	}
+}
+
+func TestCloudAPICommandDispatchesToWWTIOT(t *testing.T) {
+	var requestBody map[string]interface{}
+	vendor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("vendor method = %s, want POST", r.Method)
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("content-type = %q, want application/json", r.Header.Get("Content-Type"))
+		}
+		decodeBody(t, r.Body, &requestBody)
+		if requestBody["userid"] != "test-user" ||
+			requestBody["cmd"] != "control" ||
+			requestBody["deviceid"] != "768901037824" ||
+			requestBody["sign"] == "" {
+			t.Fatalf("unexpected vendor request: %+v", requestBody)
+		}
+		serial, _ := requestBody["serialnum"].(float64)
+		_, _ = w.Write([]byte(`{"result":"ok","info":"cmd send ok","deviceid":"768901037824","cmd":"control","serialnum":` + strconv.FormatInt(int64(serial), 10) + `,"userid":"test-user","userkey":"vendor-key","sign":"vendor-sign"}`))
+	}))
+	defer vendor.Close()
+
+	service := devicecore.NewService()
+	cfg := config{
+		ServerAddr:        ":0",
+		LogLevel:          "error",
+		JWTSecret:         testJWTSecret,
+		Installed:         true,
+		ReadHeaderTimeout: 5 * time.Second,
+		WWTIOTAPIURL:      vendor.URL,
+		WWTIOTUserID:      "test-user",
+		WWTIOTUserKey:     "test-key",
+		WWTIOTTimeout:     2 * time.Second,
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := newAppWithDeviceService(cfg, logger, service).routes()
+	projectID := createProjectForTest(t, server)
+	deviceID := createCloudAPIDeviceForTest(t, server, projectID)
+	token := testAdminToken(t)
+
+	command := doRequest(t, server, http.MethodPost, "/v1/device-commands", `{
+		"project_id":"`+projectID+`",
+		"device_id":"`+deviceID+`",
+		"command_type":"query_status"
+	}`, map[string]string{"Authorization": "Bearer " + token})
+	commandBody := assertEnvelope(t, command, http.StatusCreated, true)
+	if dataFieldString(t, commandBody, "status") != string(devicecore.CommandStatusSuccess) {
+		t.Fatalf("command status = %+v, want success", commandBody.Data)
+	}
+	commandID := dataFieldString(t, commandBody, "id")
+
+	detail := doRequest(t, server, http.MethodGet, "/v1/device-commands/"+commandID+"?project_id="+projectID, "", map[string]string{"Authorization": "Bearer " + token})
+	var detailBody struct {
+		Command  map[string]interface{}   `json:"command"`
+		Attempts []map[string]interface{} `json:"attempts"`
+	}
+	decodeResponseData(t, detail, &detailBody)
+	if detailBody.Command["status"] != string(devicecore.CommandStatusSuccess) {
+		t.Fatalf("detail status = %+v, want success", detailBody.Command)
+	}
+	if len(detailBody.Attempts) != 1 {
+		t.Fatalf("attempts = %+v, want one attempt", detailBody.Attempts)
+	}
+	attempt := detailBody.Attempts[0]
+	if attempt["adapter"] != devicecore.AdapterWWTIOTCloudAPI || attempt["status"] != "acked" {
+		t.Fatalf("unexpected attempt: %+v", attempt)
+	}
+	request, ok := attempt["request_body"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("request_body = %T, want object", attempt["request_body"])
+	}
+	body, ok := request["body"].(map[string]interface{})
+	if !ok || body["sign"] != "[redacted]" || body["userid"] != "[redacted]" {
+		t.Fatalf("request body must redact credentials, got %+v", request["body"])
+	}
+	response, ok := attempt["response_body"].(map[string]interface{})
+	if !ok || response["sign"] != "[redacted]" || response["userid"] != "[redacted]" || response["userkey"] != "[redacted]" || response["result"] != "ok" {
+		t.Fatalf("response body must include ok result and redacted credentials, got %+v", attempt["response_body"])
+	}
+	attemptJSON, err := json.Marshal(attempt)
+	if err != nil {
+		t.Fatalf("marshal attempt: %v", err)
+	}
+	for _, secret := range []string{"test-user", "test-key", "vendor-sign", "vendor-key"} {
+		if strings.Contains(string(attemptJSON), secret) {
+			t.Fatalf("attempt detail leaked %q: %s", secret, attemptJSON)
+		}
 	}
 }
 
@@ -617,6 +851,34 @@ func createDeviceForTest(t *testing.T, server http.Handler, projectID string) st
 	return id
 }
 
+func createCloudAPIDeviceForTest(t *testing.T, server http.Handler, projectID string) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/devices", strings.NewReader(`{
+		"project_id":"`+projectID+`",
+		"name":"WWTIOT Lock",
+		"device_type":"smart_lock",
+		"access_type":"cloud_api",
+		"provider_code":"wwtiot",
+		"provider_device_id":"768901037824",
+		"transport_protocol":"http",
+		"adapter":"wwtiot_cloud_api"
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	setAdminBearer(req)
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected cloud api device 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var device map[string]interface{}
+	decodeResponseData(t, rec, &device)
+	id, _ := device["id"].(string)
+	if id == "" {
+		t.Fatalf("device id missing: %+v", device)
+	}
+	return id
+}
+
 func decodeResponse(t *testing.T, body *httptest.ResponseRecorder, dest interface{}) {
 	t.Helper()
 	decodeBody(t, strings.NewReader(body.Body.String()), dest)
@@ -715,6 +977,22 @@ func setAdminBearer(req *http.Request) {
 		panic(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+}
+
+func testAdminToken(t testing.TB) string {
+	t.Helper()
+	token, err := createJWT(currentUser{
+		ID:          "test-admin",
+		Name:        "Test Admin",
+		Nickname:    "Test Admin",
+		Email:       "admin@test.local",
+		DisplayName: "Test Admin",
+		IsAdmin:     true,
+	}, testJWTSecret, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create test admin token: %v", err)
+	}
+	return token
 }
 
 func decodeBody(t *testing.T, body io.Reader, dest interface{}) {

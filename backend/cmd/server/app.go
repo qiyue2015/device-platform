@@ -16,13 +16,15 @@ import (
 )
 
 type app struct {
-	cfg           config
-	logger        *slog.Logger
-	db            *sql.DB
-	auth          authenticator
-	deviceService *devicecore.Service
-	gateway       *gateway.Service
-	webhooks      *webhookaudit.Service
+	cfg            config
+	logger         *slog.Logger
+	db             *sql.DB
+	auth           authenticator
+	deviceService  *devicecore.Service
+	commandRouter  httpapi.DeviceService
+	cloudProviders cloudProviderRegistry
+	gateway        *gateway.Service
+	webhooks       *webhookaudit.Service
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request) error
@@ -46,31 +48,39 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 	simulatorGateway := gateway.NewSimulatorGateway(gateway.ModeConfig{})
 	gatewayService := gateway.NewService(simulatorGateway, gateway.ServiceConfig{})
 	webhookService := webhookaudit.NewService(http.DefaultClient)
+	cloudProviders := newCloudProviderRegistry(cfg)
 	startWebhookWorker(context.Background(), webhookService)
-	return newAppWithServices(cfg, logger, db, auth, service, gatewayService, webhookService), nil
+	return newAppWithServices(cfg, logger, db, auth, service, gatewayService, webhookService, cloudProviders), nil
 }
 
 func newAppWithDeviceService(cfg config, logger *slog.Logger, service *devicecore.Service) *app {
 	simulatorGateway := gateway.NewSimulatorGateway(gateway.ModeConfig{})
 	gatewayService := gateway.NewService(simulatorGateway, gateway.ServiceConfig{})
 	webhookService := webhookaudit.NewService(http.DefaultClient)
+	cloudProviders := newCloudProviderRegistry(cfg)
 	secret := cfg.JWTSecret
 	if secret == "" {
 		secret = defaultMemoryJWTSecret
 	}
 	auth, _ := newMemoryAuthenticator("admin@test.local", "Test Admin", "test-admin-password", secret)
-	return newAppWithServices(cfg, logger, nil, auth, service, gatewayService, webhookService)
+	return newAppWithServices(cfg, logger, nil, auth, service, gatewayService, webhookService, cloudProviders)
 }
 
-func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authenticator, service *devicecore.Service, gatewayService *gateway.Service, webhookService *webhookaudit.Service) *app {
+func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authenticator, service *devicecore.Service, gatewayService *gateway.Service, webhookService *webhookaudit.Service, cloudProviders cloudProviderRegistry) *app {
+	commandRouter := httpapi.DeviceService(service)
+	if len(cloudProviders.List()) > 0 {
+		commandRouter = newCommandDispatchService(service, cloudProviders)
+	}
 	return &app{
-		cfg:           cfg,
-		logger:        logger,
-		db:            db,
-		auth:          auth,
-		deviceService: service,
-		gateway:       gatewayService,
-		webhooks:      webhookService,
+		cfg:            cfg,
+		logger:         logger,
+		db:             db,
+		auth:           auth,
+		deviceService:  service,
+		commandRouter:  commandRouter,
+		cloudProviders: cloudProviders,
+		gateway:        gatewayService,
+		webhooks:       webhookService,
 	}
 }
 
@@ -89,16 +99,17 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/v1/auth/logout", a.handle(a.handleLogout))
 	mux.HandleFunc("/v1/auth/me", a.handle(a.requireBearer(a.handleMe)))
 	mux.HandleFunc("/v1/auth/menu", a.handle(a.requireBearer(a.handleMenu)))
+	mux.HandleFunc("/v1/cloud-providers", a.handle(a.requireBearer(a.handleCloudProviders)))
 
 	mux.HandleFunc("/v1/admin/", a.handle(a.requireBearer(a.handleAdminPlaceholder)))
-	openRouter := httpapi.NewOpenRouterWithHooks(a.deviceService, httpapi.RouterHooks{
+	openRouter := httpapi.NewOpenRouterWithHooks(a.commandRouter, httpapi.RouterHooks{
 		OnCommandCreated: a.recordCommandCreated,
 	})
 	mux.Handle("/v1/open/", openRouter)
 	protectedV1 := http.NewServeMux()
 	registerWebhookAuditRoutes(protectedV1, a.webhooks)
 	gateway.NewHandler(a.gateway).RegisterSimulator(protectedV1)
-	protectedV1.Handle("/v1/", httpapi.NewRouterWithHooks(a.deviceService, httpapi.RouterHooks{
+	protectedV1.Handle("/v1/", httpapi.NewRouterWithHooks(a.commandRouter, httpapi.RouterHooks{
 		OnCommandCreated: a.recordCommandCreated,
 	}))
 	mux.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

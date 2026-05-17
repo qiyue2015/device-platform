@@ -11,19 +11,35 @@ import (
 )
 
 type Router struct {
-	service          *devicecore.Service
+	service          DeviceService
 	onCommandCreated func(*http.Request, devicecore.Command)
+}
+
+type DeviceService interface {
+	CreateProject(devicecore.CreateProjectRequest) (devicecore.Project, error)
+	ListProjects() []devicecore.Project
+	GetProject(string) (devicecore.Project, error)
+	ProjectByAPIKey(string) (devicecore.Project, error)
+	UpdateProject(string, devicecore.UpdateProjectRequest) (devicecore.Project, error)
+	CreateDevice(devicecore.CreateDeviceRequest) (devicecore.Device, error)
+	ListDevices(string) []devicecore.Device
+	GetDevice(string, string) (devicecore.Device, error)
+	SetDeviceOnline(string, string, bool) error
+	CreateCommand(devicecore.CreateCommandRequest) (devicecore.Command, error)
+	ListCommands(string) []devicecore.Command
+	GetCommand(string, string) (devicecore.Command, error)
+	CancelCommand(string, string) (devicecore.Command, error)
 }
 
 type RouterHooks struct {
 	OnCommandCreated func(*http.Request, devicecore.Command)
 }
 
-func NewRouter(service *devicecore.Service) http.Handler {
+func NewRouter(service DeviceService) http.Handler {
 	return NewRouterWithHooks(service, RouterHooks{})
 }
 
-func NewRouterWithHooks(service *devicecore.Service, hooks RouterHooks) http.Handler {
+func NewRouterWithHooks(service DeviceService, hooks RouterHooks) http.Handler {
 	r := &Router{service: service, onCommandCreated: hooks.OnCommandCreated}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/projects", r.handleProjects)
@@ -35,11 +51,11 @@ func NewRouterWithHooks(service *devicecore.Service, hooks RouterHooks) http.Han
 	return mux
 }
 
-func NewOpenRouter(service *devicecore.Service) http.Handler {
+func NewOpenRouter(service DeviceService) http.Handler {
 	return NewOpenRouterWithHooks(service, RouterHooks{})
 }
 
-func NewOpenRouterWithHooks(service *devicecore.Service, hooks RouterHooks) http.Handler {
+func NewOpenRouterWithHooks(service DeviceService, hooks RouterHooks) http.Handler {
 	r := &Router{service: service, onCommandCreated: hooks.OnCommandCreated}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/open/projects/", r.handleOpenProjectByID)
@@ -333,6 +349,8 @@ func writeResult(w http.ResponseWriter, value any, err error, successStatus int)
 	switch {
 	case errors.Is(err, devicecore.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
+	case errors.Is(err, devicecore.ErrDuplicateDevice):
+		writeError(w, http.StatusConflict, "duplicate_device", "provider device already exists")
 	case errors.Is(err, devicecore.ErrIdempotencyConflict):
 		writeError(w, http.StatusConflict, "idempotency_key_conflict", "idempotency key conflict")
 	case errors.Is(err, devicecore.ErrUnsafeDeliveryOverride):

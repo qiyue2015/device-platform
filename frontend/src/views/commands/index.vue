@@ -7,7 +7,9 @@
             <a-option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</a-option>
           </a-select>
           <a-select v-model="selectedDeviceId" placeholder="Device" style="width: 220px">
-            <a-option v-for="device in devices" :key="device.id" :value="device.id">{{ device.name }}</a-option>
+            <a-option v-for="device in devices" :key="device.id" :value="device.id">
+              {{ device.name }} · {{ device.provider_device_id }}
+            </a-option>
           </a-select>
           <a-select v-model="commandForm.command_type" data-testid="command-type" style="width: 160px">
             <a-option value="unlock">unlock</a-option>
@@ -92,22 +94,36 @@
     { title: 'Status', slotName: 'commandStatus' },
   ]);
 
-  const refresh = async () => {
-    const [projectRes, deviceRes, commandRes] = await Promise.all([queryProjects(), queryDevices(), queryCommands()]);
-    projects.value = projectRes.data;
+  const refreshProjectData = async () => {
+    if (!selectedProjectId.value) {
+      devices.value = [];
+      commands.value = [];
+      selectedDeviceId.value = '';
+      commandDetail.value = undefined;
+      return;
+    }
+    const [deviceRes, commandRes] = await Promise.all([
+      queryDevices(selectedProjectId.value),
+      queryCommands(selectedProjectId.value),
+    ]);
     devices.value = deviceRes.data;
     commands.value = commandRes.data;
-    if (!selectedProjectId.value && projects.value[0]) selectedProjectId.value = projects.value[0].id;
-    if (!selectedDeviceId.value && devices.value[0]) selectedDeviceId.value = devices.value[0].id;
+    if (!devices.value.some((device) => device.id === selectedDeviceId.value)) {
+      selectedDeviceId.value = devices.value[0]?.id || '';
+    }
   };
 
-  watch(selectedProjectId, () => {
-    const firstDevice = devices.value.find((device) => device.project_id === selectedProjectId.value);
-    selectedDeviceId.value = firstDevice?.id || '';
-  });
+  const refresh = async () => {
+    const projectRes = await queryProjects();
+    projects.value = projectRes.data;
+    if (!selectedProjectId.value && projects.value[0]) selectedProjectId.value = projects.value[0].id;
+    await refreshProjectData();
+  };
+
+  watch(selectedProjectId, refreshProjectData);
 
   const loadCommandDetail = async (record: CommandRecord) => {
-    const res = await queryCommandDetail(record.id);
+    const res = await queryCommandDetail(record.id, record.project_id || selectedProjectId.value);
     commandDetail.value = res.data;
   };
 
@@ -120,7 +136,7 @@
         command_type: commandForm.command_type,
         idempotency_key: commandForm.idempotency_key || `ui-${Date.now()}`,
       });
-      await refresh();
+      await refreshProjectData();
       await loadCommandDetail(res.data);
       Message.success('Command sent');
     } finally {

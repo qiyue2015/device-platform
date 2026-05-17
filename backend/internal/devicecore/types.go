@@ -79,10 +79,21 @@ type Command struct {
 }
 
 type CommandAttempt struct {
-	AttemptNo int       `json:"attempt_no"`
-	Status    string    `json:"status"`
-	At        time.Time `json:"at"`
-	Error     string    `json:"error,omitempty"`
+	AttemptNo    int            `json:"attempt_no"`
+	Adapter      string         `json:"adapter,omitempty"`
+	Status       string         `json:"status"`
+	RequestBody  map[string]any `json:"request_body,omitempty"`
+	ResponseBody map[string]any `json:"response_body,omitempty"`
+	At           time.Time      `json:"at"`
+	Error        string         `json:"error,omitempty"`
+}
+
+type RecordCommandAttemptRequest struct {
+	Adapter      string         `json:"adapter"`
+	Status       string         `json:"status"`
+	RequestBody  map[string]any `json:"request_body"`
+	ResponseBody map[string]any `json:"response_body"`
+	Error        string         `json:"error"`
 }
 
 type CommandEvent struct {

@@ -30,6 +30,15 @@ export interface DeviceRecord {
   updated_at: string;
 }
 
+export interface CloudProviderRecord {
+  code: string;
+  name: string;
+  access_type: string;
+  transport_protocol: string;
+  adapter: string;
+  configured: boolean;
+}
+
 export interface CommandRecord {
   id: string;
   project_id: string;
@@ -105,6 +114,10 @@ export function createProject(data: Partial<ProjectRecord>) {
 
 export function updateProject(id: string, data: Partial<ProjectRecord>) {
   return axios.patch<ProjectRecord>(`/v1/projects/${id}`, data);
+}
+
+export function queryCloudProviders() {
+  return axios.get<CloudProviderRecord[]>('/v1/cloud-providers');
 }
 
 export function queryDevices(projectId?: string) {

@@ -44,17 +44,22 @@ CREATE TABLE devices (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (project_id, provider_code, provider_device_id),
-    CHECK (access_type IN ('mock_gateway')),
-    CHECK (transport_protocol IN ('simulator')),
-    CHECK (adapter IN ('mock_gateway')),
-    CHECK (access_type = 'mock_gateway' AND adapter = 'mock_gateway'),
+    CHECK (access_type IN ('mock_gateway', 'cloud_api')),
+    CHECK (transport_protocol IN ('simulator', 'http')),
+    CHECK (adapter IN ('mock_gateway', 'wwtiot_cloud_api')),
+    CHECK (
+        (access_type = 'mock_gateway' AND transport_protocol = 'simulator' AND adapter = 'mock_gateway')
+        OR (access_type = 'cloud_api' AND transport_protocol = 'http' AND adapter = 'wwtiot_cloud_api')
+    ),
     CHECK (connection_status IN ('unknown', 'online', 'offline')),
     CHECK (lifecycle_status IN ('active', 'disabled', 'deleted'))
 );
 
 CREATE INDEX idx_devices_project_id ON devices(project_id);
 CREATE INDEX idx_devices_provider_identity ON devices(provider_code, provider_device_id);
+CREATE UNIQUE INDEX idx_devices_project_provider_identity_active
+    ON devices(project_id, lower(provider_code), provider_device_id)
+    WHERE lifecycle_status <> 'deleted';
 
 CREATE TABLE device_states (
     id UUID PRIMARY KEY,
@@ -103,7 +108,7 @@ CREATE TABLE device_command_attempts (
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at TIMESTAMPTZ,
     UNIQUE (command_id, attempt_no),
-    CHECK (adapter IN ('mock_gateway')),
+    CHECK (adapter IN ('mock_gateway', 'wwtiot_cloud_api')),
     CHECK (status IN ('created', 'sent', 'acked', 'success', 'failed', 'timeout'))
 );
 
@@ -122,10 +127,13 @@ CREATE TABLE device_raw_messages (
     body BYTEA NOT NULL,
     received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (access_type IN ('mock_gateway')),
-    CHECK (transport_protocol IN ('simulator')),
-    CHECK (adapter IN ('mock_gateway')),
-    CHECK (access_type = 'mock_gateway' AND adapter = 'mock_gateway'),
+    CHECK (access_type IN ('mock_gateway', 'cloud_api')),
+    CHECK (transport_protocol IN ('simulator', 'http')),
+    CHECK (adapter IN ('mock_gateway', 'wwtiot_cloud_api')),
+    CHECK (
+        (access_type = 'mock_gateway' AND transport_protocol = 'simulator' AND adapter = 'mock_gateway')
+        OR (access_type = 'cloud_api' AND transport_protocol = 'http' AND adapter = 'wwtiot_cloud_api')
+    ),
     CHECK (direction IN ('inbound', 'outbound'))
 );
 

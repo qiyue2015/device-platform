@@ -36,6 +36,10 @@ MVP-1 must not depend on:
 - Real device TCP/BLE protocol.
 - Real hardware connectivity.
 
+MVP-1 may still allow registering a `cloud_api` device record for MVP-1.5 preparation. A project must not contain duplicate active records for the same `provider_code` and `provider_device_id`, and `cloud_api` devices must carry a vendor `provider_device_id`.
+
+MVP-1.5 may forward admin-created commands for configured WWTIOT providers (`access_type=cloud_api`, `transport_protocol=http`, `adapter=wwtiot_cloud_api`) through the vendor cloud API when `WWTIOT_PROVIDER_CODE`, `WWTIOT_USER_ID`, and `WWTIOT_USER_KEY` are configured. The provider credentials are server-side provider configuration; admins should not enter `UserID` or `UserKey` while sending a device command. This still does not mean vendor callback ingestion, durable persistence, or real-device acceptance is complete.
+
 ## Minimal Admin UI
 
 The MVP-1 admin UI only needs the surfaces required for acceptance:

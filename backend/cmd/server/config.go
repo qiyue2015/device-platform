@@ -9,13 +9,19 @@ import (
 )
 
 type config struct {
-	ServerAddr        string
-	LogLevel          string
-	DatabaseURL       string
-	RedisURL          string
-	JWTSecret         string
-	Installed         bool
-	ReadHeaderTimeout time.Duration
+	ServerAddr         string
+	LogLevel           string
+	DatabaseURL        string
+	RedisURL           string
+	JWTSecret          string
+	Installed          bool
+	ReadHeaderTimeout  time.Duration
+	WWTIOTProviderCode string
+	WWTIOTProviderName string
+	WWTIOTAPIURL       string
+	WWTIOTUserID       string
+	WWTIOTUserKey      string
+	WWTIOTTimeout      time.Duration
 }
 
 func loadConfig(envFiles ...string) (config, error) {
@@ -24,13 +30,19 @@ func loadConfig(envFiles ...string) (config, error) {
 	}
 
 	cfg := config{
-		ServerAddr:        envDefault("SERVER_ADDR", ":8080"),
-		LogLevel:          envDefault("LOG_LEVEL", "info"),
-		DatabaseURL:       strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		RedisURL:          strings.TrimSpace(os.Getenv("REDIS_URL")),
-		JWTSecret:         strings.TrimSpace(os.Getenv("JWT_SECRET")),
-		Installed:         envBool("DEVICE_PLATFORM_INSTALLED", false),
-		ReadHeaderTimeout: envDuration("READ_HEADER_TIMEOUT", 5*time.Second),
+		ServerAddr:         envDefault("SERVER_ADDR", ":8080"),
+		LogLevel:           envDefault("LOG_LEVEL", "info"),
+		DatabaseURL:        strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		RedisURL:           strings.TrimSpace(os.Getenv("REDIS_URL")),
+		JWTSecret:          strings.TrimSpace(os.Getenv("JWT_SECRET")),
+		Installed:          envBool("DEVICE_PLATFORM_INSTALLED", false),
+		ReadHeaderTimeout:  envDuration("READ_HEADER_TIMEOUT", 5*time.Second),
+		WWTIOTProviderCode: envDefault("WWTIOT_PROVIDER_CODE", "wwtiot"),
+		WWTIOTProviderName: envDefault("WWTIOT_PROVIDER_NAME", "WWTIOT"),
+		WWTIOTAPIURL:       envDefault("WWTIOT_API_URL", "http://gps.wwtiot.com/api/"),
+		WWTIOTUserID:       strings.TrimSpace(os.Getenv("WWTIOT_USER_ID")),
+		WWTIOTUserKey:      strings.TrimSpace(os.Getenv("WWTIOT_USER_KEY")),
+		WWTIOTTimeout:      envDuration("WWTIOT_TIMEOUT", 10*time.Second),
 	}
 	if cfg.isInstalled() {
 		if cfg.DatabaseURL == "" {

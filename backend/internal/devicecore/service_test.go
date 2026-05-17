@@ -77,6 +77,84 @@ func TestDeviceCreateListDetail(t *testing.T) {
 	}
 }
 
+func TestCreateDeviceAcceptsCloudAPIAdapterFields(t *testing.T) {
+	service, _, project, _ := newTestService(t)
+
+	device, err := service.CreateDevice(CreateDeviceRequest{
+		ProjectID:        project.ID,
+		Name:             "WWTIOT Lock",
+		DeviceType:       "smart_lock",
+		AccessType:       AccessTypeCloudAPI,
+		ProviderDeviceID: "768901037824",
+	})
+	if err != nil {
+		t.Fatalf("create cloud api device: %v", err)
+	}
+	if device.AccessType != AccessTypeCloudAPI ||
+		device.ProviderCode != "wwtiot" ||
+		device.TransportProtocol != TransportProtocolHTTP ||
+		device.Adapter != AdapterWWTIOTCloudAPI {
+		t.Fatalf("unexpected cloud api defaults: %+v", device)
+	}
+}
+
+func TestCreateDeviceRequiresProviderDeviceIDForCloudAPI(t *testing.T) {
+	service, _, project, _ := newTestService(t)
+
+	_, err := service.CreateDevice(CreateDeviceRequest{
+		ProjectID:  project.ID,
+		Name:       "WWTIOT Lock",
+		DeviceType: "smart_lock",
+		AccessType: AccessTypeCloudAPI,
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestCreateDeviceRejectsMismatchedCloudAPIAdapterFields(t *testing.T) {
+	service, _, project, _ := newTestService(t)
+
+	_, err := service.CreateDevice(CreateDeviceRequest{
+		ProjectID:         project.ID,
+		Name:              "Bad WWTIOT Lock",
+		DeviceType:        "smart_lock",
+		AccessType:        AccessTypeCloudAPI,
+		ProviderDeviceID:  "768901037824",
+		TransportProtocol: TransportProtocolSimulator,
+		Adapter:           AdapterMockGateway,
+	})
+	if err == nil || !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestCreateDeviceRejectsDuplicateProviderDeviceInProject(t *testing.T) {
+	service, _, project, _ := newTestService(t)
+
+	_, err := service.CreateDevice(CreateDeviceRequest{
+		ProjectID:        project.ID,
+		Name:             "WWTIOT Lock 1",
+		DeviceType:       "smart_lock",
+		AccessType:       AccessTypeCloudAPI,
+		ProviderDeviceID: "768901037824",
+	})
+	if err != nil {
+		t.Fatalf("create first cloud api device: %v", err)
+	}
+	_, err = service.CreateDevice(CreateDeviceRequest{
+		ProjectID:        project.ID,
+		Name:             "WWTIOT Lock 2",
+		DeviceType:       "smart_lock",
+		AccessType:       AccessTypeCloudAPI,
+		ProviderCode:     "wwtiot",
+		ProviderDeviceID: "768901037824",
+	})
+	if !errors.Is(err, ErrDuplicateDevice) {
+		t.Fatalf("duplicate error = %v, want ErrDuplicateDevice", err)
+	}
+}
+
 func TestCommandIdempotencyIgnoresExpiresAt(t *testing.T) {
 	service, _, project, device := newTestService(t)
 	firstExpiry := time.Date(2026, 5, 16, 10, 1, 0, 0, time.UTC)

@@ -14,8 +14,11 @@ import (
 
 const (
 	AccessTypeMockGateway        = "mock_gateway"
+	AccessTypeCloudAPI           = "cloud_api"
 	TransportProtocolSimulator   = "simulator"
+	TransportProtocolHTTP        = "http"
 	AdapterMockGateway           = "mock_gateway"
+	AdapterWWTIOTCloudAPI        = "wwtiot_cloud_api"
 	ConnectionStatusUnknown      = "unknown"
 	ConnectionStatusOnline       = "online"
 	ConnectionStatusOffline      = "offline"
@@ -163,6 +166,9 @@ func (s *Service) CreateDevice(req CreateDeviceRequest) (Device, error) {
 	if !validTransportProtocol(protocol) {
 		return Device{}, fmt.Errorf("%w: unsupported transport_protocol", ErrInvalidArgument)
 	}
+	if !validAccessTransportPair(accessType, protocol) {
+		return Device{}, fmt.Errorf("%w: transport_protocol does not match access_type", ErrInvalidArgument)
+	}
 	adapter := defaultAdapter(accessType, req.Adapter)
 	if !validAdapter(adapter) {
 		return Device{}, fmt.Errorf("%w: unsupported adapter", ErrInvalidArgument)
@@ -174,6 +180,9 @@ func (s *Service) CreateDevice(req CreateDeviceRequest) (Device, error) {
 	providerDeviceID := strings.TrimSpace(req.ProviderDeviceID)
 	if providerDeviceID == "" {
 		providerDeviceID = strings.TrimSpace(req.ExternalID)
+	}
+	if accessType == AccessTypeCloudAPI && providerDeviceID == "" {
+		return Device{}, fmt.Errorf("%w: provider_device_id is required for cloud_api", ErrInvalidArgument)
 	}
 	connectionStatus := defaultConnectionStatus(req.ConnectionStatus, req.Online)
 	if !validConnectionStatus(connectionStatus) {
@@ -193,6 +202,9 @@ func (s *Service) CreateDevice(req CreateDeviceRequest) (Device, error) {
 	deviceID := newID("dev")
 	if providerDeviceID == "" {
 		providerDeviceID = deviceID
+	}
+	if s.providerDeviceExistsLocked(projectID, providerCode, providerDeviceID) {
+		return Device{}, fmt.Errorf("%w: provider device already exists", ErrDuplicateDevice)
 	}
 	device := Device{
 		ID:                deviceID,
@@ -219,6 +231,18 @@ func (s *Service) CreateDevice(req CreateDeviceRequest) (Device, error) {
 	}
 	s.devices[device.ID] = device
 	return device, nil
+}
+
+func (s *Service) providerDeviceExistsLocked(projectID, providerCode, providerDeviceID string) bool {
+	for _, device := range s.devices {
+		if device.ProjectID == projectID &&
+			strings.EqualFold(device.ProviderCode, providerCode) &&
+			device.ProviderDeviceID == providerDeviceID &&
+			device.LifecycleStatus != LifecycleStatusDeleted {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) ListDevices(projectID string) []Device {
@@ -335,7 +359,7 @@ func (s *Service) CreateCommand(req CreateCommandRequest) (Command, error) {
 	if policy == DeliveryPolicyReplaceLatest {
 		s.cancelReplaceLatestPredecessorsLocked(command, now)
 	}
-	command = s.initialDispatchLocked(command, device.Online, now)
+	command = s.initialDispatchLocked(command, isDeviceDispatchable(device), now)
 	s.commands[command.ID] = command
 	if command.IdempotencyKey != "" {
 		s.idempotencyMap[idempotencyScope(projectID, command.IdempotencyKey)] = command.ID
@@ -407,6 +431,48 @@ func (s *Service) MarkCommandSent(projectID, commandID string) (Command, error) 
 		Status:    "sent",
 		At:        now,
 	})
+	s.commands[command.ID] = command
+	return cloneCommand(command), nil
+}
+
+func (s *Service) RecordCommandAttempt(projectID, commandID string, req RecordCommandAttemptRequest) (Command, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	command, ok := s.commands[commandID]
+	if !ok || command.ProjectID != projectID {
+		return Command{}, ErrNotFound
+	}
+	now := s.clock.Now()
+	if len(command.Attempts) == 0 {
+		command.Attempts = append(command.Attempts, CommandAttempt{
+			AttemptNo: 1,
+			Status:    "created",
+			At:        now,
+		})
+	}
+	attempt := command.Attempts[len(command.Attempts)-1]
+	if strings.TrimSpace(req.Adapter) != "" {
+		attempt.Adapter = strings.TrimSpace(req.Adapter)
+	}
+	if strings.TrimSpace(req.Status) != "" {
+		attempt.Status = strings.TrimSpace(req.Status)
+	}
+	attempt.RequestBody = cloneMap(req.RequestBody)
+	attempt.ResponseBody = cloneMap(req.ResponseBody)
+	attempt.Error = strings.TrimSpace(req.Error)
+	attempt.At = now
+	command.Attempts[len(command.Attempts)-1] = attempt
+	command.Events = append(command.Events, CommandEvent{
+		Type: "command_attempt",
+		Payload: map[string]any{
+			"attempt_no": attempt.AttemptNo,
+			"adapter":    attempt.Adapter,
+			"status":     attempt.Status,
+			"error":      attempt.Error,
+		},
+		At: now,
+	})
+	command.UpdatedAt = now
 	s.commands[command.ID] = command
 	return cloneCommand(command), nil
 }
@@ -597,6 +663,10 @@ func isCancellable(status CommandStatus) bool {
 	return status == CommandStatusCreated || status == CommandStatusQueued || status == CommandStatusOffline
 }
 
+func isDeviceDispatchable(device Device) bool {
+	return device.Online || device.AccessType == AccessTypeCloudAPI
+}
+
 func compensationUntil(now time.Time, lowRisk bool) *time.Time {
 	if !lowRisk {
 		return nil
@@ -617,6 +687,9 @@ func defaultTransportProtocol(accessType, requested string) string {
 	if requested != "" {
 		return requested
 	}
+	if accessType == AccessTypeCloudAPI {
+		return TransportProtocolHTTP
+	}
 	return TransportProtocolSimulator
 }
 
@@ -625,6 +698,9 @@ func defaultAdapter(accessType, requested string) string {
 	if requested != "" {
 		return requested
 	}
+	if accessType == AccessTypeCloudAPI {
+		return AdapterWWTIOTCloudAPI
+	}
 	return AdapterMockGateway
 }
 
@@ -632,6 +708,9 @@ func defaultProviderCode(accessType, requested string) string {
 	requested = strings.TrimSpace(requested)
 	if requested != "" {
 		return requested
+	}
+	if accessType == AccessTypeCloudAPI {
+		return "wwtiot"
 	}
 	return defaultSimulatorProviderCode
 }
@@ -649,7 +728,7 @@ func defaultConnectionStatus(requested string, online bool) string {
 
 func validAccessType(value string) bool {
 	switch value {
-	case AccessTypeMockGateway:
+	case AccessTypeMockGateway, AccessTypeCloudAPI:
 		return true
 	default:
 		return false
@@ -658,7 +737,7 @@ func validAccessType(value string) bool {
 
 func validTransportProtocol(value string) bool {
 	switch value {
-	case TransportProtocolSimulator:
+	case TransportProtocolSimulator, TransportProtocolHTTP:
 		return true
 	default:
 		return false
@@ -667,8 +746,19 @@ func validTransportProtocol(value string) bool {
 
 func validAdapter(value string) bool {
 	switch value {
-	case AdapterMockGateway:
+	case AdapterMockGateway, AdapterWWTIOTCloudAPI:
 		return true
+	default:
+		return false
+	}
+}
+
+func validAccessTransportPair(accessType, protocol string) bool {
+	switch accessType {
+	case AccessTypeMockGateway:
+		return protocol == TransportProtocolSimulator
+	case AccessTypeCloudAPI:
+		return protocol == TransportProtocolHTTP
 	default:
 		return false
 	}
@@ -678,6 +768,8 @@ func validAccessAdapterPair(accessType, adapter string) bool {
 	switch accessType {
 	case AccessTypeMockGateway:
 		return adapter == AdapterMockGateway
+	case AccessTypeCloudAPI:
+		return adapter == AdapterWWTIOTCloudAPI
 	default:
 		return false
 	}
@@ -739,6 +831,10 @@ func cloneDevice(device Device) Device {
 func cloneCommand(command Command) Command {
 	command.Payload = cloneMap(command.Payload)
 	command.Attempts = append([]CommandAttempt(nil), command.Attempts...)
+	for i := range command.Attempts {
+		command.Attempts[i].RequestBody = cloneMap(command.Attempts[i].RequestBody)
+		command.Attempts[i].ResponseBody = cloneMap(command.Attempts[i].ResponseBody)
+	}
 	command.Events = append([]CommandEvent(nil), command.Events...)
 	return command
 }
