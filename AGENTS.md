@@ -8,6 +8,8 @@ This repository is split into a Go backend and a Vue 3 admin frontend. `backend/
 
 Any task that implements, reviews, or modifies frontend behavior under `frontend/` must load and follow the `$admin9-frontend-patterns` skill before editing. This includes pages, routes, API clients, lists, forms, modals, drawers, local components, locale strings, and module wiring. Use that skill to inspect the closest existing Admin9/Vue/Arco pattern first, keep ordinary page work in the page/module layer, and avoid framework, router, layout, interceptor, store, build-system, or backend changes unless the user request explicitly includes them or current evidence proves they are required.
 
+For frontend tasks that involve page layout, information architecture, visual hierarchy, interaction flow, UI polish, or screen composition, also load and follow `$frontend-design` alongside `$admin9-frontend-patterns`. Apply `$admin9-frontend-patterns` first to preserve the Admin9/Vue/Arco implementation boundary and local module conventions, then use `$frontend-design` to refine layout quality, usability, density, spacing, and visual decisions without drifting into framework rewrites or unrelated redesigns.
+
 ## Build, Test, and Development Commands
 
 Run backend commands from `backend/`: `make run` starts the API server, `make build` writes `bin/device-platform`, `make test` runs short Go tests, `make test-int` runs integration tests with the `integration` tag, `make lint` runs `go vet` plus `staticcheck`, and `make migrate-up` / `make migrate-down` apply database migrations using `DATABASE_URL`.
