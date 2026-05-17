@@ -219,7 +219,7 @@
       name: '',
       username: '',
       password: '',
-      ssl_mode: '',
+      ssl_mode: 'disable',
     },
     redis: {
       host: 'localhost',
