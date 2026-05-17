@@ -141,10 +141,10 @@
           <a-form :model="form.server" layout="vertical">
             <div class="form-grid">
               <a-form-item :label="t('setup.server.addr')">
-                <a-input v-model="form.server.addr" />
+                <a-input v-model="form.server.addr" :disabled="installing" />
               </a-form-item>
               <a-form-item :label="t('setup.server.logLevel')">
-                <a-select v-model="form.server.log_level">
+                <a-select v-model="form.server.log_level" :disabled="installing">
                   <a-option value="debug">debug</a-option>
                   <a-option value="info">info</a-option>
                   <a-option value="warn">warn</a-option>
@@ -153,6 +153,13 @@
               </a-form-item>
             </div>
           </a-form>
+          <div v-if="installing" class="install-status" aria-live="polite" aria-busy="true">
+            <icon-loading class="install-status-icon" />
+            <div class="install-status-copy">
+              <strong>{{ t('setup.installing.title') }}</strong>
+              <span>{{ t('setup.installing.desc') }}</span>
+            </div>
+          </div>
         </section>
 
         <section v-if="currentStep === 3" class="complete">
@@ -170,7 +177,7 @@
       <footer v-if="currentStep < completeStepIndex" class="setup-actions">
         <span class="setup-action-message" aria-live="polite">{{ errorMessage }}</span>
         <div class="setup-action-buttons">
-          <a-button v-if="currentStep > 0" @click="currentStep -= 1">{{ t('setup.action.prev') }}</a-button>
+          <a-button v-if="currentStep > 0" :disabled="installing" @click="prevStep">{{ t('setup.action.prev') }}</a-button>
           <a-button
             v-if="currentStep < installStepIndex"
             type="primary"
@@ -288,6 +295,7 @@
   const runtimeValid = computed(() => Boolean(form.server.addr.trim() && form.server.log_level));
 
   const canProceed = computed(() => {
+    if (installing.value) return false;
     if (currentStep.value === 0) return servicesFormValid.value && !checkingServices.value;
     if (currentStep.value === 1) return adminValid.value;
     if (currentStep.value === installStepIndex) return servicesValid.value && adminValid.value && runtimeValid.value;
@@ -303,9 +311,16 @@
   };
 
   const goToStep = (index: number) => {
+    if (installing.value) return;
     if (!isStepAvailable(index)) return;
     errorMessage.value = '';
     currentStep.value = index;
+  };
+
+  const prevStep = () => {
+    if (installing.value) return;
+    errorMessage.value = '';
+    currentStep.value -= 1;
   };
 
   const handleStepChange = (step: number) => {
@@ -317,8 +332,28 @@
     return err.response?.data?.message || err.response?.data?.data?.error || err.message || fallback;
   };
 
-  const showError = (error: unknown, fallback: string) => {
-    errorMessage.value = getErrorMessage(error, fallback);
+  const getErrorCode = (error: unknown) => {
+    const err = error as { response?: { data?: { error_code?: string } } };
+    return err.response?.data?.error_code;
+  };
+
+  const installErrorPrefixMap: Record<string, string> = {
+    admin_creation_failed: 'setup.error.installPrefix.admin',
+    config_write_failed: 'setup.error.installPrefix.config',
+    database_unavailable: 'setup.error.installPrefix.database',
+    install_lock_failed: 'setup.error.installPrefix.lock',
+    install_target_not_writable: 'setup.error.installPrefix.target',
+    invalid_install_request: 'setup.error.installPrefix.validation',
+    migration_failed: 'setup.error.installPrefix.migration',
+    redis_unavailable: 'setup.error.installPrefix.redis',
+    secret_generation_failed: 'setup.error.installPrefix.secret',
+    setup_forbidden: 'setup.error.installPrefix.installed',
+  };
+
+  const showInstallError = (error: unknown) => {
+    const message = getErrorMessage(error, t('setup.error.install'));
+    const prefixKey = installErrorPrefixMap[getErrorCode(error) || ''];
+    errorMessage.value = prefixKey ? t('setup.error.installDetail', { prefix: t(prefixKey), message }) : message;
   };
 
   const formatURLHost = (host: string) => {
@@ -418,6 +453,7 @@
   };
 
   const performInstall = async () => {
+    if (installing.value || !canProceed.value) return;
     installing.value = true;
     errorMessage.value = '';
     try {
@@ -425,7 +461,7 @@
       resetSetupGuardCache();
       currentStep.value = completeStepIndex;
     } catch (error) {
-      showError(error, t('setup.error.install'));
+      showInstallError(error);
     } finally {
       installing.value = false;
     }
@@ -579,6 +615,41 @@
     }
   }
 
+  .install-status {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    margin-top: 18px;
+    padding: 14px 16px;
+    color: #1e3a8a;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+  }
+
+  .install-status-icon {
+    flex: 0 0 auto;
+    margin-top: 2px;
+    font-size: 18px;
+    animation: setup-spin 900ms linear infinite;
+  }
+
+  .install-status-copy {
+    display: grid;
+    gap: 3px;
+
+    strong {
+      font-size: 14px;
+      line-height: 20px;
+    }
+
+    span {
+      color: #475569;
+      font-size: 13px;
+      line-height: 20px;
+    }
+  }
+
   .complete {
     display: grid;
     min-height: 258px;
@@ -700,6 +771,12 @@
   :deep(.arco-select-view-single:focus-within) {
     outline: 2px solid rgb(37 99 235 / 46%);
     outline-offset: 2px;
+  }
+
+  @keyframes setup-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   @media (width <= 760px) {

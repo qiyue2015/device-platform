@@ -41,5 +41,5 @@ export function testRedis(data: SetupInstallRequest['redis']) {
 }
 
 export function install(data: SetupInstallRequest) {
-  return axios.post('/setup/install', data);
+  return axios.post('/setup/install', data, silentErrorConfig);
 }
