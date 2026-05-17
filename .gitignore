@@ -48,3 +48,4 @@ temp/
 .vscode/
 *.swp
 *.swo
+.playwright-cli
