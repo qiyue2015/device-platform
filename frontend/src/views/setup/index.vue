@@ -15,7 +15,11 @@
 
       <section class="setup-card">
         <section v-if="currentStep === 0" class="welcome-stage">
-          <p>{{ t('setup.welcome.copy') }}</p>
+          <div class="welcome-copy">
+            <h2>{{ t('setup.welcome.title') }}</h2>
+            <p>{{ t('setup.welcome.copy') }}</p>
+            <p class="welcome-note">{{ t('setup.welcome.note') }}</p>
+          </div>
         </section>
 
         <section v-if="currentStep === 1" class="form-stage">
@@ -363,14 +367,31 @@
     display: grid;
     min-height: 258px;
     place-items: center;
-    text-align: center;
+  }
+
+  .welcome-copy {
+    max-width: 456px;
+    text-align: left;
+
+    h2 {
+      margin: 0 0 12px;
+      color: #0f172a;
+      font-weight: 750;
+      font-size: 22px;
+      line-height: 30px;
+      letter-spacing: 0;
+    }
 
     p {
-      max-width: 420px;
       margin: 0;
       color: #334155;
-      font-size: 17px;
-      line-height: 28px;
+      font-size: 15px;
+      line-height: 24px;
+    }
+
+    .welcome-note {
+      margin-top: 8px;
+      color: #64748b;
     }
   }
 
