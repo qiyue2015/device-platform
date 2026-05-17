@@ -22,6 +22,10 @@ export interface HttpResponse<T = unknown> {
   request_id?: string;
 }
 
+type RequestConfigWithSilentError = AxiosRequestConfig & {
+  silentError?: boolean;
+};
+
 if (import.meta.env.VITE_API_BASE_URL) {
   axios.defaults.baseURL = import.meta.env.VITE_API_BASE_URL;
 }
@@ -70,10 +74,12 @@ axios.interceptors.response.use(
     }
     // if the custom code is not 0, it is judged as an error.
     if (res.code !== 0) {
-      Message.error({
-        content: res.message || 'Error',
-        duration: 5 * 1000,
-      });
+      if (!(response.config as RequestConfigWithSilentError).silentError) {
+        Message.error({
+          content: res.message || 'Error',
+          duration: 5 * 1000,
+        });
+      }
       // 50008: Illegal token; 50012: Other clients logged in; 50014: Token expired;
       if (res.code === -1 && response.config.url !== '/api/user/info') {
         Modal.error({
@@ -105,10 +111,12 @@ axios.interceptors.response.use(
       }
     }
 
-    Message.error({
-      content: errorMessage,
-      duration: 5 * 1000,
-    });
+    if (!(error.config as RequestConfigWithSilentError | undefined)?.silentError) {
+      Message.error({
+        content: errorMessage,
+        duration: 5 * 1000,
+      });
+    }
     return Promise.reject(error);
   }
 );

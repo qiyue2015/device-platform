@@ -16,9 +16,38 @@
           <a-form :model="form" layout="vertical">
             <div class="connection-list">
               <section class="connection-block">
-                <a-form-item :label="t('setup.database.url')">
-                  <a-input v-model="form.database.url" allow-clear @input="resetDatabaseConnection" />
-                </a-form-item>
+                <h2>{{ t('setup.database.title') }}</h2>
+                <div class="form-grid service-grid">
+                  <a-form-item :label="t('setup.database.host')">
+                    <a-input v-model="form.database.host" allow-clear @input="resetDatabaseConnection" />
+                  </a-form-item>
+                  <a-form-item :label="t('setup.database.port')">
+                    <a-input-number
+                      v-model="form.database.port"
+                      :min="1"
+                      :max="65535"
+                      :precision="0"
+                      model-event="input"
+                      hide-button
+                      @input="resetDatabaseConnection"
+                    />
+                  </a-form-item>
+                  <a-form-item :label="t('setup.database.name')">
+                    <a-input v-model="form.database.name" allow-clear @input="resetDatabaseConnection" />
+                  </a-form-item>
+                  <a-form-item :label="t('setup.database.username')">
+                    <a-input v-model="form.database.username" allow-clear @input="resetDatabaseConnection" />
+                  </a-form-item>
+                  <a-form-item :label="t('setup.database.password')">
+                    <a-input-password v-model="form.database.password" allow-clear @input="resetDatabaseConnection" />
+                  </a-form-item>
+                  <a-form-item :label="t('setup.database.sslMode')">
+                    <a-select v-model="form.database.ssl_mode" @change="resetDatabaseConnection">
+                      <a-option value="disable">disable</a-option>
+                      <a-option value="require">require</a-option>
+                    </a-select>
+                  </a-form-item>
+                </div>
                 <div v-if="dbConnected" class="inline-status" aria-live="polite">
                   <span class="inline-status-text" :class="{ ok: dbConnected }">
                     <icon-check-circle />
@@ -28,9 +57,36 @@
               </section>
 
               <section class="connection-block">
-                <a-form-item :label="t('setup.redis.url')">
-                  <a-input v-model="form.redis.url" allow-clear @input="resetRedisConnection" />
-                </a-form-item>
+                <h2>{{ t('setup.redis.title') }}</h2>
+                <div class="form-grid service-grid">
+                  <a-form-item :label="t('setup.redis.host')">
+                    <a-input v-model="form.redis.host" allow-clear @input="resetRedisConnection" />
+                  </a-form-item>
+                  <a-form-item :label="t('setup.redis.port')">
+                    <a-input-number
+                      v-model="form.redis.port"
+                      :min="1"
+                      :max="65535"
+                      :precision="0"
+                      model-event="input"
+                      hide-button
+                      @input="resetRedisConnection"
+                    />
+                  </a-form-item>
+                  <a-form-item :label="t('setup.redis.database')">
+                    <a-input-number
+                      v-model="form.redis.database"
+                      :min="0"
+                      :precision="0"
+                      model-event="input"
+                      hide-button
+                      @input="resetRedisConnection"
+                    />
+                  </a-form-item>
+                  <a-form-item :label="t('setup.redis.password')">
+                    <a-input-password v-model="form.redis.password" allow-clear @input="resetRedisConnection" />
+                  </a-form-item>
+                </div>
                 <div v-if="redisConnected" class="inline-status" aria-live="polite">
                   <span class="inline-status-text" :class="{ ok: redisConnected }">
                     <icon-check-circle />
@@ -130,6 +186,7 @@
   import { useI18n } from 'vue-i18n';
   import { useRouter } from 'vue-router';
   import { getSetupStatus, install, testDatabase, testRedis } from '@/api/setup';
+  import type { SetupInstallRequest } from '@/api/setup';
   import { resetSetupGuardCache } from '@/router/guard/setup';
 
   defineOptions({ name: 'SetupWizard' });
@@ -147,10 +204,18 @@
 
   const form = reactive({
     database: {
-      url: 'postgres://postgres:postgres@localhost:5432/device_platform?sslmode=disable',
+      host: 'localhost',
+      port: 5432,
+      name: 'device_platform',
+      username: 'postgres',
+      password: 'postgres',
+      ssl_mode: 'disable',
     },
     redis: {
-      url: 'redis://localhost:6379/0',
+      host: 'localhost',
+      port: 6379,
+      database: 0,
+      password: '',
     },
     admin: {
       email: '',
@@ -184,7 +249,20 @@
   ]);
 
   const servicesValid = computed(() => dbConnected.value && redisConnected.value);
-  const servicesFormValid = computed(() => Boolean(form.database.url.trim() && form.redis.url.trim()));
+  const isValidPort = (value?: number) => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535;
+  const isValidRedisDatabase = (value?: number) => typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  const servicesFormValid = computed(() =>
+    Boolean(
+      form.database.host.trim() &&
+        isValidPort(form.database.port) &&
+        form.database.name.trim() &&
+        form.database.username.trim() &&
+        form.database.ssl_mode &&
+        form.redis.host.trim() &&
+        isValidPort(form.redis.port) &&
+        isValidRedisDatabase(form.redis.database)
+    )
+  );
 
   const adminValid = computed(
     () =>
@@ -230,6 +308,42 @@
     errorMessage.value = getErrorMessage(error, fallback);
   };
 
+  const formatURLHost = (host: string) => {
+    const value = host.trim();
+    if (value.includes(':') && !value.startsWith('[')) {
+      return `[${value}]`;
+    }
+    return value;
+  };
+
+  const buildDatabaseURL = () => {
+    const { host, name, password, port, ssl_mode: sslMode, username } = form.database;
+    const params = new URLSearchParams({ sslmode: sslMode });
+    const encodedUsername = encodeURIComponent(username.trim());
+    const encodedPassword = encodeURIComponent(password);
+    const encodedName = encodeURIComponent(name.trim());
+    return `postgres://${encodedUsername}:${encodedPassword}@${formatURLHost(
+      host
+    )}:${port}/${encodedName}?${params.toString()}`;
+  };
+
+  const buildRedisURL = () => {
+    const { database, host, password, port } = form.redis;
+    const auth = password ? `:${encodeURIComponent(password)}@` : '';
+    return `redis://${auth}${formatURLHost(host)}:${port}/${database}`;
+  };
+
+  const buildInstallPayload = (): SetupInstallRequest => ({
+    database: {
+      url: buildDatabaseURL(),
+    },
+    redis: {
+      url: buildRedisURL(),
+    },
+    admin: { ...form.admin },
+    server: { ...form.server },
+  });
+
   const refreshStatus = async () => {
     const res = await getSetupStatus();
     if (!res.data.needs_setup) {
@@ -248,13 +362,14 @@
   };
 
   const verifyServices = async () => {
+    const payload = buildInstallPayload();
     checkingServices.value = true;
     errorMessage.value = '';
     dbConnected.value = false;
     redisConnected.value = false;
 
     try {
-      await testDatabase(form.database);
+      await testDatabase(payload.database);
       dbConnected.value = true;
     } catch (error) {
       errorMessage.value = getErrorMessage(error, t('setup.error.database'));
@@ -263,7 +378,7 @@
     }
 
     try {
-      await testRedis(form.redis);
+      await testRedis(payload.redis);
       redisConnected.value = true;
     } catch (error) {
       errorMessage.value = getErrorMessage(error, t('setup.error.redis'));
@@ -286,7 +401,7 @@
     installing.value = true;
     errorMessage.value = '';
     try {
-      await install(form);
+      await install(buildInstallPayload());
       resetSetupGuardCache();
       currentStep.value = completeStepIndex;
     } catch (error) {
@@ -366,6 +481,14 @@
     padding-bottom: 18px;
     border-bottom: 1px solid #e2e8f0;
 
+    h2 {
+      margin: 0 0 14px;
+      color: #0f172a;
+      font-size: 15px;
+      line-height: 22px;
+      letter-spacing: 0;
+    }
+
     &:last-child {
       padding-bottom: 0;
       border-bottom: 0;
@@ -374,6 +497,11 @@
     :deep(.arco-form-item) {
       margin-bottom: 10px;
     }
+  }
+
+  .service-grid {
+    grid-template-columns: minmax(0, 1fr) 136px;
+    gap: 2px 16px;
   }
 
   .form-grid {
@@ -502,11 +630,17 @@
   }
 
   :deep(.arco-input-wrapper),
+  :deep(.arco-input-number),
   :deep(.arco-select-view-single) {
+    width: 100%;
     min-height: 42px;
     background: #fff;
     border-color: #cbd5e1;
     border-radius: 8px;
+  }
+
+  :deep(.arco-steps-item-tail) {
+    display: none;
   }
 
   :deep(.arco-form-item-label-col > label) {

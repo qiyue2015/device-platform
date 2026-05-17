@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { AxiosRequestConfig } from 'axios';
 
 export interface SetupStatus {
   needs_setup: boolean;
@@ -25,16 +26,18 @@ export interface SetupInstallRequest {
   };
 }
 
+const silentErrorConfig = { silentError: true } as AxiosRequestConfig & { silentError: boolean };
+
 export function getSetupStatus() {
   return axios.get<SetupStatus>('/setup/status');
 }
 
 export function testDatabase(data: SetupInstallRequest['database']) {
-  return axios.post('/setup/test-db', data);
+  return axios.post('/setup/test-db', data, silentErrorConfig);
 }
 
 export function testRedis(data: SetupInstallRequest['redis']) {
-  return axios.post('/setup/test-redis', data);
+  return axios.post('/setup/test-redis', data, silentErrorConfig);
 }
 
 export function install(data: SetupInstallRequest) {

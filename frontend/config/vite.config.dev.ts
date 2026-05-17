@@ -15,7 +15,19 @@ export default mergeConfig(
           target: 'http://localhost:8080',
           changeOrigin: true,
         },
-        '/setup': {
+        '/setup/status': {
+          target: 'http://localhost:8080',
+          changeOrigin: true,
+        },
+        '/setup/test-db': {
+          target: 'http://localhost:8080',
+          changeOrigin: true,
+        },
+        '/setup/test-redis': {
+          target: 'http://localhost:8080',
+          changeOrigin: true,
+        },
+        '/setup/install': {
           target: 'http://localhost:8080',
           changeOrigin: true,
         },
