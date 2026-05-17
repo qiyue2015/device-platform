@@ -235,7 +235,7 @@
     },
     server: {
       addr: ':8080',
-      log_level: '',
+      log_level: 'info',
     },
   });
 
