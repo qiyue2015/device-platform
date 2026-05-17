@@ -11,51 +11,30 @@
         </a-steps>
       </section>
 
-      <a-alert v-if="errorMessage" type="error" class="setup-error" :content="errorMessage" show-icon />
-
       <section class="setup-card">
         <section v-if="currentStep === 0" class="form-stage">
           <a-form :model="form" layout="vertical">
             <div class="connection-list">
               <section class="connection-block">
                 <a-form-item :label="t('setup.database.url')">
-                  <a-input v-model="form.database.url" allow-clear @input="dbConnected = false">
-                    <template #append>
-                      <a-button class="connection-test-button" type="primary" :loading="testingDb" @click="testDB">
-                        {{ t('setup.action.test') }}
-                      </a-button>
-                    </template>
-                  </a-input>
+                  <a-input v-model="form.database.url" allow-clear @input="resetDatabaseConnection" />
                 </a-form-item>
-                <div class="inline-status" aria-live="polite">
+                <div v-if="dbConnected" class="inline-status" aria-live="polite">
                   <span class="inline-status-text" :class="{ ok: dbConnected }">
-                    <icon-check-circle v-if="dbConnected" />
-                    <icon-clock-circle v-else />
-                    {{ dbConnected ? t('setup.action.tested') : t('setup.hint.needsTest') }}
+                    <icon-check-circle />
+                    {{ t('setup.hint.connectionVerified') }}
                   </span>
                 </div>
               </section>
 
               <section class="connection-block">
                 <a-form-item :label="t('setup.redis.url')">
-                  <a-input v-model="form.redis.url" allow-clear @input="redisConnected = false">
-                    <template #append>
-                      <a-button
-                        class="connection-test-button"
-                        type="primary"
-                        :loading="testingRedis"
-                        @click="testRedisConnection"
-                      >
-                        {{ t('setup.action.test') }}
-                      </a-button>
-                    </template>
-                  </a-input>
+                  <a-input v-model="form.redis.url" allow-clear @input="resetRedisConnection" />
                 </a-form-item>
-                <div class="inline-status" aria-live="polite">
+                <div v-if="redisConnected" class="inline-status" aria-live="polite">
                   <span class="inline-status-text" :class="{ ok: redisConnected }">
-                    <icon-check-circle v-if="redisConnected" />
-                    <icon-clock-circle v-else />
-                    {{ redisConnected ? t('setup.action.tested') : t('setup.hint.needsTest') }}
+                    <icon-check-circle />
+                    {{ t('setup.hint.connectionVerified') }}
                   </span>
                 </div>
               </section>
@@ -125,13 +104,22 @@
       </section>
 
       <footer v-if="currentStep < completeStepIndex" class="setup-actions">
-        <a-button v-if="currentStep > 0" @click="currentStep -= 1">{{ t('setup.action.prev') }}</a-button>
-        <a-button v-if="currentStep < installStepIndex" type="primary" :disabled="!canProceed" @click="nextStep">
-          {{ t('setup.action.next') }}
-        </a-button>
-        <a-button v-else type="primary" :disabled="!canProceed" :loading="installing" @click="performInstall">
-          {{ t('setup.action.install') }}
-        </a-button>
+        <span class="setup-action-message" aria-live="polite">{{ errorMessage }}</span>
+        <div class="setup-action-buttons">
+          <a-button v-if="currentStep > 0" @click="currentStep -= 1">{{ t('setup.action.prev') }}</a-button>
+          <a-button
+            v-if="currentStep < installStepIndex"
+            type="primary"
+            :disabled="!canProceed"
+            :loading="currentStep === 0 && checkingServices"
+            @click="nextStep"
+          >
+            {{ t('setup.action.next') }}
+          </a-button>
+          <a-button v-else type="primary" :disabled="!canProceed" :loading="installing" @click="performInstall">
+            {{ t('setup.action.install') }}
+          </a-button>
+        </div>
       </footer>
     </main>
   </div>
@@ -151,8 +139,7 @@
   const currentStep = ref(0);
   const dbConnected = ref(false);
   const redisConnected = ref(false);
-  const testingDb = ref(false);
-  const testingRedis = ref(false);
+  const checkingServices = ref(false);
   const installing = ref(false);
   const errorMessage = ref('');
   const installStepIndex = 2;
@@ -197,6 +184,7 @@
   ]);
 
   const servicesValid = computed(() => dbConnected.value && redisConnected.value);
+  const servicesFormValid = computed(() => Boolean(form.database.url.trim() && form.redis.url.trim()));
 
   const adminValid = computed(
     () =>
@@ -209,7 +197,7 @@
   const runtimeValid = computed(() => Boolean(form.server.addr.trim() && form.server.log_level));
 
   const canProceed = computed(() => {
-    if (currentStep.value === 0) return servicesValid.value;
+    if (currentStep.value === 0) return servicesFormValid.value && !checkingServices.value;
     if (currentStep.value === 1) return adminValid.value;
     if (currentStep.value === installStepIndex) return servicesValid.value && adminValid.value && runtimeValid.value;
     return true;
@@ -233,9 +221,13 @@
     goToStep(step - 1);
   };
 
-  const showError = (error: unknown, fallback: string) => {
+  const getErrorMessage = (error: unknown, fallback: string) => {
     const err = error as { response?: { data?: { message?: string; data?: { error?: string } } }; message?: string };
-    errorMessage.value = err.response?.data?.message || err.response?.data?.data?.error || err.message || fallback;
+    return err.response?.data?.message || err.response?.data?.data?.error || err.message || fallback;
+  };
+
+  const showError = (error: unknown, fallback: string) => {
+    errorMessage.value = getErrorMessage(error, fallback);
   };
 
   const refreshStatus = async () => {
@@ -245,37 +237,48 @@
     }
   };
 
-  const testDB = async () => {
-    testingDb.value = true;
+  const resetDatabaseConnection = () => {
+    dbConnected.value = false;
+    errorMessage.value = '';
+  };
+
+  const resetRedisConnection = () => {
+    redisConnected.value = false;
+    errorMessage.value = '';
+  };
+
+  const verifyServices = async () => {
+    checkingServices.value = true;
     errorMessage.value = '';
     dbConnected.value = false;
+    redisConnected.value = false;
+
     try {
       await testDatabase(form.database);
       dbConnected.value = true;
     } catch (error) {
-      showError(error, t('setup.error.database'));
-    } finally {
-      testingDb.value = false;
+      errorMessage.value = getErrorMessage(error, t('setup.error.database'));
+      checkingServices.value = false;
+      return false;
     }
-  };
 
-  const testRedisConnection = async () => {
-    testingRedis.value = true;
-    errorMessage.value = '';
-    redisConnected.value = false;
     try {
       await testRedis(form.redis);
       redisConnected.value = true;
     } catch (error) {
-      showError(error, t('setup.error.redis'));
-    } finally {
-      testingRedis.value = false;
+      errorMessage.value = getErrorMessage(error, t('setup.error.redis'));
+      checkingServices.value = false;
+      return false;
     }
+
+    checkingServices.value = false;
+    return true;
   };
 
-  const nextStep = () => {
+  const nextStep = async () => {
     if (!canProceed.value) return;
     errorMessage.value = '';
+    if (currentStep.value === 0 && !(await verifyServices())) return;
     currentStep.value += 1;
   };
 
@@ -345,10 +348,6 @@
     padding: 0 28px;
   }
 
-  .setup-error {
-    margin: 18px 28px 0;
-  }
-
   .setup-card {
     min-height: 306px;
     margin: 20px 28px 0;
@@ -375,12 +374,6 @@
     :deep(.arco-form-item) {
       margin-bottom: 10px;
     }
-  }
-
-  .connection-test-button {
-    min-width: 72px;
-    height: 42px;
-    border-radius: 0 8px 8px 0;
   }
 
   .form-grid {
@@ -465,9 +458,23 @@
   .setup-actions {
     display: flex;
     gap: 12px;
-    justify-content: flex-end;
+    align-items: center;
+    justify-content: space-between;
     min-height: 72px;
     padding: 16px 28px 28px;
+  }
+
+  .setup-action-message {
+    min-width: 0;
+    color: #dc2626;
+    font-size: 13px;
+    line-height: 20px;
+  }
+
+  .setup-action-buttons {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 12px;
   }
 
   :deep(.arco-steps) {
@@ -495,22 +502,11 @@
   }
 
   :deep(.arco-input-wrapper),
-  :deep(.arco-input-outer),
   :deep(.arco-select-view-single) {
     min-height: 42px;
     background: #fff;
     border-color: #cbd5e1;
     border-radius: 8px;
-  }
-
-  :deep(.arco-input-outer .arco-input-wrapper) {
-    border-radius: 8px 0 0 8px;
-  }
-
-  :deep(.arco-input-append) {
-    padding: 0;
-    background: transparent;
-    border-color: #2563eb;
   }
 
   :deep(.arco-form-item-label-col > label) {
