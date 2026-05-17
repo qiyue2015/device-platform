@@ -216,10 +216,10 @@
     database: {
       host: 'localhost',
       port: 5432,
-      name: 'device_platform',
-      username: 'postgres',
-      password: 'postgres',
-      ssl_mode: 'disable',
+      name: '',
+      username: '',
+      password: '',
+      ssl_mode: '',
     },
     redis: {
       host: 'localhost',
@@ -229,13 +229,13 @@
     },
     admin: {
       email: '',
-      display_name: 'Administrator',
+      display_name: '',
       password: '',
       confirm_password: '',
     },
     server: {
       addr: ':8080',
-      log_level: 'info',
+      log_level: '',
     },
   });
 
