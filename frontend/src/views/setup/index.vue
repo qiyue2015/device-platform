@@ -48,8 +48,12 @@
                     </a-select>
                   </a-form-item>
                 </div>
-                <div v-if="dbConnected" class="inline-status" aria-live="polite">
-                  <span class="inline-status-text" :class="{ ok: dbConnected }">
+                <div v-if="dbConnected || databaseErrorMessage" class="inline-status" aria-live="polite">
+                  <span v-if="databaseErrorMessage" class="inline-status-text error">
+                    <icon-exclamation-circle />
+                    {{ databaseErrorMessage }}
+                  </span>
+                  <span v-else class="inline-status-text ok">
                     <icon-check-circle />
                     {{ t('setup.hint.connectionVerified') }}
                   </span>
@@ -87,8 +91,12 @@
                     <a-input-password v-model="form.redis.password" allow-clear @input="resetRedisConnection" />
                   </a-form-item>
                 </div>
-                <div v-if="redisConnected" class="inline-status" aria-live="polite">
-                  <span class="inline-status-text" :class="{ ok: redisConnected }">
+                <div v-if="redisConnected || redisErrorMessage" class="inline-status" aria-live="polite">
+                  <span v-if="redisErrorMessage" class="inline-status-text error">
+                    <icon-exclamation-circle />
+                    {{ redisErrorMessage }}
+                  </span>
+                  <span v-else class="inline-status-text ok">
                     <icon-check-circle />
                     {{ t('setup.hint.connectionVerified') }}
                   </span>
@@ -199,6 +207,8 @@
   const checkingServices = ref(false);
   const installing = ref(false);
   const errorMessage = ref('');
+  const databaseErrorMessage = ref('');
+  const redisErrorMessage = ref('');
   const installStepIndex = 2;
   const completeStepIndex = 3;
 
@@ -353,11 +363,13 @@
 
   const resetDatabaseConnection = () => {
     dbConnected.value = false;
+    databaseErrorMessage.value = '';
     errorMessage.value = '';
   };
 
   const resetRedisConnection = () => {
     redisConnected.value = false;
+    redisErrorMessage.value = '';
     errorMessage.value = '';
   };
 
@@ -365,6 +377,8 @@
     const payload = buildInstallPayload();
     checkingServices.value = true;
     errorMessage.value = '';
+    databaseErrorMessage.value = '';
+    redisErrorMessage.value = '';
     dbConnected.value = false;
     redisConnected.value = false;
 
@@ -372,7 +386,7 @@
       await testDatabase(payload.database);
       dbConnected.value = true;
     } catch (error) {
-      errorMessage.value = getErrorMessage(error, t('setup.error.database'));
+      databaseErrorMessage.value = getErrorMessage(error, t('setup.error.database'));
       checkingServices.value = false;
       return false;
     }
@@ -381,7 +395,7 @@
       await testRedis(payload.redis);
       redisConnected.value = true;
     } catch (error) {
-      errorMessage.value = getErrorMessage(error, t('setup.error.redis'));
+      redisErrorMessage.value = getErrorMessage(error, t('setup.error.redis'));
       checkingServices.value = false;
       return false;
     }
@@ -527,6 +541,10 @@
 
     &.ok {
       color: #047857;
+    }
+
+    &.error {
+      color: #dc2626;
     }
   }
 
