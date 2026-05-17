@@ -15,7 +15,7 @@
         <a-descriptions v-if="simulator" :column="1" bordered>
           <a-descriptions-item label="Mode">{{ simulator.mode }}</a-descriptions-item>
           <a-descriptions-item label="Heartbeat">
-            {{ simulator.heartbeat_active ? 'active' : 'stopped' }}
+            <a-tag :color="simulatorConnectionMeta.color">{{ simulatorConnectionMeta.label }}</a-tag>
           </a-descriptions-item>
           <a-descriptions-item label="Updated">{{ simulator.updated_at }}</a-descriptions-item>
         </a-descriptions>
@@ -25,10 +25,11 @@
 </template>
 
 <script lang="ts" setup>
-  import { onMounted, ref } from 'vue';
+  import { computed, onMounted, ref } from 'vue';
   import { Message } from '@arco-design/web-vue';
   import useLoading from '@/hooks/loading';
   import { SimulatorState, getSimulator, updateSimulator } from '@/api/device-platform';
+  import { getBusinessStatusMeta } from '@/utils/device-platform-status';
 
   defineOptions({ name: 'SimulatorIndex' });
 
@@ -37,6 +38,9 @@
   const simulatorMode = ref('normal');
   const simulatorDelay = ref(800);
   const simulatorModes = ['normal', 'delay', 'offline', 'timeout_then_ack', 'duplicate_ack', 'fail'];
+  const simulatorConnectionMeta = computed(() =>
+    getBusinessStatusMeta('connection', simulator.value?.heartbeat_active ? 'online' : 'offline')
+  );
 
   const refresh = async () => {
     const res = await getSimulator();

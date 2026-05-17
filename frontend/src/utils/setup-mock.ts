@@ -6,29 +6,37 @@ export default ({ mock, setup }: { mock?: boolean; setup: () => void }) => {
 
 export const successResponseWrap = (data: unknown) => {
   return {
-    data,
-    status: 'ok',
-    message: '请求成功',
+    success: true,
+    status: 200,
     code: 0,
+    message: 'ok',
+    data,
+    meta: null,
+    request_id: '',
   };
 };
 
 export const successPaginationResponseWrap = (response: any) => {
   const { data, meta } = response;
   return {
+    success: true,
+    status: 200,
+    code: 0,
+    message: 'ok',
     data,
     meta,
-    status: 'ok',
-    message: '请求成功',
-    code: 0,
+    request_id: '',
   };
 };
 
 export const failResponseWrap = (data: unknown, message: string, code = 50000) => {
   return {
-    data,
-    status: 'fail',
-    message,
+    success: false,
+    status: 400,
     code,
+    error_code: String(code),
+    message,
+    data,
+    request_id: '',
   };
 };

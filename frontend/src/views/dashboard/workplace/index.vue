@@ -10,7 +10,9 @@
         <a-card title="Command Status" :bordered="false">
           <a-table size="small" row-key="id" :pagination="{ pageSize: 6 }" :data="commands" :columns="commandColumns">
             <template #status="{ record }">
-              <a-tag :color="statusColor(record.status)">{{ record.status }}</a-tag>
+              <a-tag :color="getBusinessStatusMeta('command', record.status).color">
+                {{ getBusinessStatusMeta('command', record.status).label }}
+              </a-tag>
             </template>
           </a-table>
         </a-card>
@@ -29,7 +31,9 @@
         <a-card title="Webhook Deliveries" :bordered="false">
           <a-table size="small" row-key="id" :pagination="{ pageSize: 6 }" :data="webhooks" :columns="webhookColumns">
             <template #status="{ record }">
-              <a-tag :color="statusColor(record.status)">{{ record.status }}</a-tag>
+              <a-tag :color="getBusinessStatusMeta('webhook', record.status).color">
+                {{ getBusinessStatusMeta('webhook', record.status).label }}
+              </a-tag>
             </template>
           </a-table>
         </a-card>
@@ -57,6 +61,7 @@
     queryProjects,
     queryWebhookDeliveries,
   } from '@/api/device-platform';
+  import { getBusinessStatusMeta } from '@/utils/device-platform-status';
 
   defineOptions({ name: 'DashboardWorkplace' });
 
@@ -90,13 +95,6 @@
     { title: 'Actor', dataIndex: 'actor_id' },
     { title: 'Created', dataIndex: 'created_at', ellipsis: true, tooltip: true },
   ]);
-
-  const statusColor = (status: string) => {
-    if (['success', 'delivered', 'online'].includes(status)) return 'green';
-    if (['failed', 'dead', 'timeout'].includes(status)) return 'red';
-    if (['offline', 'pending'].includes(status)) return 'orange';
-    return 'arcoblue';
-  };
 
   const refresh = async () => {
     const [projectRes, deviceRes, commandRes, webhookRes, auditRes] = await Promise.all([

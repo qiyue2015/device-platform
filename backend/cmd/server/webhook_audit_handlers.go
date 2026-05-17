@@ -6,13 +6,14 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/qiyue2015/device-platform/internal/httpjson"
 	"github.com/qiyue2015/device-platform/internal/webhookaudit"
 )
 
 func registerWebhookAuditRoutes(mux *http.ServeMux, service *webhookaudit.Service) {
 	mux.HandleFunc("/v1/projects/webhook-endpoints", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
 		}
 		var req webhookaudit.ProjectEndpoint
@@ -31,13 +32,13 @@ func registerWebhookAuditRoutes(mux *http.ServeMux, service *webhookaudit.Servic
 			ResourceID:   req.ProjectID,
 			Metadata:     map[string]any{"has_webhook": req.WebhookURL != ""},
 		})
-		writeWebhookJSON(w, http.StatusOK, map[string]any{"ok": true})
+		writeWebhookJSON(w, http.StatusOK, "ok", map[string]any{"ok": true})
 	})
 
 	mux.HandleFunc("/v1/events", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			writeWebhookJSON(w, http.StatusOK, map[string]any{"items": service.ListEvents()})
+			writeWebhookJSON(w, http.StatusOK, "ok", map[string]any{"items": service.ListEvents()})
 		case http.MethodPost:
 			var req webhookaudit.CreateEventRequest
 			if !decodeWebhookJSON(w, r, &req) {
@@ -56,29 +57,29 @@ func registerWebhookAuditRoutes(mux *http.ServeMux, service *webhookaudit.Servic
 				ResourceID:   event.ID,
 				Metadata:     map[string]any{"event_type": event.EventType},
 			})
-			writeWebhookJSON(w, http.StatusCreated, map[string]any{"event": event, "webhook_delivery": delivery})
+			writeWebhookJSON(w, http.StatusCreated, "created", map[string]any{"event": event, "webhook_delivery": delivery})
 		default:
-			writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		}
 	})
 
 	mux.HandleFunc("/v1/webhook-deliveries", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
 		}
-		writeWebhookJSON(w, http.StatusOK, map[string]any{"items": service.ListDeliveries()})
+		writeWebhookJSON(w, http.StatusOK, "ok", map[string]any{"items": service.ListDeliveries()})
 	})
 
 	mux.HandleFunc("/v1/webhook-deliveries/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
 		}
 		path := strings.TrimPrefix(r.URL.Path, "/v1/webhook-deliveries/")
 		id, action, ok := strings.Cut(path, "/")
 		if !ok || id == "" || action != "resend" {
-			writeWebhookError(w, http.StatusNotFound, "not_found")
+			writeWebhookError(w, http.StatusNotFound, "not_found", "resource not found")
 			return
 		}
 		delivery, err := service.ResendDead(r.Context(), id)
@@ -94,13 +95,13 @@ func registerWebhookAuditRoutes(mux *http.ServeMux, service *webhookaudit.Servic
 			ResourceID:   delivery.ID,
 			Metadata:     map[string]any{"event_id": delivery.EventID},
 		})
-		writeWebhookJSON(w, http.StatusOK, delivery)
+		writeWebhookJSON(w, http.StatusOK, "ok", delivery)
 	})
 
 	mux.HandleFunc("/v1/audit-logs", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			writeWebhookJSON(w, http.StatusOK, map[string]any{"items": service.ListAudits()})
+			writeWebhookJSON(w, http.StatusOK, "ok", map[string]any{"items": service.ListAudits()})
 		case http.MethodPost:
 			var req webhookaudit.AuditRequest
 			if !decodeWebhookJSON(w, r, &req) {
@@ -111,9 +112,9 @@ func registerWebhookAuditRoutes(mux *http.ServeMux, service *webhookaudit.Servic
 				writeWebhookServiceError(w, err)
 				return
 			}
-			writeWebhookJSON(w, http.StatusCreated, audit)
+			writeWebhookJSON(w, http.StatusCreated, "created", audit)
 		default:
-			writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+			writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		}
 	})
 }
@@ -152,33 +153,31 @@ func decodeWebhookJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(out); err != nil {
-		writeWebhookError(w, http.StatusBadRequest, "invalid_json")
+		writeWebhookError(w, http.StatusBadRequest, "invalid_json", "invalid JSON body")
 		return false
 	}
 	return true
 }
 
-func writeWebhookJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+func writeWebhookJSON(w http.ResponseWriter, status int, message string, value any) {
+	httpjson.Write(w, status, message, value)
 }
 
-func writeWebhookError(w http.ResponseWriter, status int, code string) {
-	writeWebhookJSON(w, status, map[string]string{"error": code})
+func writeWebhookError(w http.ResponseWriter, status int, code, message string) {
+	httpjson.Error(w, status, code, message)
 }
 
 func writeWebhookServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, webhookaudit.ErrInvalidArgument):
-		writeWebhookError(w, http.StatusBadRequest, err.Error())
+		writeWebhookError(w, http.StatusBadRequest, "invalid_argument", err.Error())
 	case errors.Is(err, webhookaudit.ErrNotFound):
-		writeWebhookError(w, http.StatusNotFound, "not_found")
+		writeWebhookError(w, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, webhookaudit.ErrNotDeadDelivery):
-		writeWebhookError(w, http.StatusBadRequest, "webhook_not_dead")
+		writeWebhookError(w, http.StatusBadRequest, "webhook_not_dead", "only dead webhook deliveries can be resent")
 	case errors.Is(err, webhookaudit.ErrDeliveryBusy):
-		writeWebhookError(w, http.StatusConflict, "webhook_delivery_busy")
+		writeWebhookError(w, http.StatusConflict, "webhook_delivery_busy", "webhook delivery is already being processed")
 	default:
-		writeWebhookError(w, http.StatusInternalServerError, "internal_error")
+		writeWebhookError(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }

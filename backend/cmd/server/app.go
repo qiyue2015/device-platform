@@ -91,16 +91,23 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/v1/auth/menu", a.handle(a.requireBearer(a.handleMenu)))
 
 	mux.HandleFunc("/v1/admin/", a.handle(a.requireBearer(a.handleAdminPlaceholder)))
-	mux.Handle("/v1/open/", httpapi.NewOpenRouterWithHooks(a.deviceService, httpapi.RouterHooks{
+	openRouter := httpapi.NewOpenRouterWithHooks(a.deviceService, httpapi.RouterHooks{
 		OnCommandCreated: a.recordCommandCreated,
-	}))
+	})
+	mux.Handle("/v1/open/", openRouter)
 	protectedV1 := http.NewServeMux()
 	registerWebhookAuditRoutes(protectedV1, a.webhooks)
 	gateway.NewHandler(a.gateway).RegisterSimulator(protectedV1)
 	protectedV1.Handle("/v1/", httpapi.NewRouterWithHooks(a.deviceService, httpapi.RouterHooks{
 		OnCommandCreated: a.recordCommandCreated,
 	}))
-	mux.Handle("/v1/", a.requireBearerHandler(protectedV1))
+	mux.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/open/") {
+			openRouter.ServeHTTP(w, r)
+			return
+		}
+		a.requireBearerHandler(protectedV1).ServeHTTP(w, r)
+	}))
 
 	return withRequestLogging(a.logger, withCORS(mux))
 }

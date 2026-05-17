@@ -37,7 +37,9 @@
           @row-click="loadCommandDetail"
         >
           <template #commandStatus="{ record }">
-            <a-tag :color="statusColor(record.status)">{{ record.status }}</a-tag>
+            <a-tag :color="getBusinessStatusMeta('command', record.status).color">
+              {{ getBusinessStatusMeta('command', record.status).label }}
+            </a-tag>
           </template>
         </a-table>
         <a-card v-if="commandDetail" title="Command Detail" :bordered="false">
@@ -58,6 +60,7 @@
   import { computed, onMounted, reactive, ref, watch } from 'vue';
   import { Message } from '@arco-design/web-vue';
   import useLoading from '@/hooks/loading';
+  import { getBusinessStatusMeta } from '@/utils/device-platform-status';
   import {
     CommandDetail,
     CommandRecord,
@@ -88,13 +91,6 @@
     { title: 'Policy', dataIndex: 'delivery_policy' },
     { title: 'Status', slotName: 'commandStatus' },
   ]);
-
-  const statusColor = (status: string) => {
-    if (['success', 'delivered', 'online'].includes(status)) return 'green';
-    if (['failed', 'dead', 'timeout'].includes(status)) return 'red';
-    if (['offline', 'pending'].includes(status)) return 'orange';
-    return 'arcoblue';
-  };
 
   const refresh = async () => {
     const [projectRes, deviceRes, commandRes] = await Promise.all([queryProjects(), queryDevices(), queryCommands()]);

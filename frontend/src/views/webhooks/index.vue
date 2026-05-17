@@ -3,7 +3,9 @@
     <a-card :title="$t('menu.webhooks')" :bordered="false">
       <a-table row-key="id" :loading="loading" :pagination="{ pageSize: 10 }" :data="webhooks" :columns="columns">
         <template #webhookStatus="{ record }">
-          <a-tag :color="statusColor(record.status)">{{ record.status }}</a-tag>
+          <a-tag :color="getBusinessStatusMeta('webhook', record.status).color">
+            {{ getBusinessStatusMeta('webhook', record.status).label }}
+          </a-tag>
         </template>
         <template #webhookActions="{ record }">
           <a-button size="mini" data-testid="resend-webhook" @click="handleResendWebhook(record.id)">Resend</a-button>
@@ -17,6 +19,7 @@
   import { computed, onMounted, ref } from 'vue';
   import { Message } from '@arco-design/web-vue';
   import useLoading from '@/hooks/loading';
+  import { getBusinessStatusMeta } from '@/utils/device-platform-status';
   import { WebhookDeliveryRecord, queryWebhookDeliveries, resendWebhookDelivery } from '@/api/device-platform';
 
   defineOptions({ name: 'WebhooksIndex' });
@@ -31,13 +34,6 @@
     { title: 'Last Error', dataIndex: 'last_error', ellipsis: true, tooltip: true },
     { title: 'Actions', slotName: 'webhookActions', width: 100 },
   ]);
-
-  const statusColor = (status: string) => {
-    if (['delivered'].includes(status)) return 'green';
-    if (['failed', 'dead'].includes(status)) return 'red';
-    if (['pending'].includes(status)) return 'orange';
-    return 'arcoblue';
-  };
 
   const refresh = async () => {
     const res = await queryWebhookDeliveries();

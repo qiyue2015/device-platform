@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/qiyue2015/device-platform/internal/httpjson"
 )
 
 type Handler struct {
@@ -30,16 +32,16 @@ func (h *Handler) RegisterSimulator(mux *http.ServeMux) {
 func (h *Handler) gatewayConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, snapshotResponse(h.service.Snapshot()))
+		writeJSON(w, http.StatusOK, "ok", snapshotResponse(h.service.Snapshot()))
 	case http.MethodPatch, http.MethodPut, http.MethodPost:
 		var request modeRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_json")
+			writeError(w, http.StatusBadRequest, "invalid_json", "invalid JSON body")
 			return
 		}
 		mode, err := ParseMode(request.Mode)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_mode")
+			writeError(w, http.StatusBadRequest, "invalid_mode", "invalid simulator mode")
 			return
 		}
 		if err := h.service.SetMode(ModeConfig{
@@ -48,64 +50,64 @@ func (h *Handler) gatewayConfig(w http.ResponseWriter, r *http.Request) {
 			TimeoutOffset: durationFromMillis(request.TimeoutOffsetMillis),
 			Heartbeat:     durationFromMillis(request.HeartbeatMillis),
 		}); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_mode")
+			writeError(w, http.StatusBadRequest, "invalid_mode", "invalid simulator mode")
 			return
 		}
-		writeJSON(w, http.StatusOK, snapshotResponse(h.service.Snapshot()))
+		writeJSON(w, http.StatusOK, "ok", snapshotResponse(h.service.Snapshot()))
 	default:
 		w.Header().Set("Allow", "GET, PATCH, POST, PUT")
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
 }
 
 func (h *Handler) deviceCommands(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
 	var request commandRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json")
+		writeError(w, http.StatusBadRequest, "invalid_json", "invalid JSON body")
 		return
 	}
 	if strings.TrimSpace(request.CommandType) == "" {
-		writeError(w, http.StatusBadRequest, "command_type_required")
+		writeError(w, http.StatusBadRequest, "command_type_required", "command_type is required")
 		return
 	}
 
 	record, err := h.service.CreateCommand(r.Context(), request.CommandType, request.Payload)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "command_create_failed")
+		writeError(w, http.StatusInternalServerError, "command_create_failed", "failed to create command")
 		return
 	}
-	writeJSON(w, http.StatusAccepted, record)
+	writeJSON(w, http.StatusAccepted, "accepted", record)
 }
 
 func (h *Handler) deviceCommandByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
 
 	id := strings.TrimPrefix(r.URL.Path, "/v1/open/device-commands/")
 	if id == "" || strings.Contains(id, "/") {
-		writeError(w, http.StatusNotFound, "not_found")
+		writeError(w, http.StatusNotFound, "not_found", "resource not found")
 		return
 	}
 
 	record, err := h.service.GetCommand(id)
 	if errors.Is(err, ErrCommandNotFound) {
-		writeError(w, http.StatusNotFound, "not_found")
+		writeError(w, http.StatusNotFound, "not_found", "resource not found")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "command_read_failed")
+		writeError(w, http.StatusInternalServerError, "command_read_failed", "failed to read command")
 		return
 	}
-	writeJSON(w, http.StatusOK, record)
+	writeJSON(w, http.StatusOK, "ok", record)
 }
 
 type modeRequest struct {
@@ -119,10 +121,6 @@ type commandRequest struct {
 	DeviceID    string         `json:"device_id"`
 	CommandType string         `json:"command_type"`
 	Payload     map[string]any `json:"payload"`
-}
-
-type errorResponse struct {
-	Error string `json:"error"`
 }
 
 type gatewayResponse struct {
@@ -156,12 +154,10 @@ func durationFromMillis(value int64) time.Duration {
 	return time.Duration(value) * time.Millisecond
 }
 
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+func writeJSON(w http.ResponseWriter, status int, message string, payload any) {
+	httpjson.Write(w, status, message, payload)
 }
 
-func writeError(w http.ResponseWriter, status int, code string) {
-	writeJSON(w, status, errorResponse{Error: code})
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	httpjson.Error(w, status, code, message)
 }

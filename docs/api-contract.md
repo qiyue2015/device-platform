@@ -29,6 +29,66 @@ Version comes first in every API path.
 
 Do not put all backend UI APIs under `/v1/admin/`. `admin` means platform-level administration, not simply "has login state".
 
+## JSON Response Envelope
+
+All JSON APIs must return the same response envelope. Do not add new business APIs that return a bare array, a bare object, or a legacy error object such as `{"error":"..."}`.
+
+Success response:
+
+```json
+{
+  "success": true,
+  "status": 200,
+  "code": 0,
+  "message": "ok",
+  "data": {},
+  "meta": null,
+  "request_id": ""
+}
+```
+
+Error response:
+
+```json
+{
+  "success": false,
+  "status": 400,
+  "code": 400,
+  "message": "invalid request",
+  "error_code": "invalid_request",
+  "data": null,
+  "request_id": ""
+}
+```
+
+Envelope field rules:
+
+| Field | Contract |
+| --- | --- |
+| `success` | Boolean success flag. |
+| `status` | HTTP status code copied into the response body. It is not a business status. |
+| `code` | Numeric frontend decision code. `0` means success; non-zero means failure. |
+| `error_code` | Stable string error code for failed responses. Omit on success. |
+| `message` | Human-readable message for UI and diagnostics. |
+| `data` | Business payload on success, `null` on failure. |
+| `meta` | Optional pagination or response metadata. Use `null` when empty. |
+| `request_id` | Request correlation id. It may be empty until middleware fills it. |
+
+Frontend success handling is based on `code === 0`. Do not change it to HTTP-only success detection without updating this contract and the interceptor together.
+
+## Business Status Names
+
+`status` inside the response envelope is reserved for the HTTP status code. Resource-level state fields keep their own names or context:
+
+| Resource | Field | Allowed values |
+| --- | --- | --- |
+| Command | `status` | `created`, `queued`, `sent`, `acked`, `success`, `failed`, `timeout`, `cancelled`, `offline` |
+| Webhook delivery | `status` | `pending`, `sending`, `delivered`, `failed`, `dead` |
+| Device connection | `connection_status` | `unknown`, `online`, `offline` |
+| Device lifecycle | `lifecycle_status` | `active`, `disabled`, `deleted` |
+
+Frontend presentation must use the shared device-platform status dictionary for labels and colors instead of page-local `statusColor()` functions.
+
 ## Open API Authentication
 
 `/v1/open/...` is for machine-to-machine calls from business systems.

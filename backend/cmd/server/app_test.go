@@ -196,10 +196,59 @@ func TestOpenAPIKeyGate(t *testing.T) {
 		t.Fatalf("expected api key 200, got %d", allowed.Code)
 	}
 	var body devicecore.Project
-	decodeResponse(t, allowed, &body)
+	decodeResponseData(t, allowed, &body)
 	if body.ID != projectID {
 		t.Fatalf("expected open api project id %q, got %+v", projectID, body)
 	}
+}
+
+func TestSmokeRoutesReturnUnifiedEnvelope(t *testing.T) {
+	server := newTestServer()
+
+	setupStatus := doRequest(t, server, http.MethodGet, "/setup/status", "", nil)
+	assertEnvelope(t, setupStatus, http.StatusOK, true)
+
+	login := doRequest(t, server, http.MethodPost, "/v1/auth/login", `{"email":"admin@test.local","password":"test-admin-password"}`, nil)
+	loginBody := assertEnvelope(t, login, http.StatusOK, true)
+	token := dataFieldString(t, loginBody, "access_token")
+
+	authHeaders := map[string]string{"Authorization": "Bearer " + token}
+	project := doRequest(t, server, http.MethodPost, "/v1/projects", `{"name":"smoke project"}`, authHeaders)
+	projectBody := assertEnvelope(t, project, http.StatusCreated, true)
+	projectID := dataFieldString(t, projectBody, "id")
+	apiKey := dataFieldString(t, projectBody, "api_key")
+
+	projects := doRequest(t, server, http.MethodGet, "/v1/projects", "", authHeaders)
+	assertEnvelope(t, projects, http.StatusOK, true)
+
+	device := doRequest(t, server, http.MethodPost, "/v1/devices", `{"project_id":"`+projectID+`","name":"smoke lock","device_type":"smart_lock","online":true}`, authHeaders)
+	deviceBody := assertEnvelope(t, device, http.StatusCreated, true)
+	deviceID := dataFieldString(t, deviceBody, "id")
+
+	devices := doRequest(t, server, http.MethodGet, "/v1/devices?project_id="+projectID, "", authHeaders)
+	assertEnvelope(t, devices, http.StatusOK, true)
+
+	openProject := doRequest(t, server, http.MethodGet, "/v1/open/projects/"+projectID, "", map[string]string{"X-API-Key": apiKey})
+	assertEnvelope(t, openProject, http.StatusOK, true)
+
+	command := doRequest(t, server, http.MethodPost, "/v1/device-commands", `{"project_id":"`+projectID+`","device_id":"`+deviceID+`","command_type":"query_status"}`, authHeaders)
+	commandBody := assertEnvelope(t, command, http.StatusCreated, true)
+	commandID := dataFieldString(t, commandBody, "id")
+
+	commandDetail := doRequest(t, server, http.MethodGet, "/v1/device-commands/"+commandID+"?project_id="+projectID, "", authHeaders)
+	assertEnvelope(t, commandDetail, http.StatusOK, true)
+
+	webhooks := doRequest(t, server, http.MethodGet, "/v1/webhook-deliveries", "", authHeaders)
+	assertEnvelope(t, webhooks, http.StatusOK, true)
+
+	resendMissing := doRequest(t, server, http.MethodPost, "/v1/webhook-deliveries/missing/resend", "", authHeaders)
+	assertEnvelope(t, resendMissing, http.StatusNotFound, false)
+
+	simulator := doRequest(t, server, http.MethodGet, "/v1/simulator", "", authHeaders)
+	assertEnvelope(t, simulator, http.StatusOK, true)
+
+	simulatorUpdate := doRequest(t, server, http.MethodPatch, "/v1/simulator", `{"mode":"normal","delay_ms":100}`, authHeaders)
+	assertEnvelope(t, simulatorUpdate, http.StatusOK, true)
 }
 
 func TestDeviceRoutesPreserveAppFoundation(t *testing.T) {
@@ -271,7 +320,7 @@ func TestCreateDeviceAcceptsSimulatorAccessFields(t *testing.T) {
 		t.Fatalf("expected device 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var device map[string]interface{}
-	decodeResponse(t, rec, &device)
+	decodeResponseData(t, rec, &device)
 	if device["access_type"] != "mock_gateway" ||
 		device["transport_protocol"] != "simulator" ||
 		device["adapter"] != "mock_gateway" ||
@@ -301,7 +350,7 @@ func TestCreateDeviceReportsContractErrorsWithoutInvalidJSON(t *testing.T) {
 				"access_type":"mock_gateway",
 				"surprise":"not in contract"
 			}`,
-			wantError: "unknown_field",
+			wantError: `json: unknown field "surprise"`,
 		},
 		{
 			name: "cloud api unsupported",
@@ -341,12 +390,15 @@ func TestCreateDeviceReportsContractErrorsWithoutInvalidJSON(t *testing.T) {
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("expected device 400, got %d: %s", rec.Code, rec.Body.String())
 			}
-			var body map[string]string
+			var body jsonResponse
 			decodeResponse(t, rec, &body)
-			if body["error"] != tc.wantError {
-				t.Fatalf("error = %q, want %q", body["error"], tc.wantError)
+			if body.ErrorCode != "invalid_argument" && body.ErrorCode != "unknown_field" {
+				t.Fatalf("error_code = %q, want stable error code", body.ErrorCode)
 			}
-			if body["error"] == "invalid_json" {
+			if body.Message != tc.wantError {
+				t.Fatalf("message = %q, want %q", body.Message, tc.wantError)
+			}
+			if body.ErrorCode == "invalid_json" {
 				t.Fatalf("contract error must not be reported as invalid_json")
 			}
 		})
@@ -413,7 +465,7 @@ func TestCommandCreationRecordsWebhookDeliveryAndAudit(t *testing.T) {
 		t.Fatalf("expected command 201, got %d: %s", command.Code, command.Body.String())
 	}
 	var commandBody map[string]interface{}
-	decodeResponse(t, command, &commandBody)
+	decodeResponseData(t, command, &commandBody)
 	commandID, _ := commandBody["id"].(string)
 	if commandID == "" {
 		t.Fatalf("command id missing: %+v", commandBody)
@@ -430,7 +482,7 @@ func TestCommandCreationRecordsWebhookDeliveryAndAudit(t *testing.T) {
 	var auditBody struct {
 		Items []map[string]interface{} `json:"items"`
 	}
-	decodeResponse(t, audits, &auditBody)
+	decodeResponseData(t, audits, &auditBody)
 	found := false
 	for _, item := range auditBody.Items {
 		if item["action"] == "command.created" {
@@ -475,7 +527,7 @@ func waitForWebhookDelivery(t *testing.T, server http.Handler) webhookDeliveryLi
 		if deliveries.Code != http.StatusOK {
 			t.Fatalf("expected deliveries 200, got %d", deliveries.Code)
 		}
-		decodeResponse(t, deliveries, &last)
+		decodeResponseData(t, deliveries, &last)
 		if len(last.Items) > 0 {
 			return last
 		}
@@ -497,7 +549,7 @@ func createProjectForTest(t *testing.T, server http.Handler) string {
 		t.Fatalf("expected project 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var project map[string]interface{}
-	decodeResponse(t, rec, &project)
+	decodeResponseData(t, rec, &project)
 	id, _ := project["id"].(string)
 	if id == "" {
 		t.Fatalf("project id missing: %+v", project)
@@ -516,7 +568,7 @@ func createProjectForOpenAPITest(t *testing.T, server http.Handler) (string, str
 		t.Fatalf("expected project 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var project map[string]interface{}
-	decodeResponse(t, rec, &project)
+	decodeResponseData(t, rec, &project)
 	id, _ := project["id"].(string)
 	apiKey, _ := project["api_key"].(string)
 	if id == "" || apiKey == "" {
@@ -557,7 +609,7 @@ func createDeviceForTest(t *testing.T, server http.Handler, projectID string) st
 		t.Fatalf("expected device 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var device map[string]interface{}
-	decodeResponse(t, rec, &device)
+	decodeResponseData(t, rec, &device)
 	id, _ := device["id"].(string)
 	if id == "" {
 		t.Fatalf("device id missing: %+v", device)
@@ -567,7 +619,87 @@ func createDeviceForTest(t *testing.T, server http.Handler, projectID string) st
 
 func decodeResponse(t *testing.T, body *httptest.ResponseRecorder, dest interface{}) {
 	t.Helper()
-	decodeBody(t, body.Body, dest)
+	decodeBody(t, strings.NewReader(body.Body.String()), dest)
+}
+
+func decodeResponseData(t *testing.T, body *httptest.ResponseRecorder, dest interface{}) {
+	t.Helper()
+	var envelope jsonResponse
+	decodeResponse(t, body, &envelope)
+	assertEnvelopeFields(t, body, envelope, true)
+	payload, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatalf("marshal envelope data: %v", err)
+	}
+	if err := json.Unmarshal(payload, dest); err != nil {
+		t.Fatalf("decode envelope data: %v", err)
+	}
+}
+
+func doRequest(t *testing.T, server http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	server.ServeHTTP(rec, req)
+	return rec
+}
+
+func assertEnvelope(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int, wantSuccess bool) jsonResponse {
+	t.Helper()
+	if rec.Code != wantStatus {
+		t.Fatalf("HTTP status = %d, want %d: %s", rec.Code, wantStatus, rec.Body.String())
+	}
+	var envelope jsonResponse
+	decodeResponse(t, rec, &envelope)
+	assertEnvelopeFields(t, rec, envelope, wantSuccess)
+	return envelope
+}
+
+func assertEnvelopeFields(t *testing.T, rec *httptest.ResponseRecorder, envelope jsonResponse, wantSuccess bool) {
+	t.Helper()
+	if envelope.Success != wantSuccess {
+		t.Fatalf("success = %v, want %v: %+v", envelope.Success, wantSuccess, envelope)
+	}
+	if envelope.Status != rec.Code {
+		t.Fatalf("envelope status = %d, want HTTP status %d", envelope.Status, rec.Code)
+	}
+	if wantSuccess {
+		if envelope.Code != 0 || envelope.Message == "" || envelope.ErrorCode != "" {
+			t.Fatalf("expected success envelope, got %+v", envelope)
+		}
+		var raw map[string]json.RawMessage
+		decodeBody(t, strings.NewReader(rec.Body.String()), &raw)
+		if string(raw["meta"]) != "null" {
+			t.Fatalf("success envelope meta = %s, want null", raw["meta"])
+		}
+		return
+	}
+	if envelope.Code == 0 || envelope.ErrorCode == "" || envelope.Data != nil {
+		t.Fatalf("expected error envelope, got %+v", envelope)
+	}
+}
+
+func dataFieldString(t *testing.T, envelope jsonResponse, key string) string {
+	t.Helper()
+	data, ok := envelope.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("data is %T, want object: %+v", envelope.Data, envelope.Data)
+	}
+	value, _ := data[key].(string)
+	if value == "" {
+		t.Fatalf("data.%s missing: %+v", key, data)
+	}
+	return value
 }
 
 func setAdminBearer(req *http.Request) {

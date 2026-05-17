@@ -36,7 +36,9 @@
         <a-col :span="16">
           <a-table row-key="id" :loading="loading" :data="devices" :columns="columns">
             <template #status="{ record }">
-              <a-tag :color="record.connection_status === 'online' ? 'green' : 'orange'">{{ record.connection_status }}</a-tag>
+              <a-tag :color="getBusinessStatusMeta('connection', record.connection_status).color">
+                {{ getBusinessStatusMeta('connection', record.connection_status).label }}
+              </a-tag>
             </template>
           </a-table>
         </a-col>
@@ -49,6 +51,7 @@
   import { computed, onMounted, reactive, ref } from 'vue';
   import { Message } from '@arco-design/web-vue';
   import useLoading from '@/hooks/loading';
+  import { getBusinessStatusMeta } from '@/utils/device-platform-status';
   import { DeviceRecord, ProjectRecord, createDevice, queryDevices, queryProjects } from '@/api/device-platform';
 
   defineOptions({ name: 'DevicesIndex' });

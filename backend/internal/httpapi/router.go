@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/qiyue2015/device-platform/internal/devicecore"
+	"github.com/qiyue2015/device-platform/internal/httpjson"
 )
 
 type Router struct {
@@ -56,7 +57,7 @@ func (r *Router) handleAdminCommands(w http.ResponseWriter, req *http.Request) {
 	}
 	switch req.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, r.service.ListCommands(projectID))
+		writeJSON(w, http.StatusOK, "ok", r.service.ListCommands(projectID))
 	case http.MethodPost:
 		var body devicecore.CreateCommandRequest
 		if !decodeJSON(w, req, &body) {
@@ -104,7 +105,7 @@ func (r *Router) handleAdminCommandByID(w http.ResponseWriter, req *http.Request
 		writeResult(w, nil, err, http.StatusOK)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, http.StatusOK, "ok", map[string]any{
 		"command":  command,
 		"attempts": command.Attempts,
 		"events":   command.Events,
@@ -114,7 +115,7 @@ func (r *Router) handleAdminCommandByID(w http.ResponseWriter, req *http.Request
 func (r *Router) handleProjects(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, r.service.ListProjects())
+		writeJSON(w, http.StatusOK, "ok", r.service.ListProjects())
 	case http.MethodPost:
 		var body devicecore.CreateProjectRequest
 		if !decodeJSON(w, req, &body) {
@@ -153,7 +154,7 @@ func (r *Router) handleDevices(w http.ResponseWriter, req *http.Request) {
 	switch req.Method {
 	case http.MethodGet:
 		projectID := req.URL.Query().Get("project_id")
-		writeJSON(w, http.StatusOK, r.service.ListDevices(projectID))
+		writeJSON(w, http.StatusOK, "ok", r.service.ListDevices(projectID))
 	case http.MethodPost:
 		var body devicecore.CreateDeviceRequest
 		if !decodeJSON(w, req, &body) {
@@ -210,7 +211,7 @@ func (r *Router) handleOpenProjectByID(w http.ResponseWriter, req *http.Request)
 		notFound(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, project)
+	writeJSON(w, http.StatusOK, "ok", project)
 }
 
 func (r *Router) handleOpenDevices(w http.ResponseWriter, req *http.Request) {
@@ -222,7 +223,7 @@ func (r *Router) handleOpenDevices(w http.ResponseWriter, req *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, r.service.ListDevices(project.ID))
+	writeJSON(w, http.StatusOK, "ok", r.service.ListDevices(project.ID))
 }
 
 func (r *Router) handleOpenDeviceByID(w http.ResponseWriter, req *http.Request) {
@@ -246,7 +247,7 @@ func (r *Router) handleOpenCommands(w http.ResponseWriter, req *http.Request) {
 	}
 	switch req.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, r.service.ListCommands(project.ID))
+		writeJSON(w, http.StatusOK, "ok", r.service.ListCommands(project.ID))
 	case http.MethodPost:
 		var body devicecore.CreateCommandRequest
 		if !decodeJSON(w, req, &body) {
@@ -294,12 +295,12 @@ func (r *Router) handleOpenCommandByID(w http.ResponseWriter, req *http.Request)
 func (r *Router) authenticateOpen(w http.ResponseWriter, req *http.Request) (devicecore.Project, bool) {
 	apiKey := strings.TrimSpace(req.Header.Get("X-API-Key"))
 	if apiKey == "" {
-		writeError(w, http.StatusUnauthorized, "missing_api_key")
+		writeError(w, http.StatusUnauthorized, "missing_api_key", "missing API key")
 		return devicecore.Project{}, false
 	}
 	project, err := r.service.ProjectByAPIKey(apiKey)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, "invalid_api_key")
+		writeError(w, http.StatusUnauthorized, "invalid_api_key", "invalid API key")
 		return devicecore.Project{}, false
 	}
 	return project, true
@@ -311,10 +312,10 @@ func decodeJSON(w http.ResponseWriter, req *http.Request, out any) bool {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(out); err != nil {
 		if strings.HasPrefix(err.Error(), "json: unknown field ") {
-			writeError(w, http.StatusBadRequest, "unknown_field")
+			writeError(w, http.StatusBadRequest, "unknown_field", err.Error())
 			return false
 		}
-		writeError(w, http.StatusBadRequest, "invalid_json")
+		writeError(w, http.StatusBadRequest, "invalid_json", "invalid JSON body")
 		return false
 	}
 	return true
@@ -322,37 +323,41 @@ func decodeJSON(w http.ResponseWriter, req *http.Request, out any) bool {
 
 func writeResult(w http.ResponseWriter, value any, err error, successStatus int) {
 	if err == nil {
-		writeJSON(w, successStatus, value)
+		message := "ok"
+		if successStatus == http.StatusCreated {
+			message = "created"
+		}
+		writeJSON(w, successStatus, message, value)
 		return
 	}
 	switch {
 	case errors.Is(err, devicecore.ErrNotFound):
-		writeError(w, http.StatusNotFound, "not_found")
+		writeError(w, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, devicecore.ErrIdempotencyConflict):
-		writeError(w, http.StatusConflict, "idempotency_key_conflict")
-	case errors.Is(err, devicecore.ErrUnsafeDeliveryOverride), errors.Is(err, devicecore.ErrInvalidArgument):
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusConflict, "idempotency_key_conflict", "idempotency key conflict")
+	case errors.Is(err, devicecore.ErrUnsafeDeliveryOverride):
+		writeError(w, http.StatusBadRequest, "unsafe_delivery_policy_override", err.Error())
+	case errors.Is(err, devicecore.ErrInvalidArgument):
+		writeError(w, http.StatusBadRequest, "invalid_argument", err.Error())
 	case errors.Is(err, devicecore.ErrInvalidTransition):
-		writeError(w, http.StatusConflict, "invalid_command_transition")
+		writeError(w, http.StatusConflict, "invalid_command_transition", "invalid command transition")
 	default:
-		writeError(w, http.StatusInternalServerError, "internal_error")
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+func writeJSON(w http.ResponseWriter, status int, message string, value any) {
+	httpjson.Write(w, status, message, value)
 }
 
-func writeError(w http.ResponseWriter, status int, code string) {
-	writeJSON(w, status, map[string]string{"error": code})
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	httpjson.Error(w, status, code, message)
 }
 
 func methodNotAllowed(w http.ResponseWriter) {
-	writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 }
 
 func notFound(w http.ResponseWriter) {
-	writeError(w, http.StatusNotFound, "not_found")
+	writeError(w, http.StatusNotFound, "not_found", "resource not found")
 }

@@ -1,21 +1,14 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+
+	"github.com/qiyue2015/device-platform/internal/httpjson"
 )
 
-type jsonResponse struct {
-	Success   bool        `json:"success"`
-	Status    int         `json:"status"`
-	Message   string      `json:"message"`
-	Code      int         `json:"code"`
-	Data      interface{} `json:"data"`
-	Meta      interface{} `json:"meta,omitempty"`
-	RequestID string      `json:"request_id,omitempty"`
-}
+type jsonResponse = httpjson.Response
 
 type apiError struct {
 	status  int
@@ -32,27 +25,15 @@ func newAPIError(status int, code, message string) apiError {
 }
 
 func writeOK(w http.ResponseWriter, data interface{}) {
-	writeJSON(w, http.StatusOK, jsonResponse{Success: true, Status: http.StatusOK, Message: "ok", Code: 0, Data: data})
+	httpjson.OK(w, data)
 }
 
 func writeCreated(w http.ResponseWriter, data interface{}) {
-	writeJSON(w, http.StatusCreated, jsonResponse{Success: true, Status: http.StatusCreated, Message: "created", Code: 0, Data: data})
+	httpjson.Created(w, data)
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, jsonResponse{
-		Success: false,
-		Status:  status,
-		Message: message,
-		Code:    status,
-		Data:    map[string]string{"error": code},
-	})
-}
-
-func writeJSON(w http.ResponseWriter, status int, body jsonResponse) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	httpjson.Error(w, status, code, message)
 }
 
 func handleError(w http.ResponseWriter, logger *slog.Logger, err error) {

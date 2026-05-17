@@ -17,8 +17,9 @@ export interface HttpResponse<T = unknown> {
   status: number;
   message: string;
   code: number;
+  error_code?: string;
   data: T;
-  meta?: PaginationMeta;
+  meta?: PaginationMeta | null;
   request_id?: string;
 }
 
@@ -70,6 +71,8 @@ axios.interceptors.response.use(
         message: 'OK',
         code: 0,
         data: res,
+        meta: undefined,
+        request_id: '',
       };
     }
     // if the custom code is not 0, it is judged as an error.
