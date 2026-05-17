@@ -668,10 +668,6 @@
     border-radius: 8px;
   }
 
-  :deep(.arco-steps-item-tail) {
-    display: none;
-  }
-
   :deep(.arco-form-item-label-col > label) {
     color: #334155;
     font-weight: 650;
