@@ -488,24 +488,29 @@
 
   .connection-list {
     display: grid;
-    gap: 18px;
+    gap: 26px;
   }
 
   .connection-block {
-    padding-bottom: 18px;
-    border-bottom: 1px solid #e2e8f0;
-
     h2 {
-      margin: 0 0 14px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin: 0 0 16px;
       color: #0f172a;
+      font-weight: 750;
       font-size: 15px;
       line-height: 22px;
       letter-spacing: 0;
-    }
 
-    &:last-child {
-      padding-bottom: 0;
-      border-bottom: 0;
+      &::before {
+        display: block;
+        width: 4px;
+        height: 16px;
+        background: #2563eb;
+        border-radius: 999px;
+        content: '';
+      }
     }
 
     :deep(.arco-form-item) {
