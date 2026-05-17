@@ -4,6 +4,10 @@
 
 This repository is split into a Go backend and a Vue 3 admin frontend. `backend/` contains the IoT device platform service; its entrypoint is `backend/cmd/server/main.go`, and Make targets live in `backend/Makefile`. `frontend/` contains the Admin9 Pro web app. UI code is under `frontend/src/`, grouped into `api/`, `components/`, `layout/`, `router/`, `store/`, `utils/`, and `views/`. Vite config is in `frontend/config/`, tooling scripts in `frontend/scripts/`, static assets in `frontend/src/assets/`, and API/MVP contracts in `docs/`.
 
+## Admin9 Frontend Skill Requirement
+
+Any task that implements, reviews, or modifies frontend behavior under `frontend/` must load and follow the `$admin9-frontend-patterns` skill before editing. This includes pages, routes, API clients, lists, forms, modals, drawers, local components, locale strings, and module wiring. Use that skill to inspect the closest existing Admin9/Vue/Arco pattern first, keep ordinary page work in the page/module layer, and avoid framework, router, layout, interceptor, store, build-system, or backend changes unless the user request explicitly includes them or current evidence proves they are required.
+
 ## Build, Test, and Development Commands
 
 Run backend commands from `backend/`: `make run` starts the API server, `make build` writes `bin/device-platform`, `make test` runs short Go tests, `make test-int` runs integration tests with the `integration` tag, `make lint` runs `go vet` plus `staticcheck`, and `make migrate-up` / `make migrate-down` apply database migrations using `DATABASE_URL`.
