@@ -57,6 +57,9 @@ func Error(w http.ResponseWriter, status int, errorCode, message string) {
 }
 
 func writeEnvelope(w http.ResponseWriter, status int, body Response) {
+	if body.RequestID == "" {
+		body.RequestID = w.Header().Get("X-Request-ID")
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)

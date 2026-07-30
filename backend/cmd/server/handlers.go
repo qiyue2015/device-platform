@@ -2,9 +2,10 @@ package main
 
 import (
 	"database/sql"
-	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/qiyue2015/device-platform/internal/httpjson"
 )
 
 type loginRequest struct {
@@ -43,7 +44,7 @@ func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) error {
 		return newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
 	var req loginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httpjson.DecodeStrict(r.Body, &req); err != nil {
 		return newAPIError(http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
 	}
 	if a.auth == nil {
@@ -138,7 +139,7 @@ func (a *app) handleSetupTestDB(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	var req databaseSetupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httpjson.DecodeStrict(r.Body, &req); err != nil {
 		return newAPIError(http.StatusBadRequest, "invalid_request", "invalid request")
 	}
 	if err := testDatabaseConnection(r.Context(), req.URL); err != nil {
@@ -156,7 +157,7 @@ func (a *app) handleSetupTestRedis(w http.ResponseWriter, r *http.Request) error
 		return err
 	}
 	var req redisSetupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httpjson.DecodeStrict(r.Body, &req); err != nil {
 		return newAPIError(http.StatusBadRequest, "invalid_request", "invalid request")
 	}
 	if err := testRedisConnection(r.Context(), req.URL); err != nil {
@@ -171,7 +172,7 @@ func (a *app) handleSetupInstall(w http.ResponseWriter, r *http.Request) error {
 		return newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
 	var req setupInstallRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := httpjson.DecodeStrict(r.Body, &req); err != nil {
 		return newAPIError(http.StatusBadRequest, "invalid_request", "invalid request")
 	}
 	result, err := performInstall(r.Context(), req)

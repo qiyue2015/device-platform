@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -324,11 +323,10 @@ func (r *Router) authenticateOpen(w http.ResponseWriter, req *http.Request) (dev
 
 func decodeJSON(w http.ResponseWriter, req *http.Request, out any) bool {
 	defer req.Body.Close()
-	decoder := json.NewDecoder(req.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(out); err != nil {
-		if strings.HasPrefix(err.Error(), "json: unknown field ") {
-			writeError(w, http.StatusBadRequest, "unknown_field", err.Error())
+	if err := httpjson.DecodeStrict(req.Body, out); err != nil {
+		if errors.Is(err, httpjson.ErrUnknownField) {
+			message := strings.TrimPrefix(err.Error(), httpjson.ErrUnknownField.Error()+": ")
+			writeError(w, http.StatusBadRequest, "unknown_field", message)
 			return false
 		}
 		writeError(w, http.StatusBadRequest, "invalid_json", "invalid JSON body")

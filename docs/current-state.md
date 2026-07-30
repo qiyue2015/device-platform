@@ -3,7 +3,7 @@ title: 当前实现状态
 snapshot_date: 2026-07-31
 status: implementation-snapshot
 contract_freeze_revision: 2026-07-31.1
-verified_against_code_revision: 1938e41630a8e0c88db906bcf0f111a261dd3ef4
+verified_against_code_revision: 96b2d59fc03a399eff0669d9aea117d1700a7e09
 ---
 
 # 当前实现状态
@@ -36,7 +36,7 @@ verified_against_code_revision: 1938e41630a8e0c88db906bcf0f111a261dd3ef4
 | Webhook 配置                      | 部分实现         | Project CRUD 的 `webhook_url` 与 `/v1/projects/webhook-endpoints` 属于两套状态；`backend/internal/devicecore/service.go:65`、`backend/internal/webhookaudit/service.go:65`。                                    |
 | 命令超时与离线恢复                | 部分实现         | 领域方法和独立 simulator 逻辑存在；业务 Command 没有周期扫描执行器，状态可能长期悬挂。                                                                                                                          |
 | 管理后台                          | 部分实现         | 已有 Project、Device、Command、Webhook、Audit 和 simulator 页面/API 调用；部分字段、动作与后端不一致。                                                                                                          |
-| 请求关联与分页                    | 未实现           | envelope 定义 `request_id`，但响应写入没有生成或贯穿 request ID；所有列表仍返回完整集合，`meta` 为空。                                                                                                          |
+| 请求关联与分页                    | 部分实现         | 服务端生成 UUID request ID 并写入 `X-Request-ID`、响应 envelope、上下文与请求日志；合法客户端 ID 独立保留，见 `backend/internal/httpjson/request.go`。所有列表仍返回完整集合，`meta` 为空。                        |
 
 ## 关键实现漂移
 
@@ -50,8 +50,8 @@ verified_against_code_revision: 1938e41630a8e0c88db906bcf0f111a261dd3ef4
 - Provider 读取当前只返回布尔 `configured`，尚未实现 `integration_status` 的三层证据语义；simulator 也未作为统一 Provider registry 项接入业务 Device/Command 主链。
 - schema 没有 Webhook Delivery Attempt、manual replay 关联、worker lease、confirmation level 或 Command `unknown` 状态所需字段。
 - 管理员 JWT 当前只校验签名和到期时间；refresh 用仍有效 token 续签，logout 不做服务端失效，schema 也没有 `session_generation`。
-- login 当前没有持久失败计数或限流；setup 的 POST 完成后返回 `403 setup_forbidden`，请求 decoder 也没有执行冻结合同的严格未知字段、重复 key 与尾随 JSON 检查。
-- 所有列表接口返回完整集合，当前没有服务端分页。
+- login 当前没有持久失败计数或限流；setup 的 POST 完成后返回 `403 setup_forbidden`。HTTP JSON object 请求已统一拒绝未知字段、重复 key、尾随值与超限 body，但各资源的字段级 schema 和错误码仍需随持久主链实现继续对齐。
+- 所有列表接口返回完整集合，当前没有服务端分页；request ID 已贯穿 HTTP header、envelope、context 与请求日志，但尚未随持久领域写入进入 Audit。
 
 ### 命令与 Provider
 

@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -35,7 +34,7 @@ func (h *Handler) gatewayConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, "ok", snapshotResponse(h.service.Snapshot()))
 	case http.MethodPatch, http.MethodPut, http.MethodPost:
 		var request modeRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		if err := httpjson.DecodeStrict(r.Body, &request); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_json", "invalid JSON body")
 			return
 		}
@@ -68,7 +67,7 @@ func (h *Handler) deviceCommands(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var request commandRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	if err := httpjson.DecodeStrict(r.Body, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", "invalid JSON body")
 		return
 	}

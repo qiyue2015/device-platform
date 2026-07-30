@@ -12,6 +12,7 @@ import (
 	"github.com/qiyue2015/device-platform/internal/devicecore"
 	"github.com/qiyue2015/device-platform/internal/gateway"
 	"github.com/qiyue2015/device-platform/internal/httpapi"
+	"github.com/qiyue2015/device-platform/internal/httpjson"
 	"github.com/qiyue2015/device-platform/internal/storage"
 	"github.com/qiyue2015/device-platform/internal/webhookaudit"
 )
@@ -121,7 +122,7 @@ func (a *app) routes() http.Handler {
 		a.requireBearerHandler(protectedV1).ServeHTTP(w, r)
 	}))
 
-	return withRequestLogging(a.logger, withCORS(mux))
+	return httpjson.WithRequestID(withRequestLogging(a.logger, withCORS(mux)))
 }
 
 func (a *app) recordCommandCreated(r *http.Request, command devicecore.Command) {
@@ -224,6 +225,7 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Key, X-Project-ID")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -239,6 +241,7 @@ func withRequestLogging(logger *slog.Logger, next http.Handler) http.Handler {
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.String("remote_addr", r.RemoteAddr),
+			slog.String("request_id", httpjson.RequestID(r.Context())),
 		)
 		next.ServeHTTP(w, r)
 	})

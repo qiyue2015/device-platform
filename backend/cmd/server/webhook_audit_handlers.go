@@ -1,8 +1,8 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 
@@ -131,28 +131,22 @@ func withHTTPAuditFields(req webhookaudit.AuditRequest, r *http.Request) webhook
 		req.UserAgent = r.UserAgent()
 	}
 	if req.RequestID == "" {
-		req.RequestID = r.Header.Get("X-Request-ID")
+		req.RequestID = httpjson.RequestID(r.Context())
 	}
 	return req
 }
 
 func clientIP(r *http.Request) string {
-	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
-		ip, _, _ := strings.Cut(forwarded, ",")
-		return strings.TrimSpace(ip)
-	}
-	host, _, ok := strings.Cut(r.RemoteAddr, ":")
-	if ok {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil {
 		return host
 	}
-	return r.RemoteAddr
+	return strings.TrimSpace(r.RemoteAddr)
 }
 
 func decodeWebhookJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	defer r.Body.Close()
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(out); err != nil {
+	if err := httpjson.DecodeStrict(r.Body, out); err != nil {
 		writeWebhookError(w, http.StatusBadRequest, "invalid_json", "invalid JSON body")
 		return false
 	}

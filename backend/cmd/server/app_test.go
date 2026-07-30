@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/qiyue2015/device-platform/internal/devicecore"
+	"github.com/qiyue2015/device-platform/internal/httpjson"
+	"github.com/qiyue2015/device-platform/internal/webhookaudit"
 )
 
 const testJWTSecret = defaultMemoryJWTSecret
@@ -133,6 +136,31 @@ func TestHealthAndReadyUseUnifiedJSON(t *testing.T) {
 		if !body.Success || body.Code != 0 {
 			t.Fatalf("%s expected success envelope, got %+v", path, body)
 		}
+		if body.RequestID == "" || rec.Header().Get("X-Request-ID") != body.RequestID {
+			t.Fatalf("%s request ID header/envelope mismatch: header=%q body=%q", path, rec.Header().Get("X-Request-ID"), body.RequestID)
+		}
+		if rec.Header().Get("Access-Control-Expose-Headers") != "X-Request-ID" {
+			t.Fatalf("%s must expose X-Request-ID to browser clients", path)
+		}
+	}
+}
+
+func TestHTTPAuditFieldsUseServerRequestIdentityAndDirectPeer(t *testing.T) {
+	var audit webhookaudit.AuditRequest
+	handler := httpjson.WithRequestID(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		audit = withHTTPAuditFields(webhookaudit.AuditRequest{}, r)
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/v1/projects", nil)
+	request.RemoteAddr = "[2001:db8::1]:4321"
+	request.Header.Set("X-Request-ID", "client-request")
+	request.Header.Set("X-Forwarded-For", "203.0.113.9")
+	handler.ServeHTTP(httptest.NewRecorder(), request.WithContext(context.Background()))
+
+	if audit.RequestID == "" || audit.RequestID == "client-request" {
+		t.Fatalf("audit must use generated server request ID, got %q", audit.RequestID)
+	}
+	if audit.IPAddress != "2001:db8::1" {
+		t.Fatalf("audit IP must use the direct peer, got %q", audit.IPAddress)
 	}
 }
 
