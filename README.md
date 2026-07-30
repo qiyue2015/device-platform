@@ -1,50 +1,41 @@
 # Device Platform
 
-Generic IoT device platform for device management, command dispatch, state tracking, offline queueing, simulator-based verification, and webhook delivery.
+Device Platform 是由一名管理员维护的 IoT 设备接入与控制平台。当前唯一目标是依据共享单车智能锁的真实接入和使用，形成可实际运行、可持久化、状态可信的核心链路；通用性来自已确认的平台边界和统一 Gateway/Provider 接入方式，不来自对未来业务的预建。
 
-The first hardware sample is a smart lock, but the platform should stay device-type agnostic. Device-specific behavior belongs in device types, capabilities, adapters, payloads, and raw message records.
+当前代码已经包含后台、Project/Device/Command API、WWTIOT 下行适配、模拟器组件和 Webhook/Audit 界面，但业务数据仍以内存为主，模拟器与业务 Command 断链，WWTIOT HTTP 接受也被直接记为设备执行成功。因此当前实现尚未达到目标闭环。
 
-## Repository Structure
+## 仓库结构
 
 ```text
 .
 ├── backend/    Go API service
-├── frontend/   Vue 3 admin frontend
-└── docs/       Engineering contracts for implementation
+├── frontend/   Vue 3 Admin9 frontend
+└── docs/       当前产品与工程合同
 ```
 
-## Documentation
+## 文档入口
 
-- [Engineering docs](./docs/README.md): implementation-facing contracts and current stage notes.
-- [MVP-1 contract](./docs/mvp-1-contract.md): coding scope, simulator behavior, and acceptance criteria.
-- [API contract](./docs/api-contract.md): API namespaces, command lifecycle, delivery policy, offline queue, and webhook expectations.
-- [Local development](./docs/local-development.md): local MVP-1 run commands, env files, health check, and simulator acceptance path.
-- [Backend README](./backend/README.md): backend local commands.
-- [Frontend README](./frontend/README.md): frontend local commands and UI project conventions.
+按以下顺序阅读：
 
-Private background notes, decisions, vendor materials, and long-form rationale should stay outside this repository.
+1. [Platform Boundary Contract](./docs/platform-boundary-contract.md)：什么属于平台，什么属于业务应用。
+2. [Platform Target Contract](./docs/platform-target-contract.md)：当前真实目标与完成定义。
+3. [Domain Model Contract](./docs/domain-model-contract.md)：对象、关系、不变量、事务边界和恢复责任。
+4. [API Contract](./docs/api-contract.md)：接口、认证和生命周期语义。
+5. [Current State](./docs/current-state.md)：`2026-07-31` 的实现事实与缺口。
+6. [Local Development](./docs/local-development.md)：启动、检查和当前可验证范围。
 
-## Current Stage
+历史交付过程由 Git 保存，不作为当前权威文档。下级文档、schema、模板菜单和当前代码不能反向扩大产品边界。
 
-MVP-1 is the active implementation stage.
+当前真实接入的从属合同：
 
-MVP-1 is a simulator-backed closed loop with no vendor dependency:
+- [smart-lock Device Type Contract](./docs/device-types/smart-lock.md)：规范化智能锁能力与已确认安全属性。
+- [WWTIOT Provider 合同](./docs/providers/wwtiot.md)：V1.1/V2 厂商资料、当前 V2 实现映射、confirmation level 与真实设备验收 Unknown。
 
-```text
-Project -> Device -> Command -> Gateway/Adapter -> State/Event -> Webhook
-```
+两类从属合同均受 Platform Boundary、Platform Target 和通用 API Contract 约束；具体 action 不进入 Platform Core 全局语义。
 
-External-vendor adapter integration and direct-device protocol integration are follow-up stages. They still depend on credentials, callback configuration, device ownership confirmation, and real-device protocol verification.
+## 本地开发
 
-## Start Development
-
-Start by reading the implementation contracts:
-
-- [MVP-1 contract](./docs/mvp-1-contract.md): what must be built and accepted in the current stage.
-- [API contract](./docs/api-contract.md): API namespaces, command lifecycle, delivery policy, offline queue, and webhook rules.
-- [Local development](./docs/local-development.md): detailed local setup and acceptance flow.
-
-Prepare local services and env files from the repository root:
+从仓库根目录准备本地依赖与环境文件：
 
 ```bash
 createdb device_platform
@@ -54,65 +45,28 @@ make check-db
 pnpm --dir frontend install
 ```
 
-`make setup-local` creates ignored local env files:
-
-```text
-backend/.env
-frontend/.env.development
-```
-
-Run the backend in one terminal:
+分别启动后端与前端：
 
 ```bash
 make dev-backend
-curl http://localhost:8080/healthz
-```
-
-Run the frontend in another terminal:
-
-```bash
 make dev-frontend
 ```
 
-The frontend dev server proxies relative `/v1/...` requests to `http://localhost:8080`.
+后端默认地址为 `http://localhost:8080`。前端默认使用 `http://localhost:5173`，并代理相对 `/setup/...` 与 `/v1/...` 请求。
 
-Open the first-run setup wizard in the browser:
+首次运行打开 `http://localhost:5173/setup`，完成后使用 `http://localhost:5173/auth/login`。这些步骤只证明当前本地功能可运行，不代表真实智能锁目标链路已验收。
 
-```text
-http://localhost:5173/setup
-```
+## 常用检查
 
-Complete the database, Redis, runtime, and administrator-account checks. After installation, open:
-
-```text
-http://localhost:5173/auth/login
-```
-
-Use the administrator account created in the setup wizard. If Vite starts on another port because `5173` is occupied, use the URL printed by `make dev-frontend` with the same path.
-
-Before handing off changes, run:
+从仓库根目录：
 
 ```bash
+make check-backend
+make check-frontend
 make check
 ```
 
-This verifies backend tests and lint, frontend type checking and build, i18n keys, and PostgreSQL/Redis service reachability.
-
-## Where To Make Changes
-
-- Backend HTTP entrypoint and handlers: `backend/cmd/server/`.
-- Backend domain logic: `backend/internal/devicecore/`, `backend/internal/gateway/`, and `backend/internal/webhookaudit/`.
-- Backend migrations and storage contracts: `backend/internal/storage/`.
-- Frontend API modules: `frontend/src/api/`.
-- Frontend pages and reusable UI: `frontend/src/views/` and `frontend/src/components/`.
-- Frontend routes, state, utilities, and locale text: `frontend/src/router/`, `frontend/src/store/`, `frontend/src/utils/`, and `frontend/src/locale/`.
-- Implementation contracts: `docs/`.
-
-Update `docs/` whenever behavior, API shape, database semantics, local commands, or acceptance criteria change.
-
-## Common Commands
-
-Run backend commands from `backend/` when using the backend Makefile directly:
+从 `backend/`：
 
 ```bash
 make build
@@ -123,7 +77,7 @@ make migrate-up
 make migrate-down
 ```
 
-Run frontend commands from `frontend/` when using package scripts directly:
+从 `frontend/`：
 
 ```bash
 pnpm dev
@@ -134,21 +88,16 @@ pnpm format
 pnpm i18n:check
 ```
 
-## API Namespaces
+具体依赖、命令含义和安全验证边界见 [Local Development](./docs/local-development.md)。
 
-```text
-/v1/auth/...      Backend user authentication
-/v1/...           Logged-in backend APIs
-/v1/admin/...     Platform administrator APIs only
-/v1/open/...      Business-system Open API with Project API Key auth
-```
+## 代码位置
 
-`/v1/admin/...` is only for platform-level administration. Normal logged-in backend APIs should stay under `/v1/...`.
+- 后端入口与 handlers：`backend/cmd/server/`
+- 核心设备与命令逻辑：`backend/internal/devicecore/`
+- Gateway/simulator：`backend/internal/gateway/`
+- Webhook/Audit：`backend/internal/webhookaudit/`
+- migration 与 storage contracts：`backend/internal/storage/`
+- 前端 API 与页面：`frontend/src/api/`、`frontend/src/views/`
+- 当前产品与工程合同：`docs/`
 
-## Maintenance Rule
-
-Keep repository docs focused on implementation contracts.
-
-- Update `docs/` when code behavior, API contracts, database semantics, runtime commands, tests, deployment, or acceptance criteria change.
-- Update the private knowledge base when project background, vendor facts, scope decisions, rationale, or pending questions change.
-- Update both only when a design decision changes and the implementation contract also changes.
+行为、接口、数据库语义或完成状态变化时，应同步更新对应文档层级，不用实施顺序或编号版本替代产品边界。

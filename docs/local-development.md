@@ -1,153 +1,132 @@
 ---
-title: MVP-1 Local Development
+title: 本地开发与验证
 created: 2026-05-16
-updated: 2026-05-16
-status: current
+updated: 2026-07-31
+status: operational-guide
 ---
 
-# MVP-1 Local Development
+# 本地开发与验证
 
-This document is the local development contract for MVP-1. It is intentionally limited to the local simulator-backed loop and does not define production deployment.
+本文说明当前仓库可执行的本地启动和廉价验证方式，不定义产品边界或完成状态。目标验收以[当前平台目标合同](./platform-target-contract.md)为准，当前缺口见[当前实现状态](./current-state.md)。
 
-MVP-1 does not depend on external vendor adapters, public callback URLs, vendor credentials, or real hardware. The first closed loop is:
+## 本地依赖
 
-```text
-Project -> Device -> Command -> Simulator Gateway -> State/Event -> Webhook
-```
+| Service     | 默认地址                                     |
+| ----------- | -------------------------------------------- |
+| PostgreSQL  | `localhost:5432`                             |
+| Redis       | `localhost:6379`                             |
+| Backend API | `localhost:8080`                             |
+| Frontend    | `localhost:5173`，端口占用时以 Vite 输出为准 |
 
-## Local Dependencies
-
-Use local services already installed on the machine:
-
-| Service | Default |
-| --- | --- |
-| PostgreSQL | `localhost:5432` |
-| Redis | `localhost:6379` |
-| Backend API | `localhost:8080` |
-| Frontend dev server | Vite default |
-
-Create the local database if it does not exist:
+从仓库根目录准备忽略提交的本地环境文件并检查服务：
 
 ```bash
 createdb device_platform
-```
-
-Verify service reachability from the repository root:
-
-```bash
-make check-services
-```
-
-Verify the database connection string in `backend/.env`:
-
-```bash
-make check-db
-```
-
-If `make check-db` fails, update `DATABASE_URL` in `backend/.env` to match the local PostgreSQL credentials and database name.
-
-`make check-services` is the required local skeleton check. `make check-db` is stricter and verifies the actual `DATABASE_URL`, so it depends on each developer's local PostgreSQL credentials.
-
-## Backend
-
-Run backend commands from `backend/`.
-
-```bash
-cp .env.example .env
-make migrate-up
-make run
-```
-
-The backend reads `backend/.env` by default. The default local values are:
-
-```text
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/device_platform?sslmode=disable
-REDIS_URL=redis://localhost:6379/0
-JWT_SECRET=replace-with-a-random-32-character-minimum-secret
-DEVICE_PLATFORM_INSTALLED=false
-SERVER_ADDR=:8080
-```
-
-Health check:
-
-```bash
-curl http://localhost:8080/healthz
-```
-
-`/healthz` only proves that the process is alive. `/readyz` reports `setup_required` until the first-run setup is complete.
-
-## Frontend
-
-Run frontend commands from `frontend/`.
-
-```bash
-pnpm install
-cp .env.example .env.development
-pnpm dev
-```
-
-For local integration, frontend API calls should use relative `/v1/...` and `/setup/...` paths. Vite proxies both namespaces to `http://localhost:8080`.
-
-Local `.env.development` should keep `VITE_API_BASE_URL` empty unless a special debugging scenario needs direct absolute API URLs:
-
-```text
-VITE_API_BASE_URL=''
-```
-
-New MVP-1 API modules should use `/v1/...`. Setup APIs use `/setup/...`. Existing template APIs using `/api/...` are not the contract for new device-platform work and can be cleaned up when those template surfaces are replaced.
-
-## First-Run Setup
-
-After the backend and frontend are running, open:
-
-```text
-http://localhost:5173/setup
-```
-
-The setup wizard checks PostgreSQL, Redis, writable runtime files, server runtime settings, and the administrator account. Failed checks stay on the current step and block installation.
-
-After installation, open:
-
-```text
-http://localhost:5173/auth/login
-```
-
-Use the administrator account created in the setup wizard. If the Vite dev server prints a different local URL, use that URL with the same path.
-
-## Root Commands
-
-From the repository root:
-
-```bash
 make setup-local
 make check-services
 make check-db
+pnpm --dir frontend install
+```
+
+`make setup-local` 从示例创建 `backend/.env` 与 `frontend/.env.development`，不会覆盖已有文件。只使用本地测试凭据，不把真实 WWTIOT secret 或业务数据写入仓库、日志或截图。
+
+`make check-services` 检查 PostgreSQL 与 Redis 端口；`make check-db` 按 `backend/.env` 的 `DATABASE_URL` 发起只读连接检查。端口可达不等于 schema、业务持久化或目标链路已经完成。
+
+## 启动
+
+分别运行：
+
+```bash
 make dev-backend
+```
+
+```bash
 make dev-frontend
+```
+
+存活检查：
+
+```bash
+curl http://localhost:8080/healthz
+curl http://localhost:8080/readyz
+```
+
+`/healthz` 只证明进程存活。首次安装前 `/readyz` 会报告需要 setup。
+
+浏览器打开：
+
+```text
+http://localhost:5173/setup
+http://localhost:5173/auth/login
+```
+
+setup 完成后使用刚创建的本地管理员登录。前端开发环境通过 Vite 将相对 `/setup/...` 和 `/v1/...` 请求代理到 `http://localhost:8080`；通常保持 `VITE_API_BASE_URL=''`。
+
+## 直接使用子项目命令
+
+从 `backend/`：
+
+```bash
+make build
+make test
+make test-int
+make lint
+make migrate-up
+make migrate-down
+```
+
+`make test-int` 用于带 `integration` tag 且具备外部条件的测试。migration 会修改本地数据库，只在明确使用本地开发库时运行。
+
+从 `frontend/`：
+
+```bash
+pnpm dev
+pnpm build
+pnpm type:check
+pnpm lint:fix
+pnpm format
+pnpm i18n:check
+```
+
+从仓库根目录：
+
+```bash
 make check-backend
 make check-frontend
 make check
 ```
 
-`check-backend` runs backend tests and lint. `go vet` always runs; `staticcheck` runs when it is installed locally. `check-frontend` runs type checking, production build, and i18n key checks.
+`check-backend` 运行 Go 测试与 lint；`staticcheck` 仅在本机已安装时运行。`check-frontend` 运行 type check、production build 与 i18n key 检查。`make check` 还会检查本地 PostgreSQL/Redis 可达性。
 
-## MVP-1 Manual Acceptance Path
+## 当前可以安全验证
 
-After the local skeleton and MVP-1 features are implemented, verify:
+- setup 状态、管理员登录和已接入的后台页面。
+- Project、Device、Command 的当前 HTTP 行为。
+- Go 单元测试中的命令策略、幂等和独立 simulator engine 行为。
+- 使用本地 `httptest` 伪造 Provider 的 WWTIOT HTTP 请求映射。
+- 前端类型、构建和双语 key 一致性。
 
-- Create a Project.
-- Create a Device.
-- Create a command through `/v1/open/device-commands`.
-- Switch simulator modes: `normal`, `delay`, `offline`, `timeout_then_ack`, `duplicate_ack`, `fail`.
-- Observe command status, device state, attempts, events, and webhook delivery records.
-- Confirm offline, timeout, late ACK, duplicate ACK, and failure behavior matches `docs/mvp-1-contract.md`.
+这些检查证明当前组件行为，不证明数据持久化、模拟器主链闭环、Webhook 可靠投递或真实智能锁执行结果。
 
-## Deferred
+## 目标验收路径
 
-These are intentionally out of scope for the local development skeleton:
+目标最终需要验证：
 
-- Docker Compose deployment.
-- Production Nginx hosting.
-- Go-embedded frontend assets.
-- One-click install scripts.
-- Full CI/CD.
+```text
+Shared-bicycle Project
+  -> Open API
+  -> persistent Command and Attempt
+  -> unified Gateway/Provider
+  -> trustworthy device result
+  -> persistent State and Event
+  -> signed Webhook delivery
+  -> consistent Audit and admin diagnosis
+```
+
+模拟器最终应通过同一链路执行 [API 合同冻结的受控 Provider outcome](./api-contract.md#simulator-配置)，不扩展为设备 ACK 或 final result 模式。当前仓库的业务 Command 与 simulator engine 尚未接通，因此现在不能执行或宣称模拟器主链验收。
+
+真实 WWTIOT 验收需要受控凭据、隔离测试设备、厂商执行结果合同和明确的真实设备写操作授权。缺少任一条件时保持 Unknown，不调用真实 Cloud API 写接口。
+
+## 不由本文承诺
+
+生产部署、Nginx、容器化、CI/CD、设备直连、电子围栏及其他未确认能力，不因出现在本地配置、schema 或代码草稿中而成为当前完成项。
