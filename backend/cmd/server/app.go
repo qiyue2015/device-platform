@@ -12,6 +12,7 @@ import (
 	"github.com/qiyue2015/device-platform/internal/devicecore"
 	"github.com/qiyue2015/device-platform/internal/gateway"
 	"github.com/qiyue2015/device-platform/internal/httpapi"
+	"github.com/qiyue2015/device-platform/internal/storage"
 	"github.com/qiyue2015/device-platform/internal/webhookaudit"
 )
 
@@ -157,6 +158,9 @@ func validateRuntimeDependencies(ctx context.Context, db *sql.DB, redisURL strin
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
 		return fmt.Errorf("database unavailable after installation: %w", err)
+	}
+	if err := storage.ValidateFrozenContracts(pingCtx, db); err != nil {
+		return fmt.Errorf("database contract validation failed: %w", err)
 	}
 	if err := testRedisConnection(ctx, redisURL); err != nil {
 		return fmt.Errorf("redis unavailable after installation: %w", err)

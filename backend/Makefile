@@ -29,10 +29,10 @@ lint:
 	fi
 
 migrate-up:
-	migrate -path internal/storage/migrations -database "$(DATABASE_URL)" up
+	go run ./cmd/migrate -direction up
 
 migrate-down:
-	migrate -path internal/storage/migrations -database "$(DATABASE_URL)" down 1
+	go run ./cmd/migrate -direction down
 
 clean:
 	rm -rf bin/

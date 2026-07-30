@@ -288,6 +288,9 @@ func performInstall(ctx context.Context, req setupInstallRequest) (installResult
 	if err := storage.ApplyMigrations(ctx, db); err != nil {
 		return installResult{}, newAPIError(http.StatusBadRequest, "migration_failed", err.Error())
 	}
+	if err := storage.ValidateFrozenContracts(ctx, db); err != nil {
+		return installResult{}, newAPIError(http.StatusBadRequest, "contract_validation_failed", err.Error())
+	}
 	jwtSecret, err := randomHex(32)
 	if err != nil {
 		return installResult{}, newAPIError(http.StatusInternalServerError, "secret_generation_failed", "failed to generate JWT secret")
