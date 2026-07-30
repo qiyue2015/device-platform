@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -98,7 +99,7 @@ func (a *app) routes() http.Handler {
 
 	mux.HandleFunc("/v1/auth/login", a.handle(a.handleLogin))
 	mux.HandleFunc("/v1/auth/refresh", a.handle(a.requireBearer(a.handleRefresh)))
-	mux.HandleFunc("/v1/auth/logout", a.handle(a.handleLogout))
+	mux.HandleFunc("/v1/auth/logout", a.handle(a.requireBearer(a.handleLogout)))
 	mux.HandleFunc("/v1/auth/me", a.handle(a.requireBearer(a.handleMe)))
 	mux.HandleFunc("/v1/auth/menu", a.handle(a.requireBearer(a.handleMenu)))
 	mux.HandleFunc("/v1/cloud-providers", a.handle(a.requireBearer(a.handleCloudProviders)))
@@ -203,8 +204,11 @@ func (a *app) requireBearer(next handlerFunc) handlerFunc {
 		if a.auth == nil || token == "" {
 			return newAPIError(http.StatusUnauthorized, "unauthorized", "login required")
 		}
-		user, err := a.auth.ParseToken(token)
+		user, err := a.auth.ParseToken(r.Context(), token)
 		if err != nil {
+			if errors.Is(err, errAuthDependencyUnavailable) {
+				return newAPIError(http.StatusServiceUnavailable, "auth_dependency_unavailable", "authentication service unavailable")
+			}
 			return newAPIError(http.StatusUnauthorized, "unauthorized", "login required")
 		}
 		ctx := context.WithValue(r.Context(), currentUserContextKey{}, user)

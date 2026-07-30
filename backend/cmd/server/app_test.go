@@ -21,6 +21,29 @@ import (
 
 const testJWTSecret = defaultMemoryJWTSecret
 
+type errorAuthenticator struct {
+	loginErr error
+	parseErr error
+}
+
+func (a errorAuthenticator) Login(context.Context, string, string, authRequestMetadata) (currentUser, error) {
+	return currentUser{}, a.loginErr
+}
+
+func (a errorAuthenticator) IssueToken(currentUser) (string, error) { return "", nil }
+
+func (a errorAuthenticator) ParseToken(context.Context, string) (currentUser, error) {
+	return currentUser{}, a.parseErr
+}
+
+func (a errorAuthenticator) RecordRefresh(context.Context, currentUser, authRequestMetadata) error {
+	return nil
+}
+
+func (a errorAuthenticator) Logout(context.Context, currentUser, authRequestMetadata) error {
+	return nil
+}
+
 func TestLoadConfigLoadsEnvFilesWithoutOverridingProcessEnv(t *testing.T) {
 	unsetEnvForTest(t, "DATABASE_URL", "REDIS_URL", "JWT_SECRET", "LOG_LEVEL", "READ_HEADER_TIMEOUT", "DEVICE_PLATFORM_INSTALLED")
 	t.Setenv("SERVER_ADDR", ":9090")
@@ -108,6 +131,69 @@ func TestNewAppRequiresRuntimeDependenciesAfterInstall(t *testing.T) {
 
 	if _, err := newApp(cfg, logger); err == nil || !strings.Contains(err.Error(), "database unavailable after installation") {
 		t.Fatalf("expected installed app startup to fail on unavailable database, got %v", err)
+	}
+}
+
+func TestAuthenticationHTTPErrorClassification(t *testing.T) {
+	tests := []struct {
+		name       string
+		auth       authenticator
+		method     string
+		path       string
+		body       string
+		bearer     bool
+		wantStatus int
+		wantCode   string
+		wantRetry  string
+	}{
+		{
+			name:       "login rate limited",
+			auth:       errorAuthenticator{loginErr: authRateLimitError{RetryAfter: 321}},
+			method:     http.MethodPost,
+			path:       "/v1/auth/login",
+			body:       `{"email":"admin@example.test","password":"wrong"}`,
+			wantStatus: http.StatusTooManyRequests,
+			wantCode:   "rate_limited",
+			wantRetry:  "321",
+		},
+		{
+			name:       "login dependency unavailable",
+			auth:       errorAuthenticator{loginErr: errAuthDependencyUnavailable},
+			method:     http.MethodPost,
+			path:       "/v1/auth/login",
+			body:       `{"email":"admin@example.test","password":"wrong"}`,
+			wantStatus: http.StatusServiceUnavailable,
+			wantCode:   "auth_dependency_unavailable",
+		},
+		{
+			name:       "session dependency unavailable",
+			auth:       errorAuthenticator{parseErr: errAuthDependencyUnavailable},
+			method:     http.MethodGet,
+			path:       "/v1/auth/me",
+			bearer:     true,
+			wantStatus: http.StatusServiceUnavailable,
+			wantCode:   "auth_dependency_unavailable",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			application := newAppWithDeviceService(config{JWTSecret: testJWTSecret, Installed: true}, slog.New(slog.NewTextHandler(io.Discard, nil)), devicecore.NewService())
+			application.auth = tt.auth
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			if tt.bearer {
+				request.Header.Set("Authorization", "Bearer test-token")
+			}
+			application.routes().ServeHTTP(recorder, request)
+			var response jsonResponse
+			decodeResponse(t, recorder, &response)
+			if recorder.Code != tt.wantStatus || response.ErrorCode != tt.wantCode {
+				t.Fatalf("status=%d code=%q, want status=%d code=%q", recorder.Code, response.ErrorCode, tt.wantStatus, tt.wantCode)
+			}
+			if recorder.Header().Get("Retry-After") != tt.wantRetry {
+				t.Fatalf("Retry-After=%q, want %q", recorder.Header().Get("Retry-After"), tt.wantRetry)
+			}
+		})
 	}
 }
 
@@ -232,6 +318,28 @@ func TestAuthCompatibilityLoginMeAndBearerGate(t *testing.T) {
 	server.ServeHTTP(refreshAllowed, refreshReq)
 	if refreshAllowed.Code != http.StatusOK {
 		t.Fatalf("expected refresh with bearer 200, got %d", refreshAllowed.Code)
+	}
+	var refreshBody jsonResponse
+	decodeResponse(t, refreshAllowed, &refreshBody)
+	refreshData, ok := refreshBody.Data.(map[string]interface{})
+	if !ok || refreshData["expires_in"] != float64(86400) {
+		t.Fatalf("refresh expires_in must be an integer JSON number, got %+v", refreshBody.Data)
+	}
+
+	logout := httptest.NewRecorder()
+	logoutReq := httptest.NewRequest(http.MethodPost, "/v1/auth/logout", nil)
+	logoutReq.Header.Set("Authorization", "Bearer "+token)
+	server.ServeHTTP(logout, logoutReq)
+	if logout.Code != http.StatusOK {
+		t.Fatalf("expected logout 200, got %d: %s", logout.Code, logout.Body.String())
+	}
+
+	invalidated := httptest.NewRecorder()
+	invalidatedReq := httptest.NewRequest(http.MethodGet, "/v1/auth/me", nil)
+	invalidatedReq.Header.Set("Authorization", "Bearer "+token)
+	server.ServeHTTP(invalidated, invalidatedReq)
+	if invalidated.Code != http.StatusUnauthorized {
+		t.Fatalf("expected logged-out token to be rejected, got %d", invalidated.Code)
 	}
 }
 

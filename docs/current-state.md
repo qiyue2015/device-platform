@@ -3,12 +3,12 @@ title: 当前实现状态
 snapshot_date: 2026-07-31
 status: implementation-snapshot
 contract_freeze_revision: 2026-07-31.1
-verified_against_code_revision: 96b2d59fc03a399eff0669d9aea117d1700a7e09
+verified_against_code_revision: document-commit
 ---
 
 # 当前实现状态
 
-本文是 `2026-07-31` 对代码 revision `1938e41630a8e0c88db906bcf0f111a261dd3ef4` 的状态快照，用于区分已经实现的事实、局部实现和缺口。它不是产品合同，不能扩大或缩小[平台边界合同](./platform-boundary-contract.md)或[当前目标合同](./platform-target-contract.md)。
+本文是 `2026-07-31` 对包含本文件的 Git revision 的状态快照，用于区分已经实现的事实、局部实现和缺口。它不是产品合同，不能扩大或缩小[平台边界合同](./platform-boundary-contract.md)或[当前目标合同](./platform-target-contract.md)。
 
 状态含义：
 
@@ -22,17 +22,17 @@ verified_against_code_revision: 96b2d59fc03a399eff0669d9aea117d1700a7e09
 
 | 能力                              | 状态             | 已验证事实                                                                                                                                                                                                      |
 | --------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 安装与管理员登录                  | 已实现           | 安装流程使用 PostgreSQL migration，并从数据库校验管理员；`backend/cmd/server/app.go:32`、`backend/cmd/server/auth.go:200`。                                                                                     |
+| 安装与单管理员认证                | 已实现           | 安装使用 PostgreSQL migration；JWT 固定 issuer/audience/jti/session generation，每次受保护请求回查数据库，logout 原子失效旧 token，login 持久限流且 login/refresh/logout 写安全审计；`backend/cmd/server/auth.go`。 |
 | Project、Device、Command HTTP API | 部分实现         | 路由与内存领域服务已接入；业务对象保存在 `map`，见 `backend/cmd/server/app.go:47`、`backend/internal/devicecore/service.go:39`。                                                                                |
 | 业务数据持久化                    | 仅合同或 schema  | 核心表和 Repository 接口存在，但未发现 Repository 实现或运行时注入；`backend/internal/storage/repository/contracts.go:9`。                                                                                      |
 | Project 机器 API                  | 部分实现         | `/v1/open/*` 校验 `X-API-Key`，但运行时保存并遍历明文 key，Project 对象持续返回明文，已配置的 IP whitelist 未在认证中执行；`backend/internal/devicecore/types.go:5`、`backend/internal/httpapi/router.go:311`。 |
-| Project 数据隔离                  | 部分实现         | 运行时查询使用 Project 上下文；数据库外键没有保证 Command 的 `project_id` 与 Device 的 Project 一致。                                                                                                           |
+| Project 数据隔离                  | 部分实现         | 对齐后的 schema 以复合外键保证 Command、Device、Event、Delivery 的 Project 归属一致；当前 HTTP 主链仍使用内存服务和 Project 上下文，尚未接入这些持久约束。                                                       |
 | WWTIOT 下行                       | 部分实现         | 当前适配器事实与 action 映射见 [WWTIOT Provider 合同](./providers/wwtiot.md)；运行时入口为 `backend/internal/cloudapi/wwtiot/client.go:76`。                                                                    |
 | WWTIOT callback                   | 未实现 / Unknown | V2 原始资料存在，但仓库没有 callback 路由、签名验证、RawMessage/DeviceState 接入或命令关联实现；签名顺序与命令关联仍需外部确认。                                                                                |
 | Capability 分层                   | 部分实现         | 运行时把具体 action 作为全局 `command_type` 校验，并在核心服务中硬编码默认策略；`backend/internal/devicecore/service.go:627`。Provider 映射位于 adapter，但最小 Device Type Capability profile 尚未接入运行时。 |
 | 设备最终执行语义                  | 未实现           | WWTIOT 2xx 且 `result=ok` 后立即 `sent -> acked -> success`，没有设备回执或状态同步；`backend/cmd/server/command_dispatch.go:89`。                                                                              |
 | 模拟器核心链路                    | 部分实现         | 独立 simulator engine 有状态机，但主应用只注册配置路由；`backend/cmd/server/app.go:109`、`backend/internal/gateway/http.go:21`。正常业务 Command 不进入该 engine。                                              |
-| Event、Webhook、Audit             | 部分实现         | 存在 HTTP/UI 能力和进程内 retry worker，但服务使用另一组内存 map；`backend/internal/webhookaudit/service.go:31`、`backend/cmd/server/app.go:167`。没有持久 Outbox、多实例领取锁或重启恢复保证。                 |
+| Event、Webhook、Audit             | 部分实现         | 认证安全审计已写 PostgreSQL；领域 Event、Webhook 与其他 Audit 仍由独立内存服务维护，见 `backend/internal/webhookaudit/service.go:31`。没有持久 Outbox、多实例领取锁或重启恢复保证。                              |
 | Webhook 配置                      | 部分实现         | Project CRUD 的 `webhook_url` 与 `/v1/projects/webhook-endpoints` 属于两套状态；`backend/internal/devicecore/service.go:65`、`backend/internal/webhookaudit/service.go:65`。                                    |
 | 命令超时与离线恢复                | 部分实现         | 领域方法和独立 simulator 逻辑存在；业务 Command 没有周期扫描执行器，状态可能长期悬挂。                                                                                                                          |
 | 管理后台                          | 部分实现         | 已有 Project、Device、Command、Webhook、Audit 和 simulator 页面/API 调用；部分字段、动作与后端不一致。                                                                                                          |
@@ -48,10 +48,9 @@ verified_against_code_revision: 96b2d59fc03a399eff0669d9aea117d1700a7e09
 - schema 只按 Project 限制 Provider device identity；WWTIOT callback 不含 Project，当前约束无法保证无歧义映射。
 - Provider registry 的 WWTIOT code/name/timeout 可被环境变量改变，且运行时 Device Type 使用 `smart_lock`；这些行为分别偏离冻结的 `wwtiot`、`WWTIOT`、10 秒与 `smart-lock` 稳定发布元数据。
 - Provider 读取当前只返回布尔 `configured`，尚未实现 `integration_status` 的三层证据语义；simulator 也未作为统一 Provider registry 项接入业务 Device/Command 主链。
-- schema 没有 Webhook Delivery Attempt、manual replay 关联、worker lease、confirmation level 或 Command `unknown` 状态所需字段。
-- 管理员 JWT 当前只校验签名和到期时间；refresh 用仍有效 token 续签，logout 不做服务端失效，schema 也没有 `session_generation`。
-- login 当前没有持久失败计数或限流；setup 的 POST 完成后返回 `403 setup_forbidden`。HTTP JSON object 请求已统一拒绝未知字段、重复 key、尾随值与超限 body，但各资源的字段级 schema 和错误码仍需随持久主链实现继续对齐。
-- 所有列表接口返回完整集合，当前没有服务端分页；request ID 已贯穿 HTTP header、envelope、context 与请求日志，但尚未随持久领域写入进入 Audit。
+- 对齐后的 schema 已有 Webhook Delivery Attempt、manual replay 关联、worker lease、confirmation/evidence 和 Command `unknown` 字段与约束，但当前内存运行时尚未使用这些结构。
+- 单管理员认证已执行 JWT/session generation、持久登录限流和安全审计合同；setup 的 POST 完成后仍返回 `403 setup_forbidden`。HTTP JSON object 请求已统一拒绝未知字段、重复 key、尾随值与超限 body，但各资源的字段级 schema 和错误码仍需随持久主链实现继续对齐。
+- 所有列表接口返回完整集合，当前没有服务端分页；request ID 已贯穿 HTTP header、envelope、context、请求日志与认证安全审计，尚未随其他持久领域写入进入 Audit。
 
 ### 命令与 Provider
 

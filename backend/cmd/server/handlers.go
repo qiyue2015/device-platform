@@ -2,8 +2,11 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/qiyue2015/device-platform/internal/httpjson"
 )
@@ -43,16 +46,18 @@ func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodPost {
 		return newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
-	var req loginRequest
-	if err := httpjson.DecodeStrict(r.Body, &req); err != nil {
-		return newAPIError(http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
-	}
 	if a.auth == nil {
 		return newAPIError(http.StatusServiceUnavailable, "setup_required", "system setup is required")
 	}
-	user, err := a.auth.Login(r.Context(), req.Email, req.Password)
+	metadata := authMetadataFromRequest(r)
+	var req loginRequest
+	if err := httpjson.DecodeStrict(r.Body, &req); err != nil {
+		_, loginErr := a.auth.Login(r.Context(), "", "", metadata)
+		return mapLoginError(w, loginErr)
+	}
+	user, err := a.auth.Login(r.Context(), req.Email, req.Password, metadata)
 	if err != nil {
-		return newAPIError(http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
+		return mapLoginError(w, err)
 	}
 	token, err := a.auth.IssueToken(user)
 	if err != nil {
@@ -60,6 +65,18 @@ func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) error {
 	}
 	writeToken(w, token)
 	return nil
+}
+
+func mapLoginError(w http.ResponseWriter, err error) error {
+	var rateLimit authRateLimitError
+	if errors.As(err, &rateLimit) {
+		w.Header().Set("Retry-After", strconv.Itoa(rateLimit.RetryAfter))
+		return newAPIError(http.StatusTooManyRequests, "rate_limited", "too many login attempts")
+	}
+	if errors.Is(err, errAuthDependencyUnavailable) {
+		return newAPIError(http.StatusServiceUnavailable, "auth_dependency_unavailable", "authentication service unavailable")
+	}
+	return newAPIError(http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
 }
 
 func (a *app) handleRefresh(w http.ResponseWriter, r *http.Request) error {
@@ -74,15 +91,24 @@ func (a *app) handleRefresh(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if err := a.auth.RecordRefresh(r.Context(), user, authMetadataFromRequest(r)); err != nil {
+		if errors.Is(err, errAuthDependencyUnavailable) {
+			return newAPIError(http.StatusServiceUnavailable, "auth_dependency_unavailable", "authentication service unavailable")
+		}
+		if errors.Is(err, errUnauthorized) {
+			return newAPIError(http.StatusUnauthorized, "unauthorized", "login required")
+		}
+		return err
+	}
 	writeToken(w, token)
 	return nil
 }
 
 func writeToken(w http.ResponseWriter, token string) {
-	writeOK(w, map[string]string{
+	writeOK(w, map[string]any{
 		"access_token": token,
 		"token_type":   "Bearer",
-		"expires_in":   "86400",
+		"expires_in":   int(tokenTTL / time.Second),
 	})
 }
 
@@ -90,8 +116,26 @@ func (a *app) handleLogout(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodPost {
 		return newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
-	writeOK(w, map[string]string{"logout_url": ""})
+	user, ok := userFromRequest(r)
+	if !ok {
+		return newAPIError(http.StatusUnauthorized, "unauthorized", "login required")
+	}
+	if err := a.auth.Logout(r.Context(), user, authMetadataFromRequest(r)); err != nil {
+		if errors.Is(err, errAuthDependencyUnavailable) {
+			return newAPIError(http.StatusServiceUnavailable, "auth_dependency_unavailable", "authentication service unavailable")
+		}
+		return newAPIError(http.StatusUnauthorized, "unauthorized", "login required")
+	}
+	writeOK(w, map[string]bool{"logged_out": true})
 	return nil
+}
+
+func authMetadataFromRequest(r *http.Request) authRequestMetadata {
+	return authRequestMetadata{
+		IPAddress:       clientIP(r),
+		RequestID:       httpjson.RequestID(r.Context()),
+		ClientRequestID: httpjson.ClientRequestID(r.Context()),
+	}
 }
 
 func (a *app) handleMe(w http.ResponseWriter, r *http.Request) error {
