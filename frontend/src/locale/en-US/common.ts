@@ -20,6 +20,7 @@ export default {
   'common.action.close': 'Close',
   'common.action.reload': 'Reload',
   'common.action.login': 'Login',
+  'userInfo.menu.logout': 'Logout',
 
   // Confirm dialogs
   'common.confirm.delete.title': 'Delete Confirmation',
