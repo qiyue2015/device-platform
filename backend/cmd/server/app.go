@@ -683,6 +683,9 @@ func validateRuntimeDependencies(ctx context.Context, db *sql.DB, redisURL strin
 	if err := db.PingContext(pingCtx); err != nil {
 		return fmt.Errorf("database unavailable after installation: %w", err)
 	}
+	if err := storage.ValidateMigrationState(pingCtx, db); err != nil {
+		return fmt.Errorf("database migration validation failed: %w", err)
+	}
 	if err := storage.ValidateFrozenContracts(pingCtx, db); err != nil {
 		return fmt.Errorf("database contract validation failed: %w", err)
 	}

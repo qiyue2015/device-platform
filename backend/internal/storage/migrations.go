@@ -43,6 +43,55 @@ func ApplyMigrations(ctx context.Context, db *sql.DB) error {
 	})
 }
 
+// ValidateMigrationState ensures an installed database exactly matches the
+// migrations embedded in the running binary without changing database state.
+func ValidateMigrationState(ctx context.Context, db *sql.DB) error {
+	expectedNames, err := migrationNames(".up.sql")
+	if err != nil {
+		return err
+	}
+	expected := make(map[string]struct{}, len(expectedNames))
+	for _, name := range expectedNames {
+		expected[strings.TrimSuffix(name, ".up.sql")] = struct{}{}
+	}
+
+	rows, err := db.QueryContext(ctx, `SELECT version::text FROM schema_migrations ORDER BY version::text`)
+	if err != nil {
+		return fmt.Errorf("read schema_migrations: %w", err)
+	}
+	defer rows.Close()
+	applied := make(map[string]struct{}, len(expected))
+	for rows.Next() {
+		var version string
+		if err := rows.Scan(&version); err != nil {
+			return fmt.Errorf("scan schema_migrations: %w", err)
+		}
+		applied[version] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read schema_migrations: %w", err)
+	}
+
+	var missing []string
+	for version := range expected {
+		if _, ok := applied[version]; !ok {
+			missing = append(missing, version)
+		}
+	}
+	var unknown []string
+	for version := range applied {
+		if _, ok := expected[version]; !ok {
+			unknown = append(unknown, version)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(unknown)
+	if len(missing) != 0 || len(unknown) != 0 {
+		return fmt.Errorf("migration state mismatch: missing=%v unknown=%v", missing, unknown)
+	}
+	return nil
+}
+
 func RollbackLastMigration(ctx context.Context, db *sql.DB) error {
 	return withMigrationLock(ctx, db, func(ctx context.Context, conn *sql.Conn) error {
 		if err := ensureMigrationTable(ctx, conn); err != nil {

@@ -557,14 +557,12 @@ func writeRuntimeEnvForInstall(req setupInstallRequest, jwtSecret string, webhoo
 		"LOG_LEVEL=" + shellQuote(req.Server.LogLevel),
 		"READ_HEADER_TIMEOUT=5s",
 		"HEARTBEAT_TIMEOUT=90s",
-		"COMMAND_WORKER_INTERVAL=1s",
 		"WEBHOOK_WORKER_INTERVAL=2s",
 		"WEBHOOK_REQUEST_TIMEOUT=10s",
 		"WEBHOOK_LEASE_DURATION=15s",
 		"WEBHOOK_MAX_ATTEMPTS=5",
 		"WEBHOOK_RETRY_SCHEDULE=1s,5s,30s,2m",
 		"WEBHOOK_EGRESS_ALLOWLIST=",
-		"EXPIRY_CHECK_INTERVAL=30s",
 		"",
 	}, "\n")
 	return writeFileDurable(runtimeEnvPath(), []byte(content), 0o600, installID)

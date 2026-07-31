@@ -46,6 +46,66 @@ func TestFrozenContractMigrationOnPostgres(t *testing.T) {
 	})
 }
 
+func TestValidateMigrationStateRequiresExactEmbeddedSet(t *testing.T) {
+	baseURL := requireMigrationTestDatabase(t)
+	tests := []struct {
+		name        string
+		mutate      func(*testing.T, *sql.DB)
+		wantMessage string
+	}{
+		{name: "complete"},
+		{
+			name: "missing latest",
+			mutate: func(t *testing.T, db *sql.DB) {
+				if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version = '007_command_evidence_event'`); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantMessage: "missing=[007_command_evidence_event]",
+		},
+		{
+			name: "missing intermediate",
+			mutate: func(t *testing.T, db *sql.DB) {
+				if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version = '004_webhook_delivery_attempt_limit'`); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantMessage: "missing=[004_webhook_delivery_attempt_limit]",
+		},
+		{
+			name: "unknown future",
+			mutate: func(t *testing.T, db *sql.DB) {
+				if _, err := db.Exec(`INSERT INTO schema_migrations (version) VALUES ('999_future_contract')`); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantMessage: "unknown=[999_future_contract]",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			withIsolatedSchema(t, baseURL, func(db *sql.DB) {
+				if err := ApplyMigrations(context.Background(), db); err != nil {
+					t.Fatal(err)
+				}
+				if test.mutate != nil {
+					test.mutate(t, db)
+				}
+				err := ValidateMigrationState(context.Background(), db)
+				if test.wantMessage == "" {
+					if err != nil {
+						t.Fatalf("complete migration state rejected: %v", err)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), test.wantMessage) {
+					t.Fatalf("expected %q, got %v", test.wantMessage, err)
+				}
+			})
+		})
+	}
+}
+
 func TestMigrationFailsClosedWithoutRecordingVersion(t *testing.T) {
 	baseURL := requireMigrationTestDatabase(t)
 	withIsolatedSchema(t, baseURL, func(db *sql.DB) {

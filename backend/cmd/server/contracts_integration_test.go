@@ -110,6 +110,26 @@ func TestRuntimeAndInstallRejectDriftedFrozenProfile(t *testing.T) {
 	}
 }
 
+func TestNewAppRejectsDatabaseMissingLatestMigration(t *testing.T) {
+	withAuthTestDatabase(t, func(db *sql.DB) {
+		if err := storage.RollbackLastMigration(context.Background(), db); err != nil {
+			t.Fatalf("rollback latest migration: %v", err)
+		}
+		_, err := newApp(config{
+			DatabaseURL:                processTestDatabaseURL(t, db),
+			RedisURL:                   "redis://127.0.0.1:1/0",
+			JWTSecret:                  testJWTSecret,
+			WebhookSecretEncryptionKey: []byte("0123456789abcdef0123456789abcdef"),
+			Installed:                  true,
+			ReadHeaderTimeout:          5 * time.Second,
+		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err == nil || !strings.Contains(err.Error(), "database migration validation failed") ||
+			!strings.Contains(err.Error(), "missing=[007_command_evidence_event]") {
+			t.Fatalf("newApp must reject a database missing migration 007, got %v", err)
+		}
+	})
+}
+
 func requireServerMigrationTestDatabase(t *testing.T) string {
 	t.Helper()
 	raw := strings.TrimSpace(os.Getenv("MIGRATION_TEST_DATABASE_URL"))

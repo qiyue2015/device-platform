@@ -544,6 +544,11 @@ func TestWriteRuntimeEnvPersistsIndependentWebhookEncryptionKey(t *testing.T) {
 		strings.Contains(contents, "WEBHOOK_SECRET_ENCRYPTION_KEY=jwt-secret") {
 		t.Fatal("runtime env did not persist an independent Webhook encryption key")
 	}
+	for _, unused := range []string{"COMMAND_WORKER_INTERVAL", "EXPIRY_CHECK_INTERVAL"} {
+		if strings.Contains(contents, unused+"=") {
+			t.Fatalf("runtime env advertised unused setting %s", unused)
+		}
+	}
 }
 
 func TestNewAppRequiresRuntimeDependenciesAfterInstall(t *testing.T) {
