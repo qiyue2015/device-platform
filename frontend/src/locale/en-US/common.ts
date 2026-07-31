@@ -54,14 +54,6 @@ export default {
   // Common validation
   'common.validate.required': '{field} is required',
 
-  // Verify code
-  'common.verifyCode.placeholder': 'Enter verification code',
-  'common.verifyCode.send': 'Send Code',
-  'common.verifyCode.inputPhone': 'Please enter phone number first',
-  'common.verifyCode.inputEmail': 'Please enter email first',
-  'common.verifyCode.invalidPhone': 'Please enter a valid phone number',
-  'common.verifyCode.invalidEmail': 'Please enter a valid email',
-
   // Tab bar
   'common.tabBar.reload': 'Reload',
   'common.tabBar.closeCurrent': 'Close Current Tab',

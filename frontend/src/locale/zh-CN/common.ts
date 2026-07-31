@@ -54,14 +54,6 @@ export default {
   // 通用校验
   'common.validate.required': '{field}不能为空',
 
-  // 验证码
-  'common.verifyCode.placeholder': '请输入验证码',
-  'common.verifyCode.send': '获取验证码',
-  'common.verifyCode.inputPhone': '请先输入手机号',
-  'common.verifyCode.inputEmail': '请先输入邮箱',
-  'common.verifyCode.invalidPhone': '请输入正确的手机号',
-  'common.verifyCode.invalidEmail': '请输入正确的邮箱',
-
   // Tab 栏
   'common.tabBar.reload': '重新加载',
   'common.tabBar.closeCurrent': '关闭当前标签页',
