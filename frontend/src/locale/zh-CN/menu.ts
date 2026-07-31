@@ -21,9 +21,6 @@ export default {
   'menu.auditLogs.index': '审计日志',
   'menu.simulator': '模拟器',
   'menu.simulator.index': '模拟器',
-  'menu.arcoWebsite': 'Arco Design',
-  'menu.faq': '常见问题',
-  'menu.form.tiptap': '富文本',
   'navbar.docs': '文档中心',
   'navbar.action.locale': '切换为中文',
 };

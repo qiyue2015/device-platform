@@ -3,7 +3,7 @@ import NProgress from 'nprogress'; // progress bar
 
 import usePermission from '@/hooks/permission';
 import { useUserStore } from '@/store';
-import { appRoutes } from '../routes';
+import appRoutes from '../routes';
 import { NOT_FOUND } from '../constants';
 
 export default function setupPermissionGuard(router: Router) {

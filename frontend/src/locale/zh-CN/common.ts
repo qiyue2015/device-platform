@@ -62,18 +62,6 @@ export default {
   'common.verifyCode.invalidPhone': '请输入正确的手机号',
   'common.verifyCode.invalidEmail': '请输入正确的邮箱',
 
-  // 图片库
-  'common.imageGallery.title': '图片列表',
-  'common.imageGallery.selectImage': '选择图片',
-  'common.imageGallery.uploadImage': '上传图片',
-  'common.imageGallery.deleteCount': '删除（{count}）',
-
-  // 消息状态
-  'common.messageStatus.notStarted': '未开始',
-  'common.messageStatus.active': '已开通',
-  'common.messageStatus.inProgress': '进行中',
-  'common.messageStatus.expiring': '即将到期',
-
   // Tab 栏
   'common.tabBar.reload': '重新加载',
   'common.tabBar.closeCurrent': '关闭当前标签页',
@@ -81,37 +69,4 @@ export default {
   'common.tabBar.closeRight': '关闭右侧标签页',
   'common.tabBar.closeOther': '关闭其它标签页',
   'common.tabBar.closeAll': '关闭全部标签页',
-
-  // 富文本编辑器
-  'common.tiptap.undo': '撤销',
-  'common.tiptap.redo': '重做',
-  'common.tiptap.heading1': '一级标题',
-  'common.tiptap.heading2': '二级标题',
-  'common.tiptap.heading3': '三级标题',
-  'common.tiptap.paragraph': '正文',
-  'common.tiptap.fontSize': '字号',
-  'common.tiptap.bold': '加粗',
-  'common.tiptap.italic': '斜体',
-  'common.tiptap.strike': '删除线',
-  'common.tiptap.underline': '下划线',
-  'common.tiptap.highlight': '高亮',
-  'common.tiptap.bulletList': '无序列表',
-  'common.tiptap.orderedList': '有序列表',
-  'common.tiptap.blockquote': '引用',
-  'common.tiptap.alignLeft': '左对齐',
-  'common.tiptap.alignCenter': '居中',
-  'common.tiptap.alignRight': '右对齐',
-  'common.tiptap.alignJustify': '两端对齐',
-  'common.tiptap.color': '颜色',
-  'common.tiptap.insertImage': '插入图片',
-  'common.tiptap.clearFormat': '清除格式',
-
-  // 地图选择
-  'common.mapSelect.placeholder': '请从地图选择坐标',
-  'common.mapSelect.title': '选择坐标',
-  'common.mapSelect.regionPlaceholder': '请选择区域',
-  'common.mapSelect.searchPlaceholder': '请输入地址搜索详细地址及坐标',
-  'common.mapSelect.columns.index': '序号',
-  'common.mapSelect.columns.address': '地址',
-  'common.mapSelect.columns.select': '选择',
 };

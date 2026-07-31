@@ -21,9 +21,6 @@ export default {
   'menu.auditLogs.index': 'Audit Logs',
   'menu.simulator': 'Simulator',
   'menu.simulator.index': 'Simulator',
-  'menu.arcoWebsite': 'Arco Design',
-  'menu.faq': 'FAQ',
-  'menu.form.tiptap': 'Rich Text',
   'navbar.docs': 'Docs',
   'navbar.action.locale': 'Switch to English',
 };

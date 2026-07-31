@@ -62,18 +62,6 @@ export default {
   'common.verifyCode.invalidPhone': 'Please enter a valid phone number',
   'common.verifyCode.invalidEmail': 'Please enter a valid email',
 
-  // Image gallery
-  'common.imageGallery.title': 'Image Gallery',
-  'common.imageGallery.selectImage': 'Select Image',
-  'common.imageGallery.uploadImage': 'Upload Image',
-  'common.imageGallery.deleteCount': 'Delete ({count})',
-
-  // Message status
-  'common.messageStatus.notStarted': 'Not Started',
-  'common.messageStatus.active': 'Active',
-  'common.messageStatus.inProgress': 'In Progress',
-  'common.messageStatus.expiring': 'Expiring',
-
   // Tab bar
   'common.tabBar.reload': 'Reload',
   'common.tabBar.closeCurrent': 'Close Current Tab',
@@ -81,37 +69,4 @@ export default {
   'common.tabBar.closeRight': 'Close Right Tabs',
   'common.tabBar.closeOther': 'Close Other Tabs',
   'common.tabBar.closeAll': 'Close All Tabs',
-
-  // Rich text editor
-  'common.tiptap.undo': 'Undo',
-  'common.tiptap.redo': 'Redo',
-  'common.tiptap.heading1': 'Heading 1',
-  'common.tiptap.heading2': 'Heading 2',
-  'common.tiptap.heading3': 'Heading 3',
-  'common.tiptap.paragraph': 'Paragraph',
-  'common.tiptap.fontSize': 'Font Size',
-  'common.tiptap.bold': 'Bold',
-  'common.tiptap.italic': 'Italic',
-  'common.tiptap.strike': 'Strikethrough',
-  'common.tiptap.underline': 'Underline',
-  'common.tiptap.highlight': 'Highlight',
-  'common.tiptap.bulletList': 'Bullet List',
-  'common.tiptap.orderedList': 'Ordered List',
-  'common.tiptap.blockquote': 'Blockquote',
-  'common.tiptap.alignLeft': 'Align Left',
-  'common.tiptap.alignCenter': 'Align Center',
-  'common.tiptap.alignRight': 'Align Right',
-  'common.tiptap.alignJustify': 'Justify',
-  'common.tiptap.color': 'Color',
-  'common.tiptap.insertImage': 'Insert Image',
-  'common.tiptap.clearFormat': 'Clear Format',
-
-  // Map select
-  'common.mapSelect.placeholder': 'Select coordinates from map',
-  'common.mapSelect.title': 'Select Coordinates',
-  'common.mapSelect.regionPlaceholder': 'Select region',
-  'common.mapSelect.searchPlaceholder': 'Enter address to search',
-  'common.mapSelect.columns.index': 'Index',
-  'common.mapSelect.columns.address': 'Address',
-  'common.mapSelect.columns.select': 'Select',
 };
