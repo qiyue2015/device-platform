@@ -75,6 +75,31 @@ func TestMultiProcessServerHelper(t *testing.T) {
 	}
 }
 
+func TestInstalledAppUsesOnlyPersistentRuntimeServices(t *testing.T) {
+	withAuthTestDatabase(t, func(db *sql.DB) {
+		cfg := config{
+			DatabaseURL:                processTestDatabaseURL(t, db),
+			RedisURL:                   requireProcessRedisTestURL(t),
+			JWTSecret:                  testJWTSecret,
+			WebhookSecretEncryptionKey: []byte("0123456789abcdef0123456789abcdef"),
+			Installed:                  true,
+			ReadHeaderTimeout:          5 * time.Second,
+		}
+		application, err := newApp(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer application.close()
+
+		if application.deviceService != nil || application.commandRouter != nil || application.gateway != nil || application.webhooks != nil {
+			t.Fatal("installed app created parallel in-memory runtime services")
+		}
+		if application.projects == nil || application.devices == nil || application.commands == nil || application.simulator == nil || application.webhookAudit == nil {
+			t.Fatal("installed app did not initialize all persistent runtime services")
+		}
+	})
+}
+
 func TestMultipleServerProcessesShareIdempotencyAndWorkerOwnership(t *testing.T) {
 	withAuthTestDatabase(t, func(db *sql.DB) {
 		seedAuthTestAdmin(t, db)

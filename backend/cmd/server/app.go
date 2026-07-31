@@ -98,13 +98,17 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 			return nil, fmt.Errorf("initialize Command service: %w", err)
 		}
 	}
-	service := devicecore.NewService()
-	if projects == nil {
+	var service *devicecore.Service
+	var gatewayService *gateway.Service
+	var webhookService *webhookaudit.Service
+	if !cfg.Installed {
+		service = devicecore.NewService()
+		gatewayService = gateway.NewService(gateway.NewSimulatorGateway(gateway.ModeConfig{}), gateway.ServiceConfig{})
+		webhookService = webhookaudit.NewService(http.DefaultClient)
+	}
+	if projects == nil && service != nil {
 		projects = httpapi.NewMemoryProjectService(service)
 	}
-	simulatorGateway := gateway.NewSimulatorGateway(gateway.ModeConfig{})
-	gatewayService := gateway.NewService(simulatorGateway, gateway.ServiceConfig{})
-	webhookService := webhookaudit.NewService(http.DefaultClient)
 	cloudProviders := newCloudProviderRegistry(cfg)
 	application := newAppWithServices(cfg, logger, db, auth, service, gatewayService, webhookService, cloudProviders, projects, devices)
 	application.commands = commands
@@ -145,9 +149,12 @@ func newAppWithDeviceService(cfg config, logger *slog.Logger, service *devicecor
 }
 
 func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authenticator, service *devicecore.Service, gatewayService *gateway.Service, webhookService *webhookaudit.Service, cloudProviders cloudProviderRegistry, projects httpapi.ProjectService, devices httpapi.DeviceResourceService) *app {
-	commandRouter := httpapi.DeviceService(service)
-	if len(cloudProviders.List()) > 0 {
-		commandRouter = newCommandDispatchService(service, cloudProviders)
+	var commandRouter httpapi.DeviceService
+	if service != nil {
+		commandRouter = service
+		if len(cloudProviders.List()) > 0 {
+			commandRouter = newCommandDispatchService(service, cloudProviders)
+		}
 	}
 	var simulatorService *simulatorruntime.Service
 	var webhookAuditService *webhookaudit.PersistentService
