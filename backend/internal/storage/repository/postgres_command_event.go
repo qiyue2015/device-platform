@@ -24,6 +24,49 @@ func (r *postgresCommandRepository) GetByIdempotencyKey(ctx context.Context, pro
 	return scanCommand(r.exec.QueryRowContext(ctx, commandSelect+` WHERE project_id = $1 AND idempotency_key = $2`, projectID, idempotencyKey))
 }
 
+func (r *postgresCommandRepository) List(ctx context.Context, request ListCommandsRequest) ([]domain.Command, int64, error) {
+	if request.Limit < 1 || request.Limit > 100 || request.Offset < 0 {
+		return nil, 0, ErrInvalidRepositoryRequest
+	}
+	rows, err := r.exec.QueryContext(ctx, commandSelect+`
+		WHERE ($1::uuid IS NULL OR project_id = $1)
+			AND ($2::uuid IS NULL OR device_id = $2)
+			AND ($3::text IS NULL OR command_type = $3)
+			AND ($4::text IS NULL OR status = $4)
+		ORDER BY created_at DESC, id DESC
+		LIMIT $5 OFFSET $6
+	`, nullableString(request.ProjectID), nullableString(request.DeviceID), nullableActionIdentifier(request.CommandType),
+		nullableCommandStatus(request.Status), request.Limit, request.Offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]domain.Command, 0)
+	for rows.Next() {
+		item, scanErr := scanCommand(rows)
+		if scanErr != nil {
+			return nil, 0, scanErr
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	var total int64
+	err = r.exec.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM device_commands
+		WHERE ($1::uuid IS NULL OR project_id = $1)
+			AND ($2::uuid IS NULL OR device_id = $2)
+			AND ($3::text IS NULL OR command_type = $3)
+			AND ($4::text IS NULL OR status = $4)
+	`, nullableString(request.ProjectID), nullableString(request.DeviceID), nullableActionIdentifier(request.CommandType),
+		nullableCommandStatus(request.Status)).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
 func (r *postgresCommandRepository) ListAttempts(ctx context.Context, commandID string) ([]domain.CommandAttempt, error) {
 	rows, err := r.exec.QueryContext(ctx, commandAttemptSelect+` WHERE command_id = $1 ORDER BY attempt_no`, commandID)
 	if err != nil {
@@ -859,7 +902,7 @@ func (r *postgresEventRepository) GetByDeduplicationKey(ctx context.Context, pro
 }
 
 func (r *postgresEventRepository) ListByCommand(ctx context.Context, commandID string) ([]domain.Event, error) {
-	rows, err := r.exec.QueryContext(ctx, eventSelect+` WHERE command_id = $1 ORDER BY occurred_at, created_at, id`, commandID)
+	rows, err := r.exec.QueryContext(ctx, eventSelect+` WHERE command_id = $1 ORDER BY occurred_at, id`, commandID)
 	if err != nil {
 		return nil, err
 	}
@@ -876,6 +919,20 @@ func (r *postgresEventRepository) ListByCommand(ctx context.Context, commandID s
 		return nil, err
 	}
 	return items, nil
+}
+
+func nullableActionIdentifier(value *domain.ActionIdentifier) any {
+	if value == nil {
+		return nil
+	}
+	return string(*value)
+}
+
+func nullableCommandStatus(value *domain.CommandStatus) any {
+	if value == nil {
+		return nil
+	}
+	return string(*value)
 }
 
 func (r *postgresEventRepository) Create(ctx context.Context, event domain.Event) error {

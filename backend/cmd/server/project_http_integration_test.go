@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiyue2015/device-platform/internal/commandservice"
 	"github.com/qiyue2015/device-platform/internal/devicecore"
 	"github.com/qiyue2015/device-platform/internal/deviceservice"
 	"github.com/qiyue2015/device-platform/internal/gateway"
@@ -201,6 +202,10 @@ func newProjectHTTPTestServer(t *testing.T, db *sql.DB) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
+	commands, err := commandservice.New(repository.NewPostgresStore(db), commandServiceConfig(devices))
+	if err != nil {
+		t.Fatal(err)
+	}
 	auth, err := newMemoryAuthenticator("admin@test.local", "Test Admin", "test-admin-password", testJWTSecret)
 	if err != nil {
 		t.Fatal(err)
@@ -213,6 +218,7 @@ func newProjectHTTPTestServer(t *testing.T, db *sql.DB) http.Handler {
 		gateway.NewService(gateway.NewSimulatorGateway(gateway.ModeConfig{}), gateway.ServiceConfig{}),
 		webhookaudit.NewService(http.DefaultClient), providerRegistry, projects, devices,
 	)
+	application.setCommandResourceService(commands)
 	return application.routes()
 }
 

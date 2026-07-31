@@ -41,10 +41,26 @@ type DeviceStore interface {
 	TransactDevice(ctx context.Context, fn func(DeviceTx) error) error
 }
 
+type CommandStore interface {
+	Commands() CommandQueries
+	Events() EventQueries
+	TransactCommand(ctx context.Context, fn func(CommandTx) error) error
+}
+
 type DeviceTx interface {
 	Projects() ProjectRepository
 	DeviceTypes() DeviceTypeQueries
 	Devices() DeviceRepository
+	Events() EventRepository
+	Webhooks() WebhookRepository
+	Audits() AuditRepository
+}
+
+type CommandTx interface {
+	Projects() ProjectRepository
+	DeviceTypes() DeviceTypeQueries
+	Devices() DeviceRepository
+	Commands() CommandRepository
 	Events() EventRepository
 	Webhooks() WebhookRepository
 	Audits() AuditRepository
@@ -206,7 +222,17 @@ type VerifiedEvidenceUpdateRequest struct {
 type CommandQueries interface {
 	Get(ctx context.Context, id string) (domain.Command, error)
 	GetByIdempotencyKey(ctx context.Context, projectID, idempotencyKey string) (domain.Command, error)
+	List(ctx context.Context, request ListCommandsRequest) ([]domain.Command, int64, error)
 	ListAttempts(ctx context.Context, commandID string) ([]domain.CommandAttempt, error)
+}
+
+type ListCommandsRequest struct {
+	ProjectID   *string
+	DeviceID    *string
+	CommandType *domain.ActionIdentifier
+	Status      *domain.CommandStatus
+	Limit       int
+	Offset      int
 }
 
 type CommandRepository interface {

@@ -10,8 +10,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	v1 "github.com/qiyue2015/device-platform/internal/api/v1"
+	"github.com/qiyue2015/device-platform/internal/commandservice"
 	"github.com/qiyue2015/device-platform/internal/devicecore"
 	"github.com/qiyue2015/device-platform/internal/deviceservice"
 	"github.com/qiyue2015/device-platform/internal/domain"
@@ -23,9 +25,11 @@ type Router struct {
 	service          DeviceService
 	projects         ProjectService
 	devices          DeviceResourceService
+	commands         CommandResourceService
 	onCommandCreated func(*http.Request, devicecore.Command)
 	projectMetadata  func(*http.Request) projectservice.RequestMetadata
 	deviceMetadata   func(*http.Request) deviceservice.RequestMetadata
+	commandMetadata  func(*http.Request) commandservice.RequestMetadata
 }
 
 type ProjectService interface {
@@ -64,10 +68,18 @@ type DeviceResourceService interface {
 	Update(context.Context, deviceservice.Scope, string, deviceservice.UpdateRequest, deviceservice.RequestMetadata) (deviceservice.Device, error)
 }
 
+type CommandResourceService interface {
+	Create(context.Context, commandservice.Scope, commandservice.CreateRequest, commandservice.RequestMetadata) (commandservice.CreateResult, error)
+	List(context.Context, commandservice.Scope, commandservice.ListRequest) (commandservice.ListResult, error)
+	Get(context.Context, commandservice.Scope, string) (commandservice.Detail, error)
+	Cancel(context.Context, commandservice.Scope, string, commandservice.RequestMetadata) (domain.Command, error)
+}
+
 type RouterHooks struct {
 	OnCommandCreated func(*http.Request, devicecore.Command)
 	ProjectMetadata  func(*http.Request) projectservice.RequestMetadata
 	DeviceMetadata   func(*http.Request) deviceservice.RequestMetadata
+	CommandMetadata  func(*http.Request) commandservice.RequestMetadata
 }
 
 func NewRouter(service DeviceService) http.Handler {
@@ -83,7 +95,11 @@ func NewRouterWithProjectService(service DeviceService, projects ProjectService,
 }
 
 func NewRouterWithResourceServices(service DeviceService, projects ProjectService, devices DeviceResourceService, hooks RouterHooks) http.Handler {
-	r := newRouter(service, projects, devices, hooks)
+	return NewRouterWithDomainServices(service, projects, devices, nil, hooks)
+}
+
+func NewRouterWithDomainServices(service DeviceService, projects ProjectService, devices DeviceResourceService, commands CommandResourceService, hooks RouterHooks) http.Handler {
+	r := newRouter(service, projects, devices, commands, hooks)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/projects", r.handleProjects)
 	mux.HandleFunc("/v1/projects/", r.handleProjectByID)
@@ -111,7 +127,11 @@ func NewOpenRouterWithProjectService(service DeviceService, projects ProjectServ
 }
 
 func NewOpenRouterWithResourceServices(service DeviceService, projects ProjectService, devices DeviceResourceService, hooks RouterHooks) http.Handler {
-	r := newRouter(service, projects, devices, hooks)
+	return NewOpenRouterWithDomainServices(service, projects, devices, nil, hooks)
+}
+
+func NewOpenRouterWithDomainServices(service DeviceService, projects ProjectService, devices DeviceResourceService, commands CommandResourceService, hooks RouterHooks) http.Handler {
+	r := newRouter(service, projects, devices, commands, hooks)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/open/projects/", r.handleOpenProjectByID)
 	mux.HandleFunc("/v1/open/devices", r.handleOpenDevices)
@@ -121,7 +141,7 @@ func NewOpenRouterWithResourceServices(service DeviceService, projects ProjectSe
 	return mux
 }
 
-func newRouter(service DeviceService, projects ProjectService, devices DeviceResourceService, hooks RouterHooks) *Router {
+func newRouter(service DeviceService, projects ProjectService, devices DeviceResourceService, commands CommandResourceService, hooks RouterHooks) *Router {
 	projectMetadata := hooks.ProjectMetadata
 	if projectMetadata == nil {
 		projectMetadata = defaultProjectMetadata
@@ -130,13 +150,21 @@ func newRouter(service DeviceService, projects ProjectService, devices DeviceRes
 	if deviceMetadata == nil {
 		deviceMetadata = defaultDeviceMetadata
 	}
+	commandMetadata := hooks.CommandMetadata
+	if commandMetadata == nil {
+		commandMetadata = defaultCommandMetadata
+	}
 	return &Router{
-		service: service, projects: projects, devices: devices, onCommandCreated: hooks.OnCommandCreated,
-		projectMetadata: projectMetadata, deviceMetadata: deviceMetadata,
+		service: service, projects: projects, devices: devices, commands: commands, onCommandCreated: hooks.OnCommandCreated,
+		projectMetadata: projectMetadata, deviceMetadata: deviceMetadata, commandMetadata: commandMetadata,
 	}
 }
 
 func (r *Router) handleAdminCommands(w http.ResponseWriter, req *http.Request) {
+	if r.commands != nil {
+		r.handleAdminCommandResources(w, req)
+		return
+	}
 	projectID := strings.TrimSpace(req.Header.Get("X-Project-ID"))
 	if projectID == "" {
 		projectID = strings.TrimSpace(req.URL.Query().Get("project_id"))
@@ -163,6 +191,10 @@ func (r *Router) handleAdminCommands(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleAdminCommandByID(w http.ResponseWriter, req *http.Request) {
+	if r.commands != nil {
+		r.handleAdminCommandResourceByID(w, req)
+		return
+	}
 	projectID := strings.TrimSpace(req.Header.Get("X-Project-ID"))
 	if projectID == "" {
 		projectID = strings.TrimSpace(req.URL.Query().Get("project_id"))
@@ -196,6 +228,82 @@ func (r *Router) handleAdminCommandByID(w http.ResponseWriter, req *http.Request
 		"attempts": command.Attempts,
 		"events":   command.Events,
 	})
+}
+
+func (r *Router) handleAdminCommandResources(w http.ResponseWriter, req *http.Request) {
+	switch req.Method {
+	case http.MethodGet:
+		listRequest, ok := parseCommandListRequest(w, req, true)
+		if !ok {
+			return
+		}
+		result, err := r.commands.List(req.Context(), commandservice.AdminScope(), listRequest)
+		if err != nil {
+			writeCommandError(w, err)
+			return
+		}
+		writeCommandList(w, result)
+	case http.MethodPost:
+		if !rejectQueryParameters(w, req) {
+			return
+		}
+		var body v1.CreateCommandRequest
+		if !decodeJSON(w, req, &body) {
+			return
+		}
+		result, err := r.commands.Create(req.Context(), commandservice.AdminScope(), commandservice.CreateRequest{
+			ProjectID: body.ProjectID, DeviceID: body.DeviceID, CommandType: body.CommandType,
+			Payload: map[string]any(body.Payload), IdempotencyKey: body.IdempotencyKey,
+		}, r.commandMetadata(req))
+		if err != nil {
+			writeCommandError(w, err)
+			return
+		}
+		writeCommandCreated(w, result)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (r *Router) handleAdminCommandResourceByID(w http.ResponseWriter, req *http.Request) {
+	commandID, action, ok := commandResourcePath(req.URL.Path, "/v1/device-commands/")
+	if !ok {
+		notFound(w)
+		return
+	}
+	if action == "cancel" {
+		if req.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		if !rejectQueryParameters(w, req) || !decodeOptionalEmptyJSON(w, req) {
+			return
+		}
+		command, err := r.commands.Cancel(req.Context(), commandservice.AdminScope(), commandID, r.commandMetadata(req))
+		if err != nil {
+			writeCommandError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, "ok", commandResponse(command))
+		return
+	}
+	if action != "" {
+		notFound(w)
+		return
+	}
+	if req.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	if !rejectQueryParameters(w, req) {
+		return
+	}
+	detail, err := r.commands.Get(req.Context(), commandservice.AdminScope(), commandID)
+	if err != nil {
+		writeCommandError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, "ok", commandDetailResponse(detail))
 }
 
 func (r *Router) handleProjects(w http.ResponseWriter, req *http.Request) {
@@ -562,6 +670,10 @@ func (r *Router) handleOpenCommands(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		return
 	}
+	if r.commands != nil {
+		r.handleOpenCommandResources(w, req, project)
+		return
+	}
 	switch req.Method {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, "ok", r.service.ListCommands(project.ID))
@@ -586,6 +698,10 @@ func (r *Router) handleOpenCommandByID(w http.ResponseWriter, req *http.Request)
 	if !ok {
 		return
 	}
+	if r.commands != nil {
+		r.handleOpenCommandResourceByID(w, req, project)
+		return
+	}
 	path := strings.TrimPrefix(req.URL.Path, "/v1/open/device-commands/")
 	commandID, action, _ := strings.Cut(path, "/")
 	if commandID == "" {
@@ -607,6 +723,93 @@ func (r *Router) handleOpenCommandByID(w http.ResponseWriter, req *http.Request)
 	}
 	command, err := r.service.GetCommand(project.ID, commandID)
 	writeResult(w, command, err, http.StatusOK)
+}
+
+func (r *Router) handleOpenCommandResources(w http.ResponseWriter, req *http.Request, project projectservice.Project) {
+	scope := commandservice.ProjectScope(project.ID)
+	switch req.Method {
+	case http.MethodGet:
+		listRequest, ok := parseCommandListRequest(w, req, false)
+		if !ok {
+			return
+		}
+		result, err := r.commands.List(req.Context(), scope, listRequest)
+		if err != nil {
+			writeCommandError(w, err)
+			return
+		}
+		writeCommandList(w, result)
+	case http.MethodPost:
+		if !rejectQueryParameters(w, req) {
+			return
+		}
+		var body v1.CreateCommandRequest
+		if !decodeJSON(w, req, &body) {
+			return
+		}
+		result, err := r.commands.Create(req.Context(), scope, commandservice.CreateRequest{
+			ProjectID: body.ProjectID, DeviceID: body.DeviceID, CommandType: body.CommandType,
+			Payload: map[string]any(body.Payload), IdempotencyKey: body.IdempotencyKey,
+		}, projectCommandMetadata(req, project.ID))
+		if err != nil {
+			writeCommandError(w, err)
+			return
+		}
+		writeCommandCreated(w, result)
+	default:
+		methodNotAllowed(w)
+	}
+}
+
+func (r *Router) handleOpenCommandResourceByID(w http.ResponseWriter, req *http.Request, project projectservice.Project) {
+	commandID, action, ok := commandResourcePath(req.URL.Path, "/v1/open/device-commands/")
+	if !ok {
+		notFound(w)
+		return
+	}
+	scope := commandservice.ProjectScope(project.ID)
+	if action == "cancel" {
+		if req.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		if !rejectQueryParameters(w, req) || !decodeOptionalEmptyJSON(w, req) {
+			return
+		}
+		command, err := r.commands.Cancel(req.Context(), scope, commandID, projectCommandMetadata(req, project.ID))
+		if err != nil {
+			writeCommandError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, "ok", commandResponse(command))
+		return
+	}
+	if action != "" {
+		notFound(w)
+		return
+	}
+	if req.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	if !rejectQueryParameters(w, req) {
+		return
+	}
+	detail, err := r.commands.Get(req.Context(), scope, commandID)
+	if err != nil {
+		writeCommandError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, "ok", commandDetailResponse(detail))
+}
+
+func commandResourcePath(path, prefix string) (string, string, bool) {
+	trimmed := strings.TrimPrefix(path, prefix)
+	commandID, action, found := strings.Cut(trimmed, "/")
+	if commandID == "" || found && (action == "" || strings.Contains(action, "/")) {
+		return "", "", false
+	}
+	return commandID, action, true
 }
 
 func (r *Router) authenticateOpen(w http.ResponseWriter, req *http.Request) (projectservice.Project, bool) {
@@ -901,6 +1104,51 @@ func parseDeviceListRequest(w http.ResponseWriter, req *http.Request, admin bool
 	return result, true
 }
 
+func parseCommandListRequest(w http.ResponseWriter, req *http.Request, admin bool) (commandservice.ListRequest, bool) {
+	query, ok := strictQuery(w, req)
+	if !ok {
+		return commandservice.ListRequest{}, false
+	}
+	allowed := map[string]bool{"page": true, "page_size": true, "device_id": true, "command_type": true, "status": true}
+	if admin {
+		allowed["project_id"] = true
+	}
+	for key, values := range query {
+		if !allowed[key] || len(values) != 1 {
+			writeError(w, http.StatusBadRequest, "invalid_request", "invalid query parameters")
+			return commandservice.ListRequest{}, false
+		}
+	}
+	page, ok := parsePositiveQueryInteger(query, "page", 1)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request", "page must be a positive integer")
+		return commandservice.ListRequest{}, false
+	}
+	pageSize, ok := parsePositiveQueryInteger(query, "page_size", 20)
+	if !ok || pageSize > 100 || page-1 > math.MaxInt/pageSize {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid pagination")
+		return commandservice.ListRequest{}, false
+	}
+	result := commandservice.ListRequest{Page: page, PageSize: pageSize}
+	if admin && query.Has("project_id") {
+		value := query.Get("project_id")
+		result.ProjectID = &value
+	}
+	if query.Has("device_id") {
+		value := query.Get("device_id")
+		result.DeviceID = &value
+	}
+	if query.Has("command_type") {
+		value := domain.ActionIdentifier(query.Get("command_type"))
+		result.CommandType = &value
+	}
+	if query.Has("status") {
+		value := domain.CommandStatus(query.Get("status"))
+		result.Status = &value
+	}
+	return result, true
+}
+
 func strictQuery(w http.ResponseWriter, req *http.Request) (url.Values, bool) {
 	query, err := url.ParseQuery(req.URL.RawQuery)
 	if err != nil {
@@ -1008,6 +1256,92 @@ func writeDeviceError(w http.ResponseWriter, err error) {
 	}
 }
 
+func commandResponse(command domain.Command) v1.CommandResponse {
+	return v1.CommandResponse{
+		ID: command.ID, ProjectID: command.ProjectID, DeviceID: command.DeviceID, CommandType: command.CommandType,
+		Payload: command.Payload, DeviceTypeRevision: command.DeviceTypeRevision, DeliveryPolicy: command.DeliveryPolicy,
+		Status: command.Status, ReasonCode: command.ReasonCode, ReasonDetail: command.ReasonDetail,
+		ConfirmationLevel: command.ConfirmationLevel, EvidenceStatus: command.EvidenceStatus,
+		IdempotencyKey: command.IdempotencyKey, QueuedAt: command.QueuedAt.UTC(),
+		DispatchDeadlineAt: command.DispatchDeadlineAt.UTC(), SentAt: utcTimePointer(command.SentAt),
+		ResultDeadlineAt: utcTimePointer(command.ResultDeadlineAt), FinishedAt: utcTimePointer(command.FinishedAt),
+		CreatedAt: command.CreatedAt.UTC(), UpdatedAt: command.UpdatedAt.UTC(),
+	}
+}
+
+func commandDetailResponse(detail commandservice.Detail) v1.CommandDetailResponse {
+	attempts := make([]v1.CommandAttemptResponse, 0, len(detail.Attempts))
+	for _, attempt := range detail.Attempts {
+		attempts = append(attempts, v1.CommandAttemptResponse{
+			AttemptNo: attempt.AttemptNo, Phase: attempt.Phase, ProviderCode: attempt.ProviderCode, Adapter: attempt.Adapter,
+			ProviderRequestKey: attempt.ProviderRequestKey, Outcome: attempt.Outcome,
+			ConfirmationLevel: attempt.ConfirmationLevel, EvidenceStatus: attempt.EvidenceStatus,
+			RequestSummary: attempt.RequestSummary, ResponseSummary: attempt.ResponseSummary,
+			ErrorCode: attempt.ErrorCode, ErrorDetail: attempt.ErrorDetail, ClaimedAt: attempt.ClaimedAt.UTC(),
+			DispatchingAt: utcTimePointer(attempt.DispatchingAt), CompletedAt: utcTimePointer(attempt.CompletedAt),
+		})
+	}
+	events := make([]v1.EventResponse, 0, len(detail.Events))
+	for _, event := range detail.Events {
+		events = append(events, v1.EventResponse{
+			EventID: event.ID, SchemaVersion: event.SchemaVersion, EventType: event.EventType,
+			ProjectID: event.ProjectID, DeviceID: event.DeviceID, CommandID: event.CommandID,
+			OccurredAt: event.OccurredAt.UTC(), Source: event.Source, Payload: event.Payload,
+		})
+	}
+	return v1.CommandDetailResponse{CommandResponse: commandResponse(detail.Command), Attempts: attempts, Events: events}
+}
+
+func writeCommandList(w http.ResponseWriter, result commandservice.ListResult) {
+	items := make([]v1.CommandResponse, 0, len(result.Items))
+	for _, command := range result.Items {
+		items = append(items, commandResponse(command))
+	}
+	httpjson.WriteWithMeta(w, http.StatusOK, "ok", map[string]any{"items": items}, map[string]any{
+		"page": result.Page, "page_size": result.PageSize, "total": result.Total,
+	})
+}
+
+func writeCommandCreated(w http.ResponseWriter, result commandservice.CreateResult) {
+	if result.IdempotentReplay {
+		httpjson.WriteWithMeta(w, http.StatusOK, "ok", commandResponse(result.Command), map[string]any{"idempotent_replay": true})
+		return
+	}
+	writeJSON(w, http.StatusCreated, "created", commandResponse(result.Command))
+}
+
+func writeCommandError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, commandservice.ErrInvalidRequest):
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid request")
+	case errors.Is(err, commandservice.ErrProjectNotFound), errors.Is(err, commandservice.ErrDeviceNotFound),
+		errors.Is(err, commandservice.ErrCommandNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "resource not found")
+	case errors.Is(err, commandservice.ErrDeviceDisabled):
+		writeError(w, http.StatusConflict, "device_disabled", "Device cannot accept Commands")
+	case errors.Is(err, commandservice.ErrProviderNotConfigured):
+		writeError(w, http.StatusConflict, "provider_not_configured", "Provider is not configured")
+	case errors.Is(err, commandservice.ErrIdempotencyKeyConflict):
+		writeError(w, http.StatusConflict, "idempotency_key_conflict", "idempotency key conflicts with another request")
+	case errors.Is(err, commandservice.ErrCommandNotCancellable):
+		writeError(w, http.StatusConflict, "command_not_cancellable", "Command is not cancellable")
+	case errors.Is(err, commandservice.ErrCapabilityUnsupported):
+		writeError(w, http.StatusUnprocessableEntity, "unsupported_capability", "Device capability is not supported")
+	case errors.Is(err, commandservice.ErrPayloadInvalid):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_capability_payload", "Command payload is invalid")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
+	}
+}
+
+func utcTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	utc := value.UTC()
+	return &utc
+}
+
 func writeProjectError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, projectservice.ErrInvalidRequest), errors.Is(err, devicecore.ErrInvalidArgument):
@@ -1030,6 +1364,19 @@ func defaultProjectMetadata(req *http.Request) projectservice.RequestMetadata {
 func defaultDeviceMetadata(req *http.Request) deviceservice.RequestMetadata {
 	return deviceservice.RequestMetadata{
 		ActorType: domain.ActorTypeAdmin, IPAddress: directPeerIP(req.RemoteAddr), RequestID: httpjson.RequestID(req.Context()),
+	}
+}
+
+func defaultCommandMetadata(req *http.Request) commandservice.RequestMetadata {
+	return commandservice.RequestMetadata{
+		ActorType: domain.ActorTypeAdmin, IPAddress: directPeerIP(req.RemoteAddr), RequestID: httpjson.RequestID(req.Context()),
+	}
+}
+
+func projectCommandMetadata(req *http.Request, projectID string) commandservice.RequestMetadata {
+	return commandservice.RequestMetadata{
+		ActorType: domain.ActorTypeProject, ActorID: projectID, IPAddress: directPeerIP(req.RemoteAddr),
+		RequestID: httpjson.RequestID(req.Context()),
 	}
 }
 

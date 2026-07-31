@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qiyue2015/device-platform/internal/commandservice"
 	"github.com/qiyue2015/device-platform/internal/deviceservice"
 	"github.com/qiyue2015/device-platform/internal/httpjson"
 	"github.com/qiyue2015/device-platform/internal/projectservice"
@@ -265,7 +266,12 @@ func (a *app) handleSetupInstall(w http.ResponseWriter, r *http.Request) error {
 		_ = db.Close()
 		return err
 	}
-	if previousDB := a.replaceRuntime(cfg, db, newDBAuthenticator(db, result.JWTSecret), projects, devices); previousDB != nil && previousDB != db {
+	commands, err := commandservice.New(store, commandServiceConfig(devices))
+	if err != nil {
+		_ = db.Close()
+		return err
+	}
+	if previousDB := a.replaceRuntime(cfg, db, newDBAuthenticator(db, result.JWTSecret), projects, devices, commands); previousDB != nil && previousDB != db {
 		_ = previousDB.Close()
 	}
 	writeOK(w, map[string]bool{"installed": true})

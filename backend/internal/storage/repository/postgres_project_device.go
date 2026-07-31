@@ -89,6 +89,12 @@ func (s *PostgresStore) TransactDevice(ctx context.Context, fn func(DeviceTx) er
 	})
 }
 
+func (s *PostgresStore) TransactCommand(ctx context.Context, fn func(CommandTx) error) error {
+	return s.WithinTransaction(ctx, func(tx *PostgresTx) error {
+		return fn(tx)
+	})
+}
+
 type PostgresTx struct {
 	tx *sql.Tx
 }

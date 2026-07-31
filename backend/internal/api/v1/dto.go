@@ -1,6 +1,8 @@
 package v1
 
 import (
+	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/qiyue2015/device-platform/internal/domain"
@@ -110,8 +112,22 @@ type CreateCommandRequest struct {
 	ProjectID      string                  `json:"project_id,omitempty"`
 	DeviceID       string                  `json:"device_id"`
 	CommandType    domain.ActionIdentifier `json:"command_type"`
-	Payload        map[string]any          `json:"payload,omitempty"`
+	Payload        OptionalObject          `json:"payload,omitempty"`
 	IdempotencyKey string                  `json:"idempotency_key"`
+}
+
+type OptionalObject map[string]any
+
+func (value *OptionalObject) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return errors.New("object must not be null")
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*value = decoded
+	return nil
 }
 
 type CommandAttemptResponse struct {
@@ -165,8 +181,12 @@ type CommandResponse struct {
 	FinishedAt         *time.Time               `json:"finished_at"`
 	CreatedAt          time.Time                `json:"created_at"`
 	UpdatedAt          time.Time                `json:"updated_at"`
-	Attempts           []CommandAttemptResponse `json:"attempts,omitempty"`
-	Events             []EventResponse          `json:"events,omitempty"`
+}
+
+type CommandDetailResponse struct {
+	CommandResponse
+	Attempts []CommandAttemptResponse `json:"attempts"`
+	Events   []EventResponse          `json:"events"`
 }
 
 type WebhookDeliveryAttemptResponse struct {

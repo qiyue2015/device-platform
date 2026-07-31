@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qiyue2015/device-platform/internal/commandservice"
 	"github.com/qiyue2015/device-platform/internal/devicecore"
 	"github.com/qiyue2015/device-platform/internal/deviceservice"
 	"github.com/qiyue2015/device-platform/internal/domain"
@@ -33,6 +34,7 @@ type app struct {
 	commandRouter  httpapi.DeviceService
 	projects       httpapi.ProjectService
 	devices        httpapi.DeviceResourceService
+	commands       httpapi.CommandResourceService
 	cloudProviders cloudProviderRegistry
 	gateway        *gateway.Service
 	webhooks       *webhookaudit.Service
@@ -45,7 +47,8 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 	var db *sql.DB
 	var auth authenticator
 	var projects httpapi.ProjectService
-	var devices httpapi.DeviceResourceService
+	var devices *deviceservice.Service
+	var commands httpapi.CommandResourceService
 	if cfg.Installed {
 		var err error
 		db, err = sql.Open("postgres", cfg.DatabaseURL)
@@ -70,6 +73,11 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 			_ = db.Close()
 			return nil, fmt.Errorf("initialize Device service: %w", err)
 		}
+		commands, err = commandservice.New(store, commandServiceConfig(devices))
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("initialize Command service: %w", err)
+		}
 	}
 	service := devicecore.NewService()
 	if projects == nil {
@@ -80,7 +88,9 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 	webhookService := webhookaudit.NewService(http.DefaultClient)
 	cloudProviders := newCloudProviderRegistry(cfg)
 	startWebhookWorker(context.Background(), webhookService)
-	return newAppWithServices(cfg, logger, db, auth, service, gatewayService, webhookService, cloudProviders, projects, devices), nil
+	application := newAppWithServices(cfg, logger, db, auth, service, gatewayService, webhookService, cloudProviders, projects, devices)
+	application.commands = commands
+	return application, nil
 }
 
 func newAppWithDeviceService(cfg config, logger *slog.Logger, service *devicecore.Service) *app {
@@ -138,13 +148,15 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/v1/admin/", a.handle(a.requireBearer(a.handleAdminPlaceholder)))
 	projectBridge := appProjectService{app: a}
 	deviceBridge := appDeviceService{app: a}
+	commandBridge := appCommandService{app: a}
 	routerHooks := httpapi.RouterHooks{
 		OnCommandCreated: a.recordCommandCreated,
 		ProjectMetadata:  a.projectRequestMetadata,
 		DeviceMetadata:   a.deviceRequestMetadata,
+		CommandMetadata:  a.commandRequestMetadata,
 	}
 	legacyOpenRouter := httpapi.NewOpenRouterWithResourceServices(a.commandRouter, projectBridge, nil, routerHooks)
-	resourceOpenRouter := httpapi.NewOpenRouterWithResourceServices(a.commandRouter, projectBridge, deviceBridge, routerHooks)
+	resourceOpenRouter := httpapi.NewOpenRouterWithDomainServices(a.commandRouter, projectBridge, deviceBridge, commandBridge, routerHooks)
 	openRouter := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if a.deviceResourceService() == nil {
 			legacyOpenRouter.ServeHTTP(w, r)
@@ -157,7 +169,7 @@ func (a *app) routes() http.Handler {
 	registerWebhookAuditRoutes(protectedV1, a.webhooks)
 	gateway.NewHandler(a.gateway).RegisterSimulator(protectedV1)
 	legacyV1Router := httpapi.NewRouterWithResourceServices(a.commandRouter, projectBridge, nil, routerHooks)
-	resourceV1Router := httpapi.NewRouterWithResourceServices(a.commandRouter, projectBridge, deviceBridge, routerHooks)
+	resourceV1Router := httpapi.NewRouterWithDomainServices(a.commandRouter, projectBridge, deviceBridge, commandBridge, routerHooks)
 	protectedV1.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if a.deviceResourceService() == nil {
 			legacyV1Router.ServeHTTP(w, r)
@@ -194,7 +206,7 @@ func (a *app) authenticationService() authenticator {
 	return a.auth
 }
 
-func (a *app) replaceRuntime(cfg config, db *sql.DB, auth authenticator, projects httpapi.ProjectService, devices httpapi.DeviceResourceService) *sql.DB {
+func (a *app) replaceRuntime(cfg config, db *sql.DB, auth authenticator, projects httpapi.ProjectService, devices httpapi.DeviceResourceService, commands httpapi.CommandResourceService) *sql.DB {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
 	previousDB := a.db
@@ -203,6 +215,7 @@ func (a *app) replaceRuntime(cfg config, db *sql.DB, auth authenticator, project
 	a.auth = auth
 	a.projects = projects
 	a.devices = devices
+	a.commands = commands
 	return previousDB
 }
 
@@ -230,6 +243,18 @@ func (a *app) setDeviceResourceService(service httpapi.DeviceResourceService) {
 	a.devices = service
 }
 
+func (a *app) commandResourceService() httpapi.CommandResourceService {
+	a.runtimeMu.RLock()
+	defer a.runtimeMu.RUnlock()
+	return a.commands
+}
+
+func (a *app) setCommandResourceService(service httpapi.CommandResourceService) {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	a.commands = service
+}
+
 func (a *app) projectRequestMetadata(r *http.Request) projectservice.RequestMetadata {
 	user, _ := userFromRequest(r)
 	return projectservice.RequestMetadata{
@@ -244,10 +269,30 @@ func (a *app) deviceRequestMetadata(r *http.Request) deviceservice.RequestMetada
 	}
 }
 
+func (a *app) commandRequestMetadata(r *http.Request) commandservice.RequestMetadata {
+	user, _ := userFromRequest(r)
+	return commandservice.RequestMetadata{
+		ActorType: domain.ActorTypeAdmin, ActorID: user.ID, IPAddress: clientIP(r), RequestID: httpjson.RequestID(r.Context()),
+	}
+}
+
 func deviceServiceConfig(cfg config) deviceservice.Config {
 	return deviceservice.Config{
 		WWTIOTEndpoint: cfg.WWTIOTAPIURL, WWTIOTUserID: cfg.WWTIOTUserID, WWTIOTUserKey: cfg.WWTIOTUserKey,
 	}
+}
+
+func commandServiceConfig(devices *deviceservice.Service) commandservice.Config {
+	providers := devices.ListProviders()
+	registry := make([]domain.Provider, 0, len(providers))
+	for _, provider := range providers {
+		registry = append(registry, domain.Provider{
+			Code: provider.Code, Name: provider.Name, AccessType: provider.AccessType,
+			TransportProtocol: provider.TransportProtocol, Adapter: provider.Adapter,
+			IntegrationStatus: provider.IntegrationStatus,
+		})
+	}
+	return commandservice.Config{Providers: registry}
 }
 
 func (a *app) recordCommandCreated(r *http.Request, command devicecore.Command) {

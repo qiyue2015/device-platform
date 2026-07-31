@@ -71,7 +71,7 @@ func TestAppRuntimeStateCanSwitchConcurrently(t *testing.T) {
 	}
 	close(start)
 	for i := range 1000 {
-		application.replaceRuntime(config{Installed: i%2 == 0}, nil, auth, nil, nil)
+		application.replaceRuntime(config{Installed: i%2 == 0}, nil, auth, nil, nil, nil)
 	}
 	readers.Wait()
 	if application.authenticationService() == nil {
@@ -100,7 +100,7 @@ func TestSetupStatusUsesPublishedRuntimeState(t *testing.T) {
 
 	cfg := application.runtimeConfig()
 	cfg.Installed = true
-	application.replaceRuntime(cfg, nil, application.authenticationService(), application.projectService(), application.deviceResourceService())
+	application.replaceRuntime(cfg, nil, application.authenticationService(), application.projectService(), application.deviceResourceService(), application.commandResourceService())
 	var after setupStatus
 	decodeResponseData(t, doRequest(t, server, http.MethodGet, "/setup/status", "", nil), &after)
 	if !after.Installed || after.NeedsSetup {
