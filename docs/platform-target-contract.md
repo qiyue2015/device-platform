@@ -3,7 +3,7 @@ title: 当前平台目标合同
 created: 2026-07-31
 updated: 2026-07-31
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.1
+freeze_revision: 2026-07-31.2
 ---
 
 # 当前平台目标合同

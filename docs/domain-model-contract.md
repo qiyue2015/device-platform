@@ -3,7 +3,7 @@ title: 领域模型与一致性合同
 created: 2026-07-31
 updated: 2026-07-31
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.1
+freeze_revision: 2026-07-31.2
 ---
 
 # 领域模型与一致性合同
@@ -65,7 +65,7 @@ Device Type 是代码审查并随发布交付的只读 capability profile。当�
 
 - 一个 Device 必须且只能属于一个 Project。
 - 当前不支持跨 Project 转移。
-- 活跃 Device 的 `(provider_code, provider_device_id)` 在整个平台唯一。WWTIOT callback 不携带 `project_id`，只有全局唯一才能无歧义映射。
+- 非 `deleted` Device 的 `(provider_code, provider_device_id)` 在整个平台唯一；进入 `deleted` 后才释放该 identity，允许后续 Device 重新注册。WWTIOT callback 不携带 `project_id`，因此 `active` 与 `disabled` 期间都必须保持全局唯一，才能无歧义映射。
 - `connection_status` 只表达有证据的技术连接事实。WWTIOT 当前没有已确认 heartbeat 合同，因此不得因一次 HTTP acceptance 推导 `online`。
 - `lifecycle_status=disabled` 的 Device 不接受新命令；逻辑删除记录保持审计可追溯。
 
@@ -85,7 +85,7 @@ Device Type 是代码审查并随发布交付的只读 capability profile。当�
 - `(command_id, attempt_no)` 唯一；Provider request key 在对应 Provider 范围内唯一。
 - `phase` 只能按 `claimed -> dispatching -> completed` 或 `claimed -> completed` 单调迁移。`claimed` 尚未承诺外部调用；`dispatching` 表示 worker 已在事务中承诺立即执行外部调用，Command 同时进入 `sent`；`completed` 表示本次 Attempt 的可观测结果已持久化。非 completed Attempt 的 outcome 为 `null`，completed Attempt 必须有稳定 outcome。
 - `confirmation_level` 只能是 `none`、`transport_sent`、`provider_accepted`、`device_acked`、`device_final`。
-- `evidence_status` 只能是 `none`、`verified` 或 `unverified`。它表示该 confirmation evidence 的来源真实性和校验条件是否满足，不改变 confirmation level 本身；`success` 必须同时具有 `device_final` 与 `verified`。
+- `evidence_status` 只能是 `none`、`verified` 或 `unverified`。在 Attempt 上，它评价该 Attempt `outcome` 所依赖证据的来源真实性和校验条件；在 Command 上，它保守继承支撑当前 status 与最高 confirmation 的证据，任一决定性证据为 `unverified` 时不得提升为 `verified`。它不改变 confirmation level 本身；`success` 必须同时具有 `device_final` 与 `verified`。因此 WWTIOT `provider_rejected` 可同时为 `confirmation_level=transport_sent`（本地已证明请求写出）与 `evidence_status=unverified`（决定 rejection 的响应正文尚不可验签），两者不矛盾。
 - 当前稳定 `outcome` 为 `not_dispatched`、`invalid_request`、`provider_accepted`、`provider_rejected`、`transport_error_before_send`、`transport_error_after_send`、`invalid_response`、`device_acked`、`device_succeeded` 和 `device_failed`。`not_dispatched` 只用于 claimed 阶段被取消或超过派发期限，confirmation/evidence 均为 `none`。三个设备结果 outcome 只有在对应 Provider 合同具有可信证据来源时才能产生；当前 WWTIOT 和 simulator 均不能产生它们。Command 结果观察期限到达由 deadline scanner 写状态与 Event，不伪造一次新的 Provider Attempt 或覆盖既有 Attempt outcome。
 - confirmation level 单调提升，不能被后来的较低层事实覆盖。
 
@@ -94,7 +94,7 @@ Device Type 是代码审查并随发布交付的只读 capability profile。当�
 - 每次可信上行创建不可变 `RawMessage`，保存 Provider、方向、接收时间和受控原文；secret、认证签名和不必要的敏感字段必须脱敏或分离保护。
 - 验证通过并完成 Device 映射后，才可从 RawMessage 产生规范化 `DeviceState` 与 Event。
 - `Device.current_state` 是最新 DeviceState 的派生读取，不建立第二套可独立写入的 JSON 状态。
-- 无法验证签名、无法唯一映射设备或 schema 不合法的 callback 不更新 DeviceState；记录受控失败审计，不回显 secret。
+- 无法验证签名、无法唯一映射设备或 schema 不合法的 callback 不更新 DeviceState；启用可信 callback 入口后以 `provider.callback_rejected` 记录受控失败审计，不回显 secret。当前公开 WWTIOT callback 固定 503 且不读取 body，因此在重新冻结并启用验证入口前不产生该审计。
 
 ### Event 与 Outbox
 
@@ -122,13 +122,13 @@ AuditLog 记录管理员、Open API 机器身份、Provider callback 或 system 
 以下操作各自在一个数据库事务中完成：
 
 1. 创建/更新 Project、API Key 轮换、Webhook 配置变更及对应 Audit。
-2. 创建/变更 Device、Device Type 校验及对应 Audit/Event/Outbox。
+2. 创建 Device、lifecycle 变更、Device Type 校验及对应 Audit/Event/Outbox；仅名称变更没有稳定领域 Event，只与 `device.updated` Audit 在同一事务完成。
 3. 创建 Command：锁定并校验 Project/Device、写 Command 与幂等约束、初始 Event/Outbox 和 Audit。
 4. 领取 Command：仅对无有效 lease 的 `queued` Command 条件创建 `phase=claimed` Attempt 和 lease；Command 仍为 `queued`，有有效 lease 时取消与 deadline scanner 都不得越过该所有权。
 5. 承诺派发：短事务校验 lease/Attempt 仍有效，将 Attempt 改为 `dispatching`、Command 改为 `sent`，设置 `sent_at` 与 result deadline 并写状态 Event/Outbox；事务提交后立即执行外部调用。
 6. 处理 Provider 响应或可信设备结果：条件更新 Attempt 和 Command，写 Event/Outbox 与所需 Audit。
 7. 处理可信 callback：保存 RawMessage、更新 DeviceState、写 Event/Outbox；只有存在已确认且无歧义的命令关联规则时才更新 Command。
-8. 创建 Webhook Delivery、完成一次 DeliveryAttempt、进入 retry/dead，以及创建 manual replay。
+8. Event 事务已经原子创建初始 Webhook Delivery；独立 Webhook 事务只负责领取/完成 DeliveryAttempt、进入 retry/dead，以及创建 manual replay，不能用于提交后补建初始 Delivery。
 
 外部 HTTP 调用不得包在长数据库事务中。`claimed` lease 过期且从未进入 `dispatching` 时，可以由 worker 重新领取同一 Attempt，因为合同保证尚未承诺外部调用。`dispatching` 一旦提交，进程在调用前后或结果落库前崩溃都无法证明未发送；恢复器将 Attempt 完成为 `transport_error_after_send`，confirmation 为 `transport_sent`、evidence 为 `unverified`，Command 转 `unknown`。不可安全重放的 action 不自动重发。
 

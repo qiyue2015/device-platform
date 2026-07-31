@@ -3,7 +3,7 @@ title: Device Platform 文档
 created: 2026-05-16
 updated: 2026-07-31
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.1
+freeze_revision: 2026-07-31.2
 ---
 
 # Device Platform 文档

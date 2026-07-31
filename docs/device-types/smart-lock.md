@@ -3,7 +3,7 @@ title: smart-lock Device Type Capability 合同
 created: 2026-07-31
 updated: 2026-07-31
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.1
+freeze_revision: 2026-07-31.2
 profile_revision: 1
 ---
 
@@ -41,9 +41,9 @@ profile_revision: 1
 
 | 字段              | 语义                         | 映射限制                                                               |
 | ----------------- | ---------------------------- | ---------------------------------------------------------------------- |
-| `lock_state`      | `locked` 或 `unlocked`       | 只映射厂商 `lockstatus=0/1`；其他值保存为 `unknown` 并保留原始消息。   |
+| `lock_state`      | `locked` 或 `unlocked`       | `lockstatus=0` 映射为 `locked`，`lockstatus=1` 映射为 `unlocked`；其他值保存为 `unknown` 并保留原始消息。 |
 | `battery_percent` | 厂商上报的电量百分比         | 只接受 `0..100`；越界消息不写入该规范化字段。                          |
-| `reported_at`     | 设备消息中的报告时间         | 格式或时区无法可靠解析时不猜测，使用 `null` 并保留平台 `observed_at`。 |
+| `reported_at`     | 设备消息中的报告时间         | 只接受带明确 offset 的 RFC3339 并规范化为 UTC；其他格式或时区不猜测，使用 `null` 并保留平台 `observed_at`。 |
 | `observed_at`     | 平台成功验证并接收消息的时间 | 由平台生成。                                                           |
 
 V2 示例还包含位置、电压和信号相关字段，但地图、轨迹和完整遥测 profile 不在当前目标；这些字段可在受保护 RawMessage 中保留，不进入当前规范化 DeviceState 合同。

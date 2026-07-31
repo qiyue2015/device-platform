@@ -3,7 +3,7 @@ title: WWTIOT Provider 合同
 created: 2026-07-31
 updated: 2026-07-31
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.1
+freeze_revision: 2026-07-31.2
 ---
 
 # WWTIOT Provider 合同
@@ -29,21 +29,20 @@ freeze_revision: 2026-07-31.1
 
 当前适配器明确以 **V2 映射**为准。V1.1 与 V2 的命令格式不同，不能混用，也不能用 V1.1 的 `control/type=1/value=0` 解释当前开锁实现。
 
-## Provider 元数据
+## Provider 元数据与配置
 
-| 项目                 | 当前实现事实                                        | 证据                                            |
-| -------------------- | --------------------------------------------------- | ----------------------------------------------- |
-| Provider code        | 由 `WWTIOT_PROVIDER_CODE` 配置，代码默认 `wwtiot`。 | `backend/cmd/server/config.go:40`               |
-| `access_type`        | `cloud_api`                                         | `backend/cmd/server/cloud_providers.go:46`      |
-| `transport_protocol` | `http`                                              | `backend/cmd/server/cloud_providers.go:47`      |
-| adapter              | `wwtiot_cloud_api`                                  | `backend/cmd/server/cloud_providers.go:48`      |
-| 调用方式             | 同步、单次 HTTP 下行。                              | `backend/internal/cloudapi/wwtiot/client.go:76` |
+| 项目                 | 冻结值                          |
+| -------------------- | ------------------------------- |
+| code                 | `wwtiot`                        |
+| name                 | `WWTIOT`                        |
+| `access_type`        | `cloud_api`                     |
+| `transport_protocol` | `http`                          |
+| adapter              | `wwtiot_cloud_api`              |
+| 调用方式             | 异步 worker 发起的单次 HTTP 下行 |
 
-敏感配置变量为 `WWTIOT_USER_ID`、`WWTIOT_USER_KEY`。其他当前变量为 `WWTIOT_PROVIDER_CODE`、`WWTIOT_PROVIDER_NAME`、`WWTIOT_API_URL`、`WWTIOT_TIMEOUT`。本文不记录真实值或 secret。
+Provider code/name 固定为 `wwtiot`/`WWTIOT`，Provider request timeout 固定来自 `smart-lock` revision 1 的 10 秒；部署变量不能覆盖这些合同值。部署只提供 `WWTIOT_API_URL`、`WWTIOT_USER_ID` 与 `WWTIOT_USER_KEY`，本文不记录真实值或 secret。URL 必须是无 userinfo、query 或 fragment 的 absolute HTTP/HTTPS URL，UserID trim 后为 `1..128` UTF-8 byte，UserKey 为 `1..512` byte 且不 trim。任一缺失或不合法时 Provider 为 `unconfigured`，dispatcher 不发请求。
 
-当前默认 API URL 使用明文 HTTP，见 `backend/cmd/server/config.go:42`。这只是实现事实；生产可接受性与厂商是否支持 HTTPS 为 Unknown。
-
-冻结目标中 Provider code/name 固定为 `wwtiot`/`WWTIOT`，Provider request timeout 固定来自 `smart-lock` revision 1 的 10 秒；`WWTIOT_PROVIDER_CODE`、`WWTIOT_PROVIDER_NAME` 和 `WWTIOT_TIMEOUT` 不再改变运行合同。部署只提供 `WWTIOT_API_URL`、`WWTIOT_USER_ID` 与 `WWTIOT_USER_KEY`：URL 必须是无 userinfo、query 或 fragment 的 absolute HTTP/HTTPS URL，UserID trim 后为 `1..128` UTF-8 byte，UserKey 为 `1..512` byte 且不 trim。任一缺失或不合法时 Provider 为 `unconfigured`，dispatcher 不发请求。
+默认 API URL 为厂商资料给出的 `http://gps.wwtiot.com/api/`。明文 HTTP 的生产可接受性与厂商是否支持 HTTPS 为 Unknown；部署可以通过 `WWTIOT_API_URL` 选择已确认的 absolute HTTP/HTTPS endpoint，但不能据此推断 endpoint 身份已验证。
 
 ## 厂商资料中的版本差异
 
@@ -57,24 +56,20 @@ freeze_revision: 2026-07-31.1
 
 V2 同步成功响应示例包含 `result=ok` 和 `info="cmd send ok"`。这直接支持“厂商平台接受或发送命令”的解释，不足以单独证明设备已经执行。V2 还描述了包含 `cmd`、`lockstatus`、电量、位置和时间等字段的设备信息回调；其 callback 示例 `serialnum=0`，资料没有定义它与下行 `serialnum` 的关联规则，也没有把该 callback 定义为某条命令的终局结果。
 
-## 当前代码的 V2 action 映射
+## V2 adapter action 映射
 
-下表描述代码实际行为，并与 V2 资料逐项对照：
+| smart-lock action | adapter 请求映射                    | 与厂商资料的关系                 |
+| ----------------- | ----------------------------------- | -------------------------------- |
+| `unlock`          | `cmd=open`                          | 与 V2 一致，不采用 V1.1 映射。   |
+| `lock`            | `cmd=close`                         | 与 V2 一致。                     |
+| `query_status`    | `cmd=control`、`type=23`、`value=4` | 与 V2 一致；不允许 payload 覆盖。 |
 
-| smart-lock action | 当前代码映射                                             | 代码证据                                         | 与厂商资料的关系                                                            |
-| ----------------- | -------------------------------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------- |
-| `unlock`          | `cmd=open`                                               | `backend/internal/cloudapi/wwtiot/client.go:141` | 与 V2 一致，不采用 V1.1 映射。                                              |
-| `lock`            | `cmd=close`                                              | `backend/internal/cloudapi/wwtiot/client.go:144` | 与 V2 一致。                                                                |
-| `query_status`    | `cmd=control`，payload 未提供时使用 `type=23`、`value=4` | `backend/internal/cloudapi/wwtiot/client.go:146` | 默认值与 V2 一致；允许 payload 覆盖是当前实现漂移，冻结目标拒绝调用方覆盖。 |
-
-请求当前还包含 `userid`、`deviceid`、`serialnum` 和 `sign`，见 `backend/internal/cloudapi/wwtiot/client.go:164`。代码按上述 V2 字段顺序无分隔拼接后执行 MD5，见 `backend/internal/cloudapi/wwtiot/client.go:196`。签名算法和请求字段顺序已与 V2 资料互证；`serialnum` 的唯一性、防重放要求、有效范围和真实服务端校验行为仍为 Unknown。
+请求还包含 `userid`、`deviceid`、持久化的 `serialnum` 和 `sign`。adapter 按上述 V2 字段顺序无分隔拼接后执行 MD5；`serialnum` 的唯一性、防重放要求、有效范围和真实服务端校验行为仍为 Unknown。
 
 ## 响应与 confirmation level
 
-- 非 2xx 被当前 client 视为调用失败，见 `backend/internal/cloudapi/wwtiot/client.go:118`。
-- 顶层字符串 `result` 存在且不等于 `ok` 时被视为失败，见 `backend/internal/cloudapi/wwtiot/client.go:121`。
-- 其他 2xx，包括空 body、非 JSON 或缺少字符串 `result`，当前 client 都可能返回 nil error。这是 implementation fact，不是厂商成功合同。
-- 当前 dispatcher 随后直接执行 `sent -> acked -> success`，见 `backend/cmd/server/command_dispatch.go:89`。该行为只证明 Provider HTTP acceptance，却被错误表达为 Device ACK 和 final result，违反通用 API 合同。
+- 非 2xx、空 body、非 JSON object、重复/尾随 JSON、缺少字符串 `result` 或关键 echo 不匹配都必须按下表分类，不能作为成功。
+- HTTP Command 创建不得同步调用 adapter，也不得依据同步 Provider 响应执行 `sent -> acked -> success`；只有持久 dispatcher 可以在 Attempt 已进入 `dispatching` 后调用 adapter。
 - V2 的 `result=ok` / `info="cmd send ok"` 是厂商资料中的同步响应示例；其协议语义层级最多是 `provider_accepted`，且当前响应真实性仍为 `unverified`。它不能单独推进 Device `acked` 或 `success`。
 - V2 设备信息回调可以提供设备状态证据，但回调签名字段顺序、命令关联规则、结果终局性和真实环境送达行为尚未确认。平台只有在这些条件经受控验收后，才能据实提升 confirmation level。
 
@@ -90,16 +85,16 @@ V2 同步成功响应示例包含 `result=ok` 和 `info="cmd send ok"`。这直�
 
 ### 同步响应分类
 
-| 观测                                                       | Attempt outcome               | confirmation level                                 | Command 结果                                                  |
-| ---------------------------------------------------------- | ----------------------------- | -------------------------------------------------- | ------------------------------------------------------------- |
-| Command 创建后的配置漂移导致请求构造前发现 Provider 不可用 | `invalid_request`             | `none` + `evidence_status=none`                    | `failed`，`provider_not_configured`；正常创建前会同步拦截     |
-| 明确未发出请求的本地连接错误                               | `transport_error_before_send` | `none`                                             | `failed`；只有实现能证明未发送时适用                          |
-| 请求可能已发出但没有完整响应                               | `transport_error_after_send`  | `transport_sent`                                   | `unknown`，不自动重发                                         |
-| 非 2xx                                                     | `invalid_response`            | `transport_sent`                                   | `unknown`；厂商未定义 HTTP error 的终局语义，不猜测为明确拒绝 |
-| 2xx 但 body 不是 JSON object，或缺少字符串 `result`        | `invalid_response`            | `transport_sent`                                   | `unknown`                                                     |
-| 2xx 且 `result != ok`                                      | `provider_rejected`           | `transport_sent`                                   | `failed`，保留厂商 `info`                                     |
-| 2xx、`result=ok`，且必需 echo 与请求一致                   | `provider_accepted`           | `provider_accepted` + `evidence_status=unverified` | 保持 `sent`，不能进入 `acked`/`success`                       |
-| 2xx、`result=ok`，但关键 echo 缺失或不一致                 | `invalid_response`            | `transport_sent`                                   | `unknown`                                                     |
+| 观测                                                       | Attempt outcome               | confirmation level  | evidence status | Command 结果                                                  |
+| ---------------------------------------------------------- | ----------------------------- | ------------------- | --------------- | ------------------------------------------------------------- |
+| Command 创建后的配置漂移导致请求构造前发现 Provider 不可用 | `invalid_request`             | `none`              | `none`          | `failed`，`provider_not_configured`；正常创建前会同步拦截     |
+| 明确未发出请求的本地连接错误                               | `transport_error_before_send` | `none`              | `none`          | `failed`；只有实现能证明未发送时适用                          |
+| 请求可能已发出但没有完整响应                               | `transport_error_after_send`  | `transport_sent`    | `verified`      | `unknown`，不自动重发                                         |
+| 非 2xx                                                     | `invalid_response`            | `transport_sent`    | `verified`      | `unknown`；厂商未定义 HTTP error 的终局语义，不猜测为明确拒绝 |
+| 2xx 但 body 不是 JSON object，或缺少字符串 `result`        | `invalid_response`            | `transport_sent`    | `verified`      | `unknown`                                                     |
+| 2xx 且 `result != ok`                                      | `provider_rejected`           | `transport_sent`    | `unverified`    | `failed`，保留厂商 `info`                                     |
+| 2xx、`result=ok`，且必需 echo 与请求一致                   | `provider_accepted`           | `provider_accepted` | `unverified`    | 保持 `sent`，不能进入 `acked`/`success`                       |
+| 2xx、`result=ok`，但关键 echo 缺失或不一致                 | `invalid_response`            | `transport_sent`    | `verified`      | `unknown`                                                     |
 
 V2 同步响应包含 `sign`，但现有资料没有无歧义写明响应签名的字段顺序；代码不得猜测验证顺序。当前明文 HTTP 下响应真实性存在风险，因此仅凭结构正确的响应只能记录 `evidence_status=unverified`。厂商确认 HTTPS 或响应签名规则并经受控验证后，才能将真实 WWTIOT acceptance evidence 标为 `verified`。
 
@@ -107,7 +102,7 @@ V2 同步响应包含 `sign`，但现有资料没有无歧义写明响应签名�
 
 transport 是否已发送必须由 HTTP transport 的 `WroteRequest`（或可证明等价信号）记录；DNS/dial 等明确未写请求的错误使用 `confirmation_level=none`，一旦已写或无法证明未写就使用 `transport_sent` 并进入 `unknown`。
 
-`evidence_status` 只评价当前 confirmation evidence：由本地 `WroteRequest` 证明的 `transport_sent` 为 `verified`，明确未发送且 confirmation 为 `none` 时为 `none`；来自当前未验证响应签名的 HTTP body 的 `provider_accepted` 为 `unverified`。Provider rejection 可以保守地令 Command 失败，但不得把未签名响应提升为更高 confirmation level。
+`evidence_status` 评价本次 outcome 所依赖的证据。由本地 `WroteRequest` 单独证明的 transport/invalid-response 分类为 `verified`，明确未发送且 confirmation 为 `none` 时为 `none`；依赖当前无法验签 HTTP body 的 `provider_accepted` 和 `provider_rejected` 均为 `unverified`。Provider rejection 可以保守地令 Command 失败，但不得把未签名响应提升为更高 confirmation level。
 
 ### 设备信息 callback
 
@@ -124,13 +119,9 @@ simulator 通过同一 Provider interface 返回 `provider_accepted`、`provider
 
 ## 已验证与 Unknown
 
-### 代码事实已验证
+### 代码验收门槛
 
-- 本地 `httptest` 覆盖了三项当前 action 的 HTTP 下行映射和敏感字段不出现在 Attempt 的行为；`backend/cmd/server/app_test.go:643`。
-- request/response 顶层敏感字段会被脱敏；`backend/internal/cloudapi/wwtiot/client.go:205`。
-- 当前 adapter 没有实现 V2 资料描述的 callback、上行消息或设备状态同步入口；应用路由注册见 `backend/cmd/server/app.go:87`。
-
-以上只验证仓库代码与伪 Provider 行为，不是真实设备验收。
+Current State 只有在自动化检查证明三项 action 的精确请求/签名映射、严格响应矩阵、请求写出前后错误分类、redirect/body 上限、敏感字段 allowlist，以及无副作用 callback decoder/validator 后，才能把 WWTIOT 代码层集成标为已实现。伪 Provider 测试只验证仓库代码，不是真实设备验收。
 
 ### 真实设备验收事实
 
