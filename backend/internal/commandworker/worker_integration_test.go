@@ -495,9 +495,9 @@ func TestPersistentWorkerFailsClosedForInvalidSimulatorClaimSnapshot(t *testing.
 
 func TestPersistentWorkerNearDispatchDeadlineKeepsDispatchLease(t *testing.T) {
 	withWorkerDatabase(t, func(_ *sql.DB, store *repository.PostgresStore) {
-		seedWorkerCommand(t, store, time.Now().UTC().Add(80*time.Millisecond), false)
-		adapter := &fakeAdapter{configured: true, result: acceptedResult(), delay: 120 * time.Millisecond}
-		worker := newTestWorkerWithConfig(t, store, adapter, Config{WorkerID: "near-deadline", LeaseDuration: 20 * time.Millisecond})
+		seedWorkerCommand(t, store, time.Now().UTC().Add(time.Second), false)
+		adapter := &fakeAdapter{configured: true, result: acceptedResult(), delay: 1200 * time.Millisecond}
+		worker := newTestWorkerWithConfig(t, store, adapter, Config{WorkerID: "near-deadline", LeaseDuration: 100 * time.Millisecond})
 		worked, err := worker.DispatchNext(context.Background())
 		if err != nil || !worked {
 			t.Fatalf("DispatchNext worked=%v err=%v", worked, err)
@@ -1136,7 +1136,11 @@ func runWorkerUntil(t *testing.T, worker *Worker, done func() bool) {
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		worker.Run(ctx, func(err error) { t.Errorf("background worker: %v", err) })
+		worker.Run(ctx, func(err error) {
+			if ctx.Err() == nil {
+				t.Errorf("background worker: %v", err)
+			}
+		})
 	}()
 	deadline := time.NewTimer(2 * time.Second)
 	ticker := time.NewTicker(5 * time.Millisecond)

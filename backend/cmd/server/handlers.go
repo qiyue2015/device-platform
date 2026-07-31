@@ -1,17 +1,12 @@
 package main
 
 import (
-	"database/sql"
 	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/qiyue2015/device-platform/internal/commandservice"
-	"github.com/qiyue2015/device-platform/internal/deviceservice"
 	"github.com/qiyue2015/device-platform/internal/httpjson"
-	"github.com/qiyue2015/device-platform/internal/projectservice"
-	"github.com/qiyue2015/device-platform/internal/storage/repository"
 )
 
 type loginRequest struct {
@@ -31,12 +26,8 @@ func (a *app) handleReady(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodGet {
 		return newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
-	if !a.runtimeInstalled() {
-		writeOK(w, map[string]interface{}{
-			"status": "setup_required",
-			"checks": map[string]string{"setup": "required"},
-		})
-		return nil
+	if err := a.runtimeUnavailableError(); err != nil {
+		return err
 	}
 	writeOK(w, map[string]interface{}{
 		"status": "ready",
@@ -226,60 +217,34 @@ func (a *app) handleSetupInstall(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodPost {
 		return newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
+	if err := recoverInstallation(r.Context()); err != nil {
+		return newAPIError(http.StatusInternalServerError, "install_recovery_failed", "installation recovery failed")
+	}
+	a.setRecoveryNeeded(false)
+	if err := ensureSetupAllowed(); err != nil {
+		return err
+	}
 	var req setupInstallRequest
 	if err := httpjson.DecodeStrict(r.Body, &req); err != nil {
+		if setupErr := ensureSetupAllowed(); setupErr != nil {
+			return setupErr
+		}
 		return newAPIError(http.StatusBadRequest, "invalid_install_request", "invalid installation request")
 	}
-	result, err := performInstall(r.Context(), req)
+	_, err := performInstallWithRuntime(r.Context(), req, a.buildInstallRuntime, a.publishRuntimeSnapshot)
 	if err != nil {
+		if errors.Is(err, errInstallCommittedFailStop) {
+			a.respondCommittedInstallFailStop(w, err)
+			return nil
+		}
 		return err
-	}
-	cfg := a.runtimeConfig()
-	cfg.DatabaseURL = result.DatabaseURL
-	cfg.RedisURL = result.RedisURL
-	cfg.JWTSecret = result.JWTSecret
-	cfg.WebhookSecretEncryptionKey = append([]byte(nil), result.WebhookSecretEncryptionKey...)
-	cfg.Installed = true
-	db, err := sql.Open("postgres", result.DatabaseURL)
-	if err != nil {
-		return err
-	}
-	store := repository.NewPostgresStore(db)
-	projects, err := projectservice.New(store, projectservice.Config{
-		EncryptionKeys: map[int][]byte{1: result.WebhookSecretEncryptionKey}, ActiveEncryptionKeyVersion: 1,
-	})
-	if err != nil {
-		_ = db.Close()
-		return err
-	}
-	devices, err := deviceservice.New(store, deviceServiceConfig(cfg))
-	if err != nil {
-		_ = db.Close()
-		return err
-	}
-	commands, err := commandservice.New(store, commandServiceConfig(devices))
-	if err != nil {
-		_ = db.Close()
-		return err
-	}
-	worker, err := newPersistentCommandWorker(store, a.cloudProviders)
-	if err != nil {
-		_ = db.Close()
-		return err
-	}
-	webhookWorker, err := newPersistentWebhookWorker(store, projects, cfg)
-	if err != nil {
-		_ = db.Close()
-		return err
-	}
-	if previousDB := a.replaceRuntime(cfg, db, newDBAuthenticator(db, result.JWTSecret), projects, devices, commands); previousDB != nil && previousDB != db {
-		a.replaceCommandWorker(worker)
-		a.replaceWebhookWorker(webhookWorker)
-		_ = previousDB.Close()
-	} else {
-		a.replaceCommandWorker(worker)
-		a.replaceWebhookWorker(webhookWorker)
 	}
 	writeOK(w, map[string]bool{"installed": true})
 	return nil
+}
+
+func (a *app) respondCommittedInstallFailStop(w http.ResponseWriter, err error) {
+	a.logger.Error("installation committed but process requires recovery restart")
+	a.signalFatal(err)
+	writeOK(w, map[string]bool{"installed": true})
 }

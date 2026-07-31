@@ -71,7 +71,7 @@ func loadConfig(envFiles ...string) (config, error) {
 		DatabaseURL:            strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		RedisURL:               strings.TrimSpace(os.Getenv("REDIS_URL")),
 		JWTSecret:              strings.TrimSpace(os.Getenv("JWT_SECRET")),
-		Installed:              envBool("DEVICE_PLATFORM_INSTALLED", false),
+		Installed:              installLockExists(),
 		ReadHeaderTimeout:      envDuration("READ_HEADER_TIMEOUT", 5*time.Second),
 		WebhookWorkerInterval:  webhookWorkerInterval,
 		WebhookRequestTimeout:  webhookRequestTimeout,
@@ -176,15 +176,31 @@ func loadEnvFiles(paths ...string) error {
 }
 
 func loadEnvFile(path string) error {
-	file, err := os.Open(path)
+	values, err := readEnvValues(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("open env file %s: %w", path, err)
+		return err
+	}
+	for key, value := range values {
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		if err := os.Setenv(key, value); err != nil {
+			return fmt.Errorf("set env %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+func readEnvValues(path string) (map[string]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open env file %s: %w", path, err)
 	}
 	defer file.Close()
-
+	values := make(map[string]string)
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -192,30 +208,23 @@ func loadEnvFile(path string) error {
 			continue
 		}
 		line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
-
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
 		}
-
 		key = strings.TrimSpace(key)
 		if key == "" {
 			continue
 		}
-		if _, exists := os.LookupEnv(key); exists {
-			continue
-		}
-
 		value = strings.TrimSpace(stripInlineEnvComment(value))
-		value = strings.Trim(value, `"'`)
-		if err := os.Setenv(key, value); err != nil {
-			return fmt.Errorf("set env %s: %w", key, err)
+		if _, exists := values[key]; !exists {
+			values[key] = strings.Trim(value, `"'`)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read env file %s: %w", path, err)
+		return nil, fmt.Errorf("read env file %s: %w", path, err)
 	}
-	return nil
+	return values, nil
 }
 
 func envDefault(key, fallback string) string {

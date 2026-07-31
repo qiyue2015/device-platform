@@ -66,9 +66,21 @@ type serverSetupRequest struct {
 
 func installLockPath() string {
 	if path := strings.TrimSpace(os.Getenv("INSTALL_LOCK_PATH")); path != "" {
-		return path
+		return absoluteInstallPath(path)
 	}
-	return installLockFile
+	targetDir := "."
+	if info, err := os.Stat("backend"); err == nil && info.IsDir() {
+		targetDir = "backend"
+	}
+	return absoluteInstallPath(filepath.Join(targetDir, installLockFile))
+}
+
+func absoluteInstallPath(path string) string {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(absolute)
 }
 
 func installLockExists() bool {
@@ -77,7 +89,7 @@ func installLockExists() bool {
 }
 
 func getSetupStatus() setupStatus {
-	installed := installLockExists() || envBool("DEVICE_PLATFORM_INSTALLED", false)
+	installed := installLockExists()
 	return setupStatus{
 		NeedsSetup: !installed,
 		Installed:  installed,
@@ -98,6 +110,12 @@ func validateInstallTargetWritable() error {
 	}
 	if err := validateFileTargetWritable(installLockPath()); err != nil {
 		return fmt.Errorf("install lock target is not writable: %w", err)
+	}
+	if err := validateFileTargetWritable(installFileLockPath()); err != nil {
+		return fmt.Errorf("cross-process lock target is not writable: %w", err)
+	}
+	if err := validateFileTargetWritable(installJournalPath()); err != nil {
+		return fmt.Errorf("recovery journal target is not writable: %w", err)
 	}
 	return nil
 }
@@ -254,26 +272,81 @@ type installResult struct {
 	WebhookSecretEncryptionKey []byte
 }
 
+type installRuntimeFactory func(installResult, *sql.DB) (runtimeSnapshot, error)
+type installSnapshotPublisher func(runtimeSnapshot) (*sql.DB, func())
+
+type installOperations struct {
+	cleanup         func(installJournal) error
+	verifyFile      func(*processFileLock) error
+	verifyDatabase  func(context.Context, *databaseInstallLock) error
+	releaseFile     func(*processFileLock) error
+	releaseDatabase func(context.Context, *databaseInstallLock) error
+}
+
+func defaultInstallOperations() installOperations {
+	return installOperations{
+		cleanup:    cleanupInstallArtifacts,
+		verifyFile: func(lock *processFileLock) error { return lock.verify() },
+		verifyDatabase: func(ctx context.Context, lock *databaseInstallLock) error {
+			return lock.verify(ctx)
+		},
+		releaseFile: func(lock *processFileLock) error { return lock.release() },
+		releaseDatabase: func(ctx context.Context, lock *databaseInstallLock) error {
+			return lock.release(ctx)
+		},
+	}
+}
+
+var errInstallCommittedFailStop = errors.New("installation committed but process must stop for recovery")
+
 type fileSnapshot struct {
 	path   string
 	exists bool
 	data   []byte
-	mode   os.FileMode
 }
 
 func performInstall(ctx context.Context, req setupInstallRequest) (installResult, error) {
+	return performInstallWithRuntime(ctx, req, nil, nil)
+}
+
+func performInstallWithRuntime(ctx context.Context, req setupInstallRequest, factory installRuntimeFactory, publishSnapshot installSnapshotPublisher) (result installResult, resultErr error) {
+	return performInstallWithOperations(ctx, req, factory, publishSnapshot, defaultInstallOperations())
+}
+
+func performInstallWithOperations(ctx context.Context, req setupInstallRequest, factory installRuntimeFactory, publishSnapshot installSnapshotPublisher, operations installOperations) (result installResult, resultErr error) {
 	installMu.Lock()
 	defer installMu.Unlock()
 
-	if err := ensureSetupAllowed(); err != nil {
-		return installResult{}, err
-	}
 	req = normalizeInstallRequest(req)
 	if err := validateInstallRequest(req); err != nil {
 		return installResult{}, newAPIError(http.StatusBadRequest, "invalid_install_request", "invalid installation request")
 	}
 	if err := validateInstallTargetWritable(); err != nil {
 		return installResult{}, newAPIError(http.StatusInternalServerError, "install_target_not_writable", "installation target is not writable")
+	}
+	fileLock, err := acquireProcessFileLock(ctx)
+	if err != nil {
+		return installResult{}, newAPIError(http.StatusInternalServerError, "install_lock_failed", "installation lock could not be acquired")
+	}
+	markerCommitted := false
+	fileLockHeld := true
+	defer func() {
+		if !fileLockHeld {
+			return
+		}
+		if err := operations.releaseFile(fileLock); err != nil {
+			if markerCommitted {
+				resultErr = errors.Join(resultErr, errInstallCommittedFailStop)
+			} else {
+				resultErr = newAPIError(http.StatusInternalServerError, "install_lock_failed", "installation lock could not be released")
+			}
+		}
+	}()
+	if err := recoverInstallationLocked(ctx); err != nil {
+		return installResult{}, newAPIError(http.StatusInternalServerError, "install_recovery_failed", "installation recovery failed")
+	}
+	if err := ensureSetupAllowed(); err != nil {
+		return installResult{}, err
 	}
 	if err := testDatabaseConnection(ctx, req.Database.URL); err != nil {
 		return installResult{}, newAPIError(http.StatusBadRequest, "database_unavailable", "database is unavailable")
@@ -286,12 +359,47 @@ func performInstall(ctx context.Context, req setupInstallRequest) (installResult
 	if err != nil {
 		return installResult{}, newAPIError(http.StatusBadRequest, "database_unavailable", "database is unavailable")
 	}
-	defer db.Close()
+	dbOwnedByRuntime := false
+	defer func() {
+		if !dbOwnedByRuntime {
+			_ = db.Close()
+		}
+	}()
+	databaseLock, err := acquireDatabaseInstallLock(ctx, db)
+	if err != nil {
+		return installResult{}, newAPIError(http.StatusInternalServerError, "install_lock_failed", "database installation lock could not be acquired")
+	}
+	databaseLockHeld := true
+	defer func() {
+		if !databaseLockHeld {
+			return
+		}
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := operations.releaseDatabase(releaseCtx, databaseLock); err != nil {
+			if markerCommitted {
+				resultErr = errors.Join(resultErr, errInstallCommittedFailStop)
+			} else {
+				resultErr = newAPIError(http.StatusInternalServerError, "install_lock_failed", "database installation lock could not be released")
+			}
+		}
+	}()
 	if err := storage.ApplyMigrations(ctx, db); err != nil {
 		return installResult{}, newAPIError(http.StatusInternalServerError, "migration_failed", "database migration failed")
 	}
 	if err := storage.ValidateFrozenContracts(ctx, db); err != nil {
 		return installResult{}, newAPIError(http.StatusInternalServerError, "migration_failed", "database contract validation failed")
+	}
+	if err := ensureUsersEmpty(ctx, db); err != nil {
+		return installResult{}, newAPIError(http.StatusConflict, "admin_creation_failed", "administrator could not be created")
+	}
+	adminID, err := randomUUID()
+	if err != nil {
+		return installResult{}, newAPIError(http.StatusInternalServerError, "secret_generation_failed", "failed to generate administrator identifier")
+	}
+	installID, err := randomUUID()
+	if err != nil {
+		return installResult{}, newAPIError(http.StatusInternalServerError, "secret_generation_failed", "failed to generate installation identifier")
 	}
 	jwtSecret, err := randomHex(32)
 	if err != nil {
@@ -301,103 +409,144 @@ func performInstall(ctx context.Context, req setupInstallRequest) (installResult
 	if _, err := rand.Read(webhookEncryptionKey); err != nil {
 		return installResult{}, newAPIError(http.StatusInternalServerError, "secret_generation_failed", "failed to generate Webhook encryption key")
 	}
+	passwordHash, err := hashPassword(req.Admin.Password)
+	if err != nil {
+		return installResult{}, newAPIError(http.StatusInternalServerError, "secret_generation_failed", "failed to prepare administrator credentials")
+	}
+	result = installResult{
+		DatabaseURL: req.Database.URL, RedisURL: req.Redis.URL, JWTSecret: jwtSecret,
+		WebhookSecretEncryptionKey: webhookEncryptionKey,
+	}
+	var runtime runtimeSnapshot
+	if factory != nil {
+		runtime, err = factory(result, db)
+		if err != nil {
+			return installResult{}, newAPIError(http.StatusInternalServerError, "internal_error", "runtime services could not be prepared")
+		}
+	}
 	envBefore, err := snapshotFile(runtimeEnvPath())
 	if err != nil {
 		return installResult{}, newAPIError(http.StatusInternalServerError, "config_write_failed", "runtime configuration could not be prepared")
 	}
-	lockBefore, err := snapshotFile(installLockPath())
+	journal, err := prepareInstallJournal(envBefore, installID, adminID)
 	if err != nil {
-		return installResult{}, newAPIError(http.StatusInternalServerError, "install_lock_failed", "installation lock could not be prepared")
+		return installResult{}, newAPIError(http.StatusInternalServerError, "install_recovery_failed", "installation recovery state could not be prepared")
 	}
-	adminID, err := createInitialAdmin(ctx, db, req.Admin)
-	if err != nil {
+	failBeforeMarker := func(cause error) (installResult, error) {
+		recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancel()
+		if err := rollbackInstallBeforeMarker(recoveryCtx, db, &journal); err != nil {
+			return installResult{}, newAPIError(http.StatusInternalServerError, "install_recovery_failed", "installation recovery failed")
+		}
+		return installResult{}, cause
+	}
+	if err := writeRuntimeEnvForInstall(req, jwtSecret, webhookEncryptionKey, installID); err != nil {
+		return failBeforeMarker(newAPIError(http.StatusInternalServerError, "config_write_failed", "runtime configuration could not be written"))
+	}
+	if err := advanceInstallJournal(&journal, installPhaseAdminPending); err != nil {
+		return failBeforeMarker(newAPIError(http.StatusInternalServerError, "install_recovery_failed", "installation recovery state could not be advanced"))
+	}
+	if err := createInitialAdmin(ctx, db, adminID, passwordHash, req.Admin); err != nil {
 		if errors.Is(err, errAdminCreationConflict) {
-			return installResult{}, newAPIError(http.StatusConflict, "admin_creation_failed", "administrator could not be created")
+			return failBeforeMarker(newAPIError(http.StatusConflict, "admin_creation_failed", "administrator could not be created"))
 		}
-		return installResult{}, newAPIError(http.StatusInternalServerError, "internal_error", "internal server error")
+		return failBeforeMarker(newAPIError(http.StatusInternalServerError, "internal_error", "internal server error"))
 	}
-	completed := false
-	defer func() {
-		if completed {
-			return
-		}
-		_ = deleteInitialAdmin(context.Background(), db, adminID, req.Admin.Email)
-		_ = restoreFile(envBefore)
-		_ = restoreFile(lockBefore)
-	}()
-	if err := writeRuntimeEnv(req, jwtSecret, webhookEncryptionKey); err != nil {
-		return installResult{}, newAPIError(http.StatusInternalServerError, "config_write_failed", "runtime configuration could not be written")
+	if err := operations.verifyFile(fileLock); err != nil {
+		return failBeforeMarker(newAPIError(http.StatusInternalServerError, "install_lock_failed", "installation lock ownership was lost"))
 	}
-	if err := createInstallLock(); err != nil {
-		return installResult{}, newAPIError(http.StatusInternalServerError, "install_lock_failed", "installation lock could not be written")
+	if err := operations.verifyDatabase(ctx, databaseLock); err != nil {
+		return failBeforeMarker(newAPIError(http.StatusInternalServerError, "install_lock_failed", "database installation lock ownership was lost"))
 	}
-	completed = true
-	return installResult{
-		DatabaseURL:                req.Database.URL,
-		RedisURL:                   req.Redis.URL,
-		JWTSecret:                  jwtSecret,
-		WebhookSecretEncryptionKey: webhookEncryptionKey,
-	}, nil
+	if err := createInstallLock(installID); err != nil {
+		return failBeforeMarker(newAPIError(http.StatusInternalServerError, "install_lock_failed", "installation completion marker could not be written"))
+	}
+	markerCommitted = true
+	if err := operations.cleanup(journal); err != nil {
+		return installResult{}, errInstallCommittedFailStop
+	}
+	var previousDB *sql.DB
+	var activateWorkers func()
+	if publishSnapshot != nil {
+		previousDB, activateWorkers = publishSnapshot(runtime)
+		dbOwnedByRuntime = true
+	}
+	// The durable marker fixes the success response and the complete snapshot is
+	// published under the file lock. Readiness and workers stay gated until both
+	// external locks have been released successfully.
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	if err := operations.releaseDatabase(releaseCtx, databaseLock); err != nil {
+		cancel()
+		databaseLockHeld = false
+		return installResult{}, errInstallCommittedFailStop
+	}
+	cancel()
+	databaseLockHeld = false
+	if err := operations.releaseFile(fileLock); err != nil {
+		fileLockHeld = false
+		return installResult{}, errInstallCommittedFailStop
+	}
+	fileLockHeld = false
+	if activateWorkers != nil {
+		activateWorkers()
+	}
+	if previousDB != nil && previousDB != db {
+		_ = previousDB.Close()
+	}
+	return result, nil
 }
 
-func createInitialAdmin(ctx context.Context, db *sql.DB, req adminSetupRequest) (string, error) {
+func createInitialAdmin(ctx context.Context, db *sql.DB, id, passwordHash string, req adminSetupRequest) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
 	var totalUsers int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(1) FROM users`).Scan(&totalUsers); err != nil {
-		return "", fmt.Errorf("count users: %w", err)
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM users`).Scan(&totalUsers); err != nil {
+		return fmt.Errorf("count users: %w", err)
 	}
-	var adminUsers int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(1) FROM users WHERE is_admin = true`).Scan(&adminUsers); err != nil {
-		return "", fmt.Errorf("count admin users: %w", err)
+	if totalUsers != 0 {
+		return fmt.Errorf("%w: users table is not empty", errAdminCreationConflict)
 	}
-	if adminUsers > 0 {
-		return "", fmt.Errorf("%w: admin user already exists", errAdminCreationConflict)
-	}
-	if totalUsers > 0 {
-		return "", fmt.Errorf("%w: users table is not empty", errAdminCreationConflict)
-	}
-	hash, err := hashPassword(req.Password)
-	if err != nil {
-		return "", err
-	}
-	id, err := randomUUID()
-	if err != nil {
-		return "", err
-	}
-	_, err = db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO users (id, email, password_hash, display_name, is_admin)
 		VALUES ($1, $2, $3, $4, true)
-	`, id, req.Email, hash, req.DisplayName)
+	`, id, req.Email, passwordHash, req.DisplayName)
 	var pqErr *pq.Error
 	if errors.As(err, &pqErr) && pqErr.Code == "23505" {
-		return "", fmt.Errorf("%w: unique user conflict", errAdminCreationConflict)
+		return fmt.Errorf("%w: unique user conflict", errAdminCreationConflict)
 	}
 	if err != nil {
-		return "", err
+		return err
 	}
-	return id, nil
+	return tx.Commit()
 }
 
-func deleteInitialAdmin(ctx context.Context, db *sql.DB, id, email string) error {
-	if id == "" {
-		return nil
+func ensureUsersEmpty(ctx context.Context, db *sql.DB) error {
+	var totalUsers int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(1) FROM users`).Scan(&totalUsers); err != nil {
+		return err
 	}
-	_, err := db.ExecContext(ctx, `
-		DELETE FROM users
-		WHERE id = $1 AND email = $2 AND is_admin = true
-	`, id, email)
-	return err
+	if totalUsers != 0 {
+		return errAdminCreationConflict
+	}
+	return nil
 }
 
 func runtimeEnvPath() string {
-	path := ".env"
-	if _, err := os.Stat("backend"); err == nil {
-		path = filepath.Join("backend", ".env")
-	}
-	return path
+	return filepath.Join(filepath.Dir(installLockPath()), ".env")
 }
 
 func writeRuntimeEnv(req setupInstallRequest, jwtSecret string, webhookEncryptionKey []byte) error {
-	path := runtimeEnvPath()
+	installID, err := randomUUID()
+	if err != nil {
+		return err
+	}
+	return writeRuntimeEnvForInstall(req, jwtSecret, webhookEncryptionKey, installID)
+}
+
+func writeRuntimeEnvForInstall(req setupInstallRequest, jwtSecret string, webhookEncryptionKey []byte, installID string) error {
 	content := strings.Join([]string{
 		"DATABASE_URL=" + shellQuote(req.Database.URL),
 		"REDIS_URL=" + shellQuote(req.Redis.URL),
@@ -418,35 +567,7 @@ func writeRuntimeEnv(req setupInstallRequest, jwtSecret string, webhookEncryptio
 		"EXPIRY_CHECK_INTERVAL=30s",
 		"",
 	}, "\n")
-	tmp := path + ".tmp"
-	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("write temp env: %w", err)
-	}
-	removeTemp := true
-	defer func() {
-		_ = file.Close()
-		if removeTemp {
-			_ = os.Remove(tmp)
-		}
-	}()
-	if err := file.Chmod(0o600); err != nil {
-		return fmt.Errorf("secure temp env: %w", err)
-	}
-	if _, err := file.WriteString(content); err != nil {
-		return fmt.Errorf("write temp env: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		return fmt.Errorf("sync temp env: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close temp env: %w", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("replace env: %w", err)
-	}
-	removeTemp = false
-	return nil
+	return writeFileDurable(runtimeEnvPath(), []byte(content), 0o600, installID)
 }
 
 func snapshotFile(path string) (fileSnapshot, error) {
@@ -467,33 +588,7 @@ func snapshotFile(path string) (fileSnapshot, error) {
 	}
 	snapshot.exists = true
 	snapshot.data = data
-	snapshot.mode = info.Mode().Perm()
 	return snapshot, nil
-}
-
-func restoreFile(snapshot fileSnapshot) error {
-	if snapshot.path == "" {
-		return nil
-	}
-	if !snapshot.exists {
-		if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
-	}
-	tmp := snapshot.path + ".restore"
-	mode := snapshot.mode
-	if mode == 0 {
-		mode = 0o600
-	}
-	if err := os.WriteFile(tmp, snapshot.data, mode); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, snapshot.path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
 }
 
 func shellQuote(value string) string {
@@ -506,18 +601,10 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-func createInstallLock() error {
+func createInstallLock(installID string) error {
 	path := installLockPath()
 	content := fmt.Sprintf("installed_at=%s\n", time.Now().UTC().Format(time.RFC3339))
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
+	return writeFileDurable(path, []byte(content), 0o600, installID)
 }
 
 func randomHex(bytesLen int) (string, error) {

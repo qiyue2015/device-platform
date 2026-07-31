@@ -30,7 +30,9 @@ import (
 type app struct {
 	runtimeMu      sync.RWMutex
 	cfg            config
+	recoveryNeeded bool
 	logger         *slog.Logger
+	fatal          chan error
 	db             *sql.DB
 	auth           authenticator
 	deviceService  *devicecore.Service
@@ -58,6 +60,20 @@ type commandWorkerRunner interface {
 
 type webhookWorkerRunner interface {
 	Run(context.Context, webhookworker.ErrorReporter)
+}
+
+type runtimeSnapshot struct {
+	cfg            config
+	db             *sql.DB
+	auth           authenticator
+	projects       httpapi.ProjectService
+	devices        httpapi.DeviceResourceService
+	commands       httpapi.CommandResourceService
+	simulator      *simulatorruntime.Service
+	webhookAudit   *webhookaudit.PersistentService
+	cloudProviders cloudProviderRegistry
+	commandWorker  commandWorkerRunner
+	webhookWorker  webhookWorkerRunner
 }
 
 func newApp(cfg config, logger *slog.Logger) (*app, error) {
@@ -161,6 +177,7 @@ func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authen
 		gateway:        gatewayService,
 		webhooks:       webhookService,
 		webhookAudit:   webhookAuditService,
+		fatal:          make(chan error, 1),
 	}
 }
 
@@ -222,10 +239,26 @@ func (a *app) routes() http.Handler {
 			openRouter.ServeHTTP(w, r)
 			return
 		}
+		if !a.runtimeInstalled() {
+			handleError(w, a.logger, a.runtimeUnavailableError())
+			return
+		}
 		a.requireBearerHandler(protectedV1).ServeHTTP(w, r)
 	}))
 
-	return httpjson.WithRequestID(withRequestLogging(a.logger, withCORS(mux)))
+	return httpjson.WithRequestID(withRequestLogging(a.logger, withCORS(a.requireAvailableRuntime(mux))))
+}
+
+func (a *app) requireAvailableRuntime(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/") {
+			if err := a.runtimeUnavailableError(); err != nil {
+				handleError(w, a.logger, err)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (a *app) runtimeConfig() config {
@@ -238,6 +271,41 @@ func (a *app) runtimeInstalled() bool {
 	a.runtimeMu.RLock()
 	defer a.runtimeMu.RUnlock()
 	return a.cfg.Installed
+}
+
+func (a *app) runtimeUnavailableError() error {
+	a.runtimeMu.RLock()
+	installed := a.cfg.Installed
+	recoveryNeeded := a.recoveryNeeded
+	a.runtimeMu.RUnlock()
+	if recoveryNeeded || installRecoveryExists() {
+		return newAPIError(http.StatusServiceUnavailable, "setup_recovery_required", "installation recovery is required")
+	}
+	if !installed && installLockExists() {
+		return newAPIError(http.StatusServiceUnavailable, "setup_restart_required", "process restart is required")
+	}
+	if installed {
+		return nil
+	}
+	return newAPIError(http.StatusServiceUnavailable, "setup_required", "system setup is required")
+}
+
+func (a *app) setRecoveryNeeded(value bool) {
+	a.runtimeMu.Lock()
+	a.recoveryNeeded = value
+	a.runtimeMu.Unlock()
+}
+
+func (a *app) signalFatal(err error) {
+	a.setRecoveryNeeded(true)
+	select {
+	case a.fatal <- err:
+	default:
+	}
+}
+
+func (a *app) fatalErrors() <-chan error {
+	return a.fatal
 }
 
 func (a *app) authenticationService() authenticator {
@@ -264,6 +332,117 @@ func (a *app) replaceRuntime(cfg config, db *sql.DB, auth authenticator, project
 		a.webhookAudit = webhookaudit.NewPersistentService(store)
 	}
 	return previousDB
+}
+
+func (a *app) buildInstallRuntime(result installResult, db *sql.DB) (runtimeSnapshot, error) {
+	cfg := a.runtimeConfig()
+	cfg.DatabaseURL = result.DatabaseURL
+	cfg.RedisURL = result.RedisURL
+	cfg.JWTSecret = result.JWTSecret
+	cfg.WebhookSecretEncryptionKey = append([]byte(nil), result.WebhookSecretEncryptionKey...)
+	cfg.Installed = true
+	cloudProviders := newCloudProviderRegistry(cfg)
+	store := repository.NewPostgresStore(db)
+	projects, err := projectservice.New(store, projectservice.Config{
+		EncryptionKeys: map[int][]byte{1: cfg.WebhookSecretEncryptionKey}, ActiveEncryptionKeyVersion: 1,
+	})
+	if err != nil {
+		return runtimeSnapshot{}, fmt.Errorf("initialize Project service: %w", err)
+	}
+	devices, err := deviceservice.New(store, deviceServiceConfig(cfg))
+	if err != nil {
+		return runtimeSnapshot{}, fmt.Errorf("initialize Device service: %w", err)
+	}
+	commands, err := commandservice.New(store, commandServiceConfig(devices))
+	if err != nil {
+		return runtimeSnapshot{}, fmt.Errorf("initialize Command service: %w", err)
+	}
+	commandWorker, err := newPersistentCommandWorker(store, cloudProviders)
+	if err != nil {
+		return runtimeSnapshot{}, fmt.Errorf("initialize Command worker: %w", err)
+	}
+	webhookWorker, err := newPersistentWebhookWorker(store, projects, cfg)
+	if err != nil {
+		return runtimeSnapshot{}, fmt.Errorf("initialize Webhook worker: %w", err)
+	}
+	return runtimeSnapshot{
+		cfg: cfg, db: db, auth: newDBAuthenticator(db, result.JWTSecret), projects: projects, devices: devices, commands: commands,
+		simulator: simulatorruntime.NewService(store, nil), webhookAudit: webhookaudit.NewPersistentService(store),
+		cloudProviders: cloudProviders, commandWorker: commandWorker, webhookWorker: webhookWorker,
+	}, nil
+}
+
+func (a *app) publishRuntimeSnapshot(snapshot runtimeSnapshot) (*sql.DB, func()) {
+	a.workerMu.Lock()
+	a.runtimeMu.Lock()
+	stopWorker(a.commandCancel, a.commandDone)
+	stopWorker(a.webhookCancel, a.webhookDone)
+	a.commandCancel, a.commandDone = nil, nil
+	a.webhookCancel, a.webhookDone = nil, nil
+
+	previousDB := a.db
+	a.cfg = snapshot.cfg
+	a.db = snapshot.db
+	a.auth = snapshot.auth
+	a.projects = snapshot.projects
+	a.devices = snapshot.devices
+	a.commands = snapshot.commands
+	a.simulator = snapshot.simulator
+	a.webhookAudit = snapshot.webhookAudit
+	a.cloudProviders = snapshot.cloudProviders
+	a.recoveryNeeded = true
+	a.runtimeMu.Unlock()
+	a.workerMu.Unlock()
+
+	activate := func() {
+		a.workerMu.Lock()
+		defer a.workerMu.Unlock()
+		a.runtimeMu.Lock()
+		defer a.runtimeMu.Unlock()
+		a.commandCancel, a.commandDone = startCommandWorker(a.logger, snapshot.commandWorker)
+		a.webhookCancel, a.webhookDone = startWebhookWorker(a.logger, snapshot.webhookWorker)
+		a.recoveryNeeded = false
+	}
+	return previousDB, activate
+}
+
+func stopWorker(cancel context.CancelFunc, done <-chan struct{}) {
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
+}
+
+func startCommandWorker(logger *slog.Logger, worker commandWorkerRunner) (context.CancelFunc, chan struct{}) {
+	if worker == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.Run(ctx, func(err error) {
+			logger.Error("persistent Command worker failed", slog.String("error", err.Error()))
+		})
+	}()
+	return cancel, done
+}
+
+func startWebhookWorker(logger *slog.Logger, worker webhookWorkerRunner) (context.CancelFunc, chan struct{}) {
+	if worker == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		worker.Run(ctx, func(err error) {
+			logger.Error("persistent Webhook worker failed", slog.String("error", err.Error()))
+		})
+	}()
+	return cancel, done
 }
 
 func (a *app) simulatorService() *simulatorruntime.Service {

@@ -62,6 +62,22 @@ func TestMigrationPairsExist(t *testing.T) {
 	}
 }
 
+func TestInstallationSingletonMigrationMatchesFrozenContract(t *testing.T) {
+	content, err := embeddedMigrations.ReadFile("migrations/006_installation_single_admin.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlText := string(content)
+	for _, marker := range []string{"chk_users_single_admin", "uq_users_singleton", "users to contain at most one row"} {
+		if !strings.Contains(sqlText, marker) {
+			t.Errorf("installation migration is missing %q", marker)
+		}
+	}
+	if strings.Contains(sqlText, "'setup.completed'") {
+		t.Error("stable Audit action allowlist still includes setup.completed")
+	}
+}
+
 func TestTransportFailureTimingMigrationMatchesDispatcherContract(t *testing.T) {
 	content, err := embeddedMigrations.ReadFile("migrations/003_command_transport_failure_timing.up.sql")
 	if err != nil {

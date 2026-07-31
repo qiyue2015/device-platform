@@ -50,7 +50,7 @@ func RollbackLastMigration(ctx context.Context, db *sql.DB) error {
 		}
 		var version string
 		if err := conn.QueryRowContext(ctx, `
-			SELECT version FROM schema_migrations ORDER BY applied_at DESC, version DESC LIMIT 1
+			SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1
 		`).Scan(&version); err != nil {
 			if err == sql.ErrNoRows {
 				return nil

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -273,15 +274,26 @@ func TestLoadConfigPreservesWWTIOTUserKeyBytes(t *testing.T) {
 }
 
 func TestSetupErrorsFollowFrozenContract(t *testing.T) {
-	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
+	markerPath := filepath.Join(t.TempDir(), ".installed")
+	t.Setenv("INSTALL_LOCK_PATH", markerPath)
 	t.Setenv("DEVICE_PLATFORM_INSTALLED", "true")
+	if err := os.WriteFile(markerPath, []byte("installed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	completed := doRequest(t, newTestServer(), http.MethodPost, "/setup/test-db", `{}`, nil)
 	completedEnvelope := assertEnvelope(t, completed, http.StatusConflict, false)
 	if completedEnvelope.ErrorCode != "setup_completed" {
 		t.Fatalf("setup error_code = %q", completedEnvelope.ErrorCode)
 	}
+	completedInstall := doRequest(t, newTestServer(), http.MethodPost, "/setup/install", `{not-json`, nil)
+	if envelope := assertEnvelope(t, completedInstall, http.StatusConflict, false); envelope.ErrorCode != "setup_completed" {
+		t.Fatalf("installed setup/install error_code = %q", envelope.ErrorCode)
+	}
 
 	t.Setenv("DEVICE_PLATFORM_INSTALLED", "false")
+	if err := os.Remove(markerPath); err != nil {
+		t.Fatal(err)
+	}
 	cfg := config{ServerAddr: ":0", LogLevel: "error", JWTSecret: testJWTSecret, ReadHeaderTimeout: 5 * time.Second}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := newAppWithDeviceService(cfg, logger, devicecore.NewService()).routes()
@@ -321,6 +333,17 @@ func TestInstallRequestDoesNotDefaultRequiredFields(t *testing.T) {
 		if err := validateInstallRequest(normalizeInstallRequest(request)); err == nil {
 			t.Fatalf("missing required install field was defaulted: %+v", request)
 		}
+	}
+}
+
+func TestInstallValidatesRequestBeforeTargetWritability(t *testing.T) {
+	missingDirectory := filepath.Join(t.TempDir(), "missing", ".installed")
+	t.Setenv("INSTALL_LOCK_PATH", missingDirectory)
+
+	_, err := performInstall(context.Background(), setupInstallRequest{})
+	var apiErr apiError
+	if !errors.As(err, &apiErr) || apiErr.status != http.StatusBadRequest || apiErr.code != "invalid_install_request" {
+		t.Fatalf("invalid request with unwritable target error=%v, want 400 invalid_install_request", err)
 	}
 }
 
@@ -366,6 +389,24 @@ func useFreshSetupConfigForTest(t *testing.T) {
 }
 
 func TestLoadConfigRequiresRuntimeFieldsAfterInstall(t *testing.T) {
+	markerPath := filepath.Join(t.TempDir(), ".installed")
+	t.Setenv("INSTALL_LOCK_PATH", markerPath)
+	t.Setenv("DEVICE_PLATFORM_INSTALLED", "true")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("REDIS_URL", "")
+	t.Setenv("JWT_SECRET", "")
+	t.Setenv("WEBHOOK_SECRET_ENCRYPTION_KEY", "")
+	if err := os.WriteFile(markerPath, []byte("installed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loadConfig()
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Fatalf("expected DATABASE_URL error after install, got %v", err)
+	}
+}
+
+func TestLoadConfigDoesNotTreatInstalledEnvironmentValueAsCompletionProof(t *testing.T) {
 	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
 	t.Setenv("DEVICE_PLATFORM_INSTALLED", "true")
 	t.Setenv("DATABASE_URL", "")
@@ -373,9 +414,12 @@ func TestLoadConfigRequiresRuntimeFieldsAfterInstall(t *testing.T) {
 	t.Setenv("JWT_SECRET", "")
 	t.Setenv("WEBHOOK_SECRET_ENCRYPTION_KEY", "")
 
-	_, err := loadConfig()
-	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
-		t.Fatalf("expected DATABASE_URL error after install, got %v", err)
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.isInstalled() {
+		t.Fatal("DEVICE_PLATFORM_INSTALLED alone proved installation completion")
 	}
 }
 
@@ -479,6 +523,10 @@ func TestWriteRuntimeEnvPersistsIndependentWebhookEncryptionKey(t *testing.T) {
 	}
 	if err := writeRuntimeEnv(request, "jwt-secret-that-is-separate-from-webhook", key); err != nil {
 		t.Fatal(err)
+	}
+	stale, err := os.ReadFile(filepath.Join(dir, ".env.tmp"))
+	if err != nil || string(stale) != "stale" {
+		t.Fatalf("unique runtime temp file changed fixed-name file: %q, %v", stale, err)
 	}
 	info, err := os.Stat(filepath.Join(dir, ".env"))
 	if err != nil {

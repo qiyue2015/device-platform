@@ -3,7 +3,7 @@ title: 当前实现状态
 snapshot_date: 2026-07-31
 status: implementation-snapshot
 contract_freeze_revision: 2026-07-31.3
-verified_against_code_revision: contract-freeze-2026-07-31.3-pre-implementation
+verified_against_code_revision: installation-recovery-implementation-unit
 ---
 
 # 当前实现状态
@@ -22,7 +22,7 @@ verified_against_code_revision: contract-freeze-2026-07-31.3-pre-implementation
 
 | 能力                     | 状态               | 已验证事实                                                                                                                                                                                                                                                                                                   |
 | ------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 安装与单管理员认证       | 部分实现           | 安装使用 PostgreSQL migration，认证、session generation、持久限流和安全审计已实现；但 `.3` 要求的独立跨进程锁文件、数据库 advisory lock 与 users 单例约束、持久 recovery journal、唯一临时文件、marker 前完整运行时预构造和 HTTP readiness 失败关闭尚未实现。                                                |
+| 安装与单管理员认证       | 已实现             | 安装按进程 mutex、独立跨进程文件锁和 PostgreSQL session advisory lock 串行化；`users` 由数据库强制单例/admin-only，持久四阶段 recovery journal、唯一 `0600` 临时/备份文件、marker-only 完成权威、marker 前完整运行时预构造、原子服务/worker 发布和三类 readiness 失败关闭均已实现。                          |
 | Project、Device HTTP API | 已实现             | 已安装运行时的 Project 与 Device 管理/Open 读取已接入 PostgreSQL，并执行冻结的字段、隔离、分页、lifecycle 与凭据边界。                                                                                                                                                                                       |
 | Command HTTP API         | 已实现             | Admin/Open 创建、列表、详情和 queued cancel 已接入持久 Command aggregate；创建执行 profile/payload、Provider 配置、Project scope 与持久幂等校验，只提交 `queued`，不在 HTTP 请求内调用 Provider。                                                                                                            |
 | 业务数据持久化           | 部分实现           | Project、凭据版本、Device、Command/Attempt、Simulator 配置、Event、Webhook Delivery/Attempt、Audit 与 worker 进度已接入 PostgreSQL 运行时；公开 callback 仍按冻结合同关闭，因此 RawMessage 尚未进入运行时主链。                                                                                              |
@@ -44,13 +44,13 @@ verified_against_code_revision: contract-freeze-2026-07-31.3-pre-implementation
 ### 持久化与模型
 
 - PostgreSQL 当前承载 migration、管理员认证、Project、Device、Command aggregate、Simulator 配置、Event、Webhook Delivery/Attempt、Audit，以及 Command/Webhook worker 进度。已安装运行时的 HTTP、dispatcher、scanner、重试与 lease 恢复均读取持久事实；公开 callback 按冻结合同保持 503，因此 RawMessage 仍未进入运行时主链。
-- `internal/domain`、`internal/api/v1` 和 `internal/devicecore` 三套模型仍并存；已安装运行时的 Project/Device/Command HTTP 已使用冻结 DTO 与持久领域服务。未安装生产构造器不再创建旧 `devicecore`、simulator 或 Webhook 内存服务，Open 业务 API 在 setup 完成前固定返回 `503 setup_required`；旧路径只保留为隔离测试兼容，不是生产运行模型。
+- `internal/domain`、`internal/api/v1` 和 `internal/devicecore` 三套模型仍并存；已安装运行时的 Project/Device/Command HTTP 已使用冻结 DTO 与持久领域服务。未安装生产构造器不再创建旧 `devicecore`、simulator 或 Webhook 内存服务；全部 `/v1/...` 业务 API 在普通未安装、恢复未完成或旧进程等待重启时分别固定返回 `503 setup_required`、`503 setup_recovery_required` 或 `503 setup_restart_required`。旧路径只保留为隔离测试兼容，不是生产运行模型。
 - Project API key 只以 SHA-256 digest 持久化，明文只在创建或轮换成功响应出现；Webhook secret 使用独立部署密钥进行 AES-256-GCM 版本化加密。已安装运行时缺少或错误配置 `WEBHOOK_SECRET_ENCRYPTION_KEY` 时会失败关闭。
 - Device HTTP 已执行非 deleted Provider identity 全局唯一、deleted 后释放、稳定 lifecycle、可信 `current_state` 派生读取和 Project scope；创建 Event、初始 Delivery 与 Audit 的任一写入失败都会整体回滚。
 - Provider registry 固定按 `code ASC` 暴露 `simulator` 与 `wwtiot`，返回三层 `integration_status` 且不暴露配置或 secret。当前合同下 WWTIOT 最多为 `configured_unverified`，不能仅凭配置提升为 `verified`。
-- 对齐后的 schema 与 Repository 已有 Webhook Delivery Attempt、manual replay 关联、worker lease、可降低至 `1..5` 次的部署级 Attempt 上限和过期恢复；`004_webhook_delivery_attempt_limit` 的 down migration 在存在低于 5 次即 `dead` 的数据时拒绝回滚。schema 也已有 confirmation/evidence 和 Command `unknown` 字段与约束；`003_command_transport_failure_timing` 允许 dispatching 后可证明未发送的 transport failure 保留 `sent_at` 并终止为 `failed`，其 down migration 同样在旧合同无法表达当前数据时拒绝回滚。Command HTTP 与持久 worker 已使用创建、读取、取消、Attempt、Event/Delivery/Audit、幂等、lease 和恢复结构；应用启动、安装切换与关闭会启动、替换并等待 worker 退出后再关闭旧数据库。
-- 单管理员认证已执行 JWT/session generation、持久登录限流和安全审计合同；setup 完成后 POST 返回 `409 setup_completed`，安装请求不再为必需字段填默认值，连接测试在实际连接前区分 URL schema 错误。HTTP JSON object 统一拒绝未知字段、重复 key、尾随值与超限 body。
-- 首次安装当前只使用进程内 `sync.Mutex`，没有独立跨进程锁文件、PostgreSQL advisory lock 或持久 recovery journal；users 空表检查与 INSERT 不在同一显式数据库事务，schema 也未强制 users 全表单例和 admin-only，完成判断仍接受配置中的 `DEVICE_PLATFORM_INSTALLED`，`.env.tmp`、`.env.restore` 与 `.installed.tmp` 还是固定名称。完成标记写入后仍有可失败的运行时构造，服务与两个 worker 也未作为完整快照一次发布；`/readyz` 在未安装时仍返回 HTTP 200，且不区分必须恢复或重启的旧进程。因此 `.3` 的多进程唯一安装、失败恢复、发布顺序和 readiness 口径尚未达到。
+- 对齐后的 schema 与 Repository 已有 Webhook Delivery Attempt、manual replay 关联、worker lease、可降低至 `1..5` 次的部署级 Attempt 上限和过期恢复；`004_webhook_delivery_attempt_limit` 的 down migration 在存在低于 5 次即 `dead` 的数据时拒绝回滚。schema 也已有 confirmation/evidence 和 Command `unknown` 字段与约束；`003_command_transport_failure_timing` 允许 dispatching 后可证明未发送的 transport failure 保留 `sent_at` 并终止为 `failed`，其 down migration 同样在旧合同无法表达当前数据时拒绝回滚。`006_installation_single_admin` 另强制 `users` 最多一行且只能为管理员，并从最终 Audit allowlist 移除 `setup.completed`。Command HTTP 与持久 worker 已使用创建、读取、取消、Attempt、Event/Delivery/Audit、幂等、lease 和恢复结构；应用启动、安装切换与关闭会启动、替换并等待 worker 退出后再关闭旧数据库。
+- 单管理员认证已执行 JWT/session generation、持久登录限流和安全审计合同；setup 完成后 POST 在解析 body 前即返回 `409 setup_completed`，安装请求不再为必需字段填默认值，连接测试在实际连接前区分 URL schema 错误。HTTP JSON object 统一拒绝未知字段、重复 key、尾随值与超限 body。
+- 首次安装以完成标记作为唯一持久完成权威，`DEVICE_PLATFORM_INSTALLED` 单独存在不会使进程进入安装态。独立文件锁不会因 marker 原子替换改变 inode；数据库 advisory lock 从 migration 前持有到管理员补偿或 marker 写入及运行时发布。运行配置替换前先持久化不含连接串、密码或 secret 的 `prepared|admin_pending|admin_reverted|config_reverted` journal 及带 SHA-256 完整性摘要的唯一 `0600` 备份，文件替换和阶段推进均 fsync 文件与父目录。正常失败和启动恢复按阶段幂等补偿，marker 已存在时只清工件，绝不删除管理员或恢复旧配置；恢复失败的进程只提供 setup、health 与 readiness，并保持业务 API 失败关闭。所有可失败的服务与 worker 构造在 marker 前完成，成功后作为一个运行时快照发布；`server.addr` 与 `server.log_level` 仍只在下次启动生效。
 - Project、Device Type、Provider、Device、Command、Event、Webhook Delivery 和 Audit list 均已提供严格 `page`、`page_size`、`total`、重复/未知 query 拒绝与冻结排序。
 
 ### 命令与 Provider
@@ -69,7 +69,7 @@ verified_against_code_revision: contract-freeze-2026-07-31.3-pre-implementation
 ### Webhook、审计与前端
 
 - Device 与 Command HTTP 已在持久事务内写 Event、配置存在时的初始 Webhook Delivery 和 Audit；已安装运行时的 Event、Webhook Delivery/Attempt 与 Audit 管理路由读取相同的 PostgreSQL 事实。Event 与 Audit 没有写入 API。
-- schema 与持久 Audit 服务当前仍把从未由运行时写入的 `setup.completed` 视为合法 action；`.3` 已删除该不具备跨文件/数据库原子完成时点的 action，代码和 schema 尚待收紧。
+- 最终 schema 与持久 Audit 服务已移除从未由运行时写入的 `setup.completed`；历史 migration 中该值只用于把旧 schema 逐步迁移到 `006`，不构成当前 allowlist。
 - dead resend 只创建新的持久 `pending` Delivery，使用重发时的当前 endpoint/config/secret version snapshot，通过 `replay_of_delivery_id` 保留来源，并与管理员 `webhook.delivery_replayed` Audit 同事务提交；原 Delivery、raw body snapshot、状态和 Attempts 不变。并发重发各自创建独立历史，endpoint 未配置或非 dead 均失败关闭。
 - 已安装运行时只启动持久 Webhook dispatcher；它领取 PostgreSQL Delivery、为每次请求创建 Attempt、按 `1s, 5s, 30s, 2m` 有界重试、恢复过期 lease 并在耗尽后进入 `dead`。未安装兼容模式的旧内存 worker 不再作为安装后事实。
 - worker 逐字节复用 Delivery raw body，以 Attempt Unix 秒和历史 secret version 生成 HMAC-SHA256，任意 2xx 进入 `delivered`。响应只保存不含正文值的 media type、长度、截断标记与 digest；secret 解密失败与固定安全 Audit 原子提交。
@@ -82,7 +82,7 @@ verified_against_code_revision: contract-freeze-2026-07-31.3-pre-implementation
 
 ## 已有测试能证明什么
 
-- Go 测试覆盖持久 Project HTTP 生命周期、重启读取、一次性凭据披露、凭据轮换、IP whitelist、并发与回滚；也覆盖持久 Device 与 Command 的创建/读取/过滤/lifecycle、Project 隔离、Provider/profile gate、持久幂等与并发、取消、稳定排序，以及 Device/Command、Event、Delivery、Audit 原子回滚。PostgreSQL integration tests 另覆盖 Event/Webhook/Audit 严格查询、详情安全 DTO、dead replay 当前配置 snapshot、Webhook 精确签名、逐字节重试、Attempt/dead、secret 解密安全审计、lease 恢复、并发、回滚与重启读取，以及 Command worker 与 simulator 结果矩阵、profile timeout、Provider 公平领取、snapshot 不变性、deadline scanner 和晚结果 fencing。真实独立 server 子进程测试覆盖跨进程 Command 幂等、Webhook 单一领取，以及进程终止后等待 lease 到期并保守恢复为 `unknown/provider_delivery_unknown`；WWTIOT client/callback 仍只有无真实设备的组件合同证据。
+- Go 测试覆盖持久 Project HTTP 生命周期、重启读取、一次性凭据披露、凭据轮换、IP whitelist、并发与回滚；也覆盖持久 Device 与 Command 的创建/读取/过滤/lifecycle、Project 隔离、Provider/profile gate、持久幂等与并发、取消、稳定排序，以及 Device/Command、Event、Delivery、Audit 原子回滚。PostgreSQL integration tests 另覆盖 Event/Webhook/Audit 严格查询、详情安全 DTO、dead replay 当前配置 snapshot、Webhook 精确签名、逐字节重试、Attempt/dead、secret 解密安全审计、lease 恢复、并发、回滚与重启读取，以及 Command worker 与 simulator 结果矩阵、profile timeout、Provider 公平领取、snapshot 不变性、deadline scanner 和晚结果 fencing。安装测试覆盖 marker-only 权威、journal 脱敏/权限/完整性、四阶段恢复、context-aware 文件锁、users 单例/admin-only、两个真实子进程竞争同一 marker/数据库时仅一个成功、两个进程使用不同 marker 目标但共享同一数据库时仍仅一个成功、`admin_pending` 崩溃补偿、marker 前锁所有权丢失补偿，以及 marker-present 或 marker 后清理失败不删除管理员、不回滚配置。其他真实独立 server 子进程测试覆盖跨进程 Command 幂等、Webhook 单一领取，以及进程终止后等待 lease 到期并保守恢复为 `unknown/provider_delivery_unknown`；WWTIOT client/callback 仍只有无真实设备的组件合同证据。
 - 前端 `type:check`、`i18n:check`、生产 build、ESLint 与 Stylelint 已通过。ego-browser 在桌面与 390px 移动视口验收 Dashboard、Project、Device、Provider/Device Type、Command、Event、Webhook、Audit 和 Simulator；Command、Event、Webhook 与 Device Type Drawer 以及 Project/Device Modal 均受视口宽度约束。Event 翻到第 2 页时实际请求 `page=2&page_size=10`；含 106 个 Project 和单 Project 105 台 Device 的隔离数据验证两个引用选择器均实际请求 `page=2&page_size=100` 并显示末页选项。2 秒网络延迟下，一次 API Key 轮换期间当前页所有 API Key/Webhook secret 轮换入口都被禁用，只有目标入口显示 loading；凭据弹窗关闭后明文不再存在于 DOM。本地隔离数据库中的 Simulator Project/Device/Command 与 outcome 只产生和展示 Provider 层证据，未把它表述为设备成功。
 - 这些检查能证明持久 Command/Webhook worker、simulator 主链、并发和数据库恢复的代码行为，但不能证明某个外部业务 Webhook endpoint 可达、公开可信 callback、真实 WWTIOT 服务行为或真实智能锁最终执行；Command 创建的 `201`/幂等重放 `200` 仍只证明平台接受请求并持久化 `queued`，Simulator 与本地 HTTP 测试服务器都不能替代真实设备证据。
 

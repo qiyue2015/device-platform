@@ -35,7 +35,7 @@ func TestDeviceRoutesSwitchServicesWithoutRouterRebuild(t *testing.T) {
 		}
 		core := devicecore.NewService()
 		application := newAppWithServices(
-			config{JWTSecret: testJWTSecret, ReadHeaderTimeout: 5 * time.Second},
+			config{JWTSecret: testJWTSecret, Installed: true, ReadHeaderTimeout: 5 * time.Second},
 			slog.New(slog.NewTextHandler(io.Discard, nil)), db, auth, core,
 			gateway.NewService(gateway.NewSimulatorGateway(gateway.ModeConfig{}), gateway.ServiceConfig{}),
 			webhookaudit.NewService(http.DefaultClient), newCloudProviderRegistry(config{}), projects, nil,

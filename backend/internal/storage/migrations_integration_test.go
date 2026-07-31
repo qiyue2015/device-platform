@@ -26,7 +26,7 @@ func TestFrozenContractMigrationOnPostgres(t *testing.T) {
 			t.Fatalf("repeat migrations: %v", err)
 		}
 		var count int
-		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 5 {
+		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 6 {
 			t.Fatalf("migration count = %d, err = %v", count, err)
 		}
 		var profileHash string
@@ -239,6 +239,7 @@ func TestAuditLogActionsMigrationRollbackAndReapply(t *testing.T) {
 		if err := ApplyMigrations(ctx, db); err != nil {
 			t.Fatal(err)
 		}
+		rollbackInstallationSingletonMigration(t, ctx, db)
 		if err := RollbackLastMigration(ctx, db); err != nil {
 			t.Fatalf("rollback 005: %v", err)
 		}
@@ -273,6 +274,7 @@ func TestAuditLogActionsRollbackRejectsExtendedActions(t *testing.T) {
 				if err := ApplyMigrations(ctx, db); err != nil {
 					t.Fatal(err)
 				}
+				rollbackInstallationSingletonMigration(t, ctx, db)
 				id := fmt.Sprintf("80000000-0000-0000-0000-%012d", index+1)
 				if _, err := db.Exec(`
 					INSERT INTO audit_logs (id, actor_type, action, resource_type, result)
@@ -440,6 +442,37 @@ func TestMigrationRollbackPreservesHyphenatedLegacyDeviceTypeCode(t *testing.T) 
 	})
 }
 
+func TestMigrationRollbackUsesVersionOrderWhenTimestampsAreOutOfOrder(t *testing.T) {
+	baseURL := requireMigrationTestDatabase(t)
+	withIsolatedSchema(t, baseURL, func(db *sql.DB) {
+		ctx := context.Background()
+		if err := ApplyMigrations(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`
+			UPDATE schema_migrations
+			SET applied_at = CASE
+				WHEN version = '006_installation_single_admin' THEN now() - interval '1 day'
+				WHEN version = '001_device_platform_core' THEN now() + interval '1 day'
+				ELSE applied_at
+			END
+		`); err != nil {
+			t.Fatal(err)
+		}
+		if err := RollbackLastMigration(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+		assertMigrationNotApplied(t, db, "006_installation_single_admin")
+		var previousApplied bool
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '005_audit_log_actions')`).Scan(&previousApplied); err != nil {
+			t.Fatal(err)
+		}
+		if !previousApplied {
+			t.Fatal("rollback skipped migration 006 and removed an earlier version")
+		}
+	})
+}
+
 func TestMigrationRollbackRestoresReversibleLegacyDevice(t *testing.T) {
 	baseURL := requireMigrationTestDatabase(t)
 	withIsolatedSchema(t, baseURL, func(db *sql.DB) {
@@ -490,8 +523,8 @@ func TestMigrationDownRejectsSecurityAndRuntimeState(t *testing.T) {
 	}{
 		{
 			name: "session generation",
-			seed: `INSERT INTO users (id, email, password_hash, display_name, session_generation)
-				VALUES ('70000000-0000-0000-0000-000000000001', 'admin@example.test', 'hash', 'Admin', 1)`,
+			seed: `INSERT INTO users (id, email, password_hash, display_name, is_admin, session_generation)
+					VALUES ('70000000-0000-0000-0000-000000000001', 'admin@example.test', 'hash', 'Admin', true, 1)`,
 		},
 		{
 			name: "auth failures",
@@ -569,6 +602,7 @@ func rollbackWebhookAttemptLimitMigration(t *testing.T, ctx context.Context, db 
 
 func rollbackAuditLogActionsMigration(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
+	rollbackInstallationSingletonMigration(t, ctx, db)
 	if err := RollbackLastMigration(ctx, db); err != nil {
 		t.Fatalf("rollback 005: %v", err)
 	}
@@ -581,6 +615,20 @@ func rollbackAuditLogActionsMigration(t *testing.T, ctx context.Context, db *sql
 	}
 }
 
+func rollbackInstallationSingletonMigration(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	if err := RollbackLastMigration(ctx, db); err != nil {
+		t.Fatalf("rollback 006: %v", err)
+	}
+	var applied bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '006_installation_single_admin')`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Fatal("006 must be removed before testing earlier rollback")
+	}
+}
+
 func assertFrozenSchemaBehavior(t *testing.T, db *sql.DB) {
 	t.Helper()
 	const project1 = "10000000-0000-0000-0000-000000000001"
@@ -588,6 +636,17 @@ func assertFrozenSchemaBehavior(t *testing.T, db *sql.DB) {
 	const device1 = "20000000-0000-0000-0000-000000000001"
 	const device2 = "20000000-0000-0000-0000-000000000002"
 	const deviceType = "00000000-0000-0000-0000-000000000001"
+	if _, err := db.Exec(`
+		INSERT INTO users (id, email, password_hash, display_name, is_admin)
+		VALUES ('70000000-0000-0000-0000-000000000001', 'admin@example.test', 'hash', 'Admin', true)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	assertSQLFails(t, db, `
+		INSERT INTO users (id, email, password_hash, display_name, is_admin)
+		VALUES ('70000000-0000-0000-0000-000000000002', 'second@example.test', 'hash', 'Second', true)
+	`, "second user")
+	assertSQLFails(t, db, `UPDATE users SET is_admin = false WHERE id = '70000000-0000-0000-0000-000000000001'`, "non-admin singleton user")
 	for index, projectID := range []string{project1, project2} {
 		digest := make([]byte, 32)
 		digest[len(digest)-1] = byte(index + 1)
