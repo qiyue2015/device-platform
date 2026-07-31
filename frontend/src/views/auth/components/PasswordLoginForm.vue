@@ -10,11 +10,6 @@
       <a-form-item hide-label>
         <a-button type="primary" html-type="submit" long :loading="loading"> {{ t('login.form.login') }} </a-button>
       </a-form-item>
-      <a-form-item hide-label>
-        <div class="auth-helper">
-          <a-link @click="$router.push({ name: 'forgot-password' })">{{ t('login.form.forgetPassword') }}</a-link>
-        </div>
-      </a-form-item>
     </a-form>
   </div>
 </template>
@@ -72,12 +67,3 @@
     }
   };
 </script>
-
-<style lang="less" scoped>
-  .auth-helper {
-    display: flex;
-    justify-content: flex-end;
-    width: 100%;
-    font-size: 14px;
-  }
-</style>

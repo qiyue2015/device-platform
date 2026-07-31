@@ -2,7 +2,6 @@ export default {
   'login.form.title': 'Login',
   'login.form.login.errMsg': 'Login error, refresh and try again',
   'login.form.login.success': 'Welcome',
-  'login.form.forgetPassword': 'Forgot password',
   'login.form.login': 'Login',
   'auth.welcome': 'Welcome to {appName}',
   'auth.login.desc': 'Sign in with an administrator account.',
@@ -12,10 +11,4 @@ export default {
   'auth.login.email.invalid': 'Please enter a valid email',
   'auth.login.password.required': 'Password is required',
   'auth.login.password.length': 'Password must be 6-20 characters',
-  'auth.forgot.title': 'Forgot password',
-  'auth.forgot.desc': 'Email-based recovery is not enabled in this version.',
-  'auth.forgot.backToLogin': 'Back to login',
-  'auth.reset.title': 'Reset password',
-  'auth.reset.desc': 'Self-service password reset is not enabled in this version.',
-  'auth.passwordRecovery.adminNotice': 'Contact a system administrator to reset your password, then return to login.',
 };

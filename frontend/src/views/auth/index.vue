@@ -7,9 +7,7 @@
       <div class="content-inner flex flex-col gap-4">
         <div class="auth-title text-2xl font-brand mb-1">{{ pageTitle }}</div>
         <div class="auth-subtitle">{{ pageSubtitle }}</div>
-        <PasswordLoginForm v-if="$route.name === 'login'" />
-        <ForgotPasswordForm v-else-if="$route.name === 'forgot-password'" />
-        <ResetPasswordForm v-else-if="$route.name === 'reset-password'" />
+        <PasswordLoginForm />
       </div>
     </div>
     <div class="footer">
@@ -23,25 +21,13 @@
   import { useAppStore } from '@/store';
   import { useDark } from '@vueuse/core';
   import Footer from '@/components/footer/index.vue';
-  import { useRoute } from 'vue-router';
   import { useI18n } from 'vue-i18n';
   import PasswordLoginForm from './components/PasswordLoginForm.vue';
-  import ForgotPasswordForm from './components/ForgotPasswordForm.vue';
-  import ResetPasswordForm from './components/ResetPasswordForm.vue';
 
   const { t } = useI18n();
   const appStore = useAppStore();
-  const route = useRoute();
-  const pageTitle = computed(() => {
-    if (route.name === 'forgot-password') return t('auth.forgot.title');
-    if (route.name === 'reset-password') return t('auth.reset.title');
-    return t('auth.welcome', { appName: appStore?.app_name });
-  });
-  const pageSubtitle = computed(() => {
-    if (route.name === 'forgot-password') return t('auth.forgot.desc');
-    if (route.name === 'reset-password') return t('auth.reset.desc');
-    return t('auth.login.desc');
-  });
+  const pageTitle = computed(() => t('auth.welcome', { appName: appStore?.app_name }));
+  const pageSubtitle = computed(() => t('auth.login.desc'));
 
   useDark({
     selector: 'body',

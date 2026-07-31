@@ -2,7 +2,6 @@ export default {
   'login.form.title': '登录',
   'login.form.login.errMsg': '登录出错，请刷新重试',
   'login.form.login.success': '欢迎使用',
-  'login.form.forgetPassword': '忘记密码',
   'login.form.login': '登录',
   'auth.welcome': '欢迎使用 {appName}',
   'auth.login.desc': '请输入管理员账号登录设备平台。',
@@ -12,10 +11,4 @@ export default {
   'auth.login.email.invalid': '请输入有效的邮箱地址',
   'auth.login.password.required': '请输入登录密码',
   'auth.login.password.length': '密码长度在 6 到 20 个字符之间',
-  'auth.forgot.title': '忘记密码',
-  'auth.forgot.desc': '当前版本暂未接入邮件找回流程。',
-  'auth.forgot.backToLogin': '返回登录',
-  'auth.reset.title': '重置密码',
-  'auth.reset.desc': '当前版本暂未接入自助重置流程。',
-  'auth.passwordRecovery.adminNotice': '请联系系统管理员在后台为你重置密码，重置后再返回登录。',
 };
