@@ -24,6 +24,7 @@ import (
 	"github.com/qiyue2015/device-platform/internal/storage"
 	"github.com/qiyue2015/device-platform/internal/storage/repository"
 	"github.com/qiyue2015/device-platform/internal/webhookaudit"
+	"github.com/qiyue2015/device-platform/internal/webhookworker"
 )
 
 type app struct {
@@ -45,6 +46,8 @@ type app struct {
 	workerMu       sync.Mutex
 	commandCancel  context.CancelFunc
 	commandDone    chan struct{}
+	webhookCancel  context.CancelFunc
+	webhookDone    chan struct{}
 	backgroundStop context.CancelFunc
 }
 
@@ -52,6 +55,10 @@ type handlerFunc func(http.ResponseWriter, *http.Request) error
 
 type commandWorkerRunner interface {
 	Run(context.Context, commandworker.ErrorReporter)
+}
+
+type webhookWorkerRunner interface {
+	Run(context.Context, webhookworker.ErrorReporter)
 }
 
 func newApp(cfg config, logger *slog.Logger) (*app, error) {
@@ -101,17 +108,24 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 	cloudProviders := newCloudProviderRegistry(cfg)
 	application := newAppWithServices(cfg, logger, db, auth, service, gatewayService, webhookService, cloudProviders, projects, devices)
 	application.commands = commands
-	backgroundContext, backgroundStop := context.WithCancel(context.Background())
-	application.backgroundStop = backgroundStop
-	startWebhookWorker(backgroundContext, webhookService)
 	if db != nil {
-		worker, err := newPersistentCommandWorker(repository.NewPostgresStore(db), cloudProviders)
+		store := repository.NewPostgresStore(db)
+		worker, err := newPersistentCommandWorker(store, cloudProviders)
 		if err != nil {
-			backgroundStop()
 			_ = db.Close()
 			return nil, fmt.Errorf("initialize Command worker: %w", err)
 		}
+		webhookWorker, err := newPersistentWebhookWorker(store, projects, cfg)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("initialize Webhook worker: %w", err)
+		}
 		application.replaceCommandWorker(worker)
+		application.replaceWebhookWorker(webhookWorker)
+	} else {
+		backgroundContext, backgroundStop := context.WithCancel(context.Background())
+		application.backgroundStop = backgroundStop
+		startWebhookWorker(backgroundContext, webhookService)
 	}
 	return application, nil
 }
@@ -289,6 +303,37 @@ func newPersistentCommandWorker(store commandworker.Store, providers cloudProvid
 	}})
 }
 
+func newPersistentWebhookWorker(store webhookworker.Store, projects httpapi.ProjectService, cfg config) (*webhookworker.Worker, error) {
+	resolver, ok := projects.(webhookworker.SecretResolver)
+	if !ok {
+		return nil, fmt.Errorf("Project service cannot resolve Webhook secret versions")
+	}
+	allowlist, err := webhookworker.ParseEgressAllowlist(cfg.WebhookEgressAllowlist)
+	if err != nil {
+		return nil, err
+	}
+	timeout := cfg.WebhookRequestTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	client, err := webhookworker.NewSecureHTTPClient(timeout, allowlist)
+	if err != nil {
+		return nil, err
+	}
+	interval := cfg.WebhookWorkerInterval
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	leaseDuration := cfg.WebhookLeaseDuration
+	if leaseDuration <= timeout {
+		leaseDuration = timeout + 5*time.Second
+	}
+	return webhookworker.New(store, resolver, webhookworker.Config{
+		WorkerID: "webhook-dispatcher", PollInterval: interval, LeaseDuration: leaseDuration,
+		MaxAttempts: cfg.WebhookMaxAttempts, RetrySchedule: cfg.WebhookRetrySchedule, Client: client,
+	})
+}
+
 func (a *app) replaceCommandWorker(worker commandWorkerRunner) {
 	a.workerMu.Lock()
 	defer a.workerMu.Unlock()
@@ -314,11 +359,42 @@ func (a *app) replaceCommandWorker(worker commandWorkerRunner) {
 	}()
 }
 
-func (a *app) close() error {
+func (a *app) replaceWebhookWorker(worker webhookWorkerRunner) {
+	a.workerMu.Lock()
+	defer a.workerMu.Unlock()
+	previousCancel, previousDone := a.webhookCancel, a.webhookDone
+	a.webhookCancel, a.webhookDone = nil, nil
+	if previousCancel != nil {
+		previousCancel()
+	}
+	if previousDone != nil {
+		<-previousDone
+	}
+	if worker == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	a.webhookCancel, a.webhookDone = cancel, done
+	go func() {
+		defer close(done)
+		worker.Run(ctx, func(err error) {
+			a.logger.Error("persistent Webhook worker failed", slog.String("error", err.Error()))
+		})
+	}()
+}
+
+func (a *app) stopMemoryWebhookWorker() {
 	if a.backgroundStop != nil {
 		a.backgroundStop()
+		a.backgroundStop = nil
 	}
+}
+
+func (a *app) close() error {
+	a.stopMemoryWebhookWorker()
 	a.replaceCommandWorker(nil)
+	a.replaceWebhookWorker(nil)
 	if a.gateway != nil {
 		a.gateway.Stop()
 	}

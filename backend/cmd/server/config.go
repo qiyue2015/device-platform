@@ -5,8 +5,11 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/qiyue2015/device-platform/internal/webhookworker"
 )
 
 type config struct {
@@ -16,6 +19,12 @@ type config struct {
 	RedisURL                   string
 	JWTSecret                  string
 	WebhookSecretEncryptionKey []byte
+	WebhookWorkerInterval      time.Duration
+	WebhookRequestTimeout      time.Duration
+	WebhookLeaseDuration       time.Duration
+	WebhookMaxAttempts         int
+	WebhookRetrySchedule       []time.Duration
+	WebhookEgressAllowlist     string
 	Installed                  bool
 	ReadHeaderTimeout          time.Duration
 	WWTIOTAPIURL               string
@@ -28,17 +37,51 @@ func loadConfig(envFiles ...string) (config, error) {
 		return config{}, err
 	}
 
+	webhookWorkerInterval, err := strictPositiveDuration("WEBHOOK_WORKER_INTERVAL", 2*time.Second)
+	if err != nil {
+		return config{}, err
+	}
+	webhookRequestTimeout, err := strictPositiveDuration("WEBHOOK_REQUEST_TIMEOUT", 10*time.Second)
+	if err != nil {
+		return config{}, err
+	}
+	webhookLeaseDuration, err := strictPositiveDuration("WEBHOOK_LEASE_DURATION", 15*time.Second)
+	if err != nil {
+		return config{}, err
+	}
+	if webhookLeaseDuration <= webhookRequestTimeout {
+		return config{}, fmt.Errorf("WEBHOOK_LEASE_DURATION must be greater than WEBHOOK_REQUEST_TIMEOUT")
+	}
+	webhookMaxAttempts, err := strictIntRange("WEBHOOK_MAX_ATTEMPTS", 5, 1, 5)
+	if err != nil {
+		return config{}, err
+	}
+	webhookRetrySchedule, err := strictWebhookRetrySchedule(webhookMaxAttempts)
+	if err != nil {
+		return config{}, err
+	}
+	webhookEgressAllowlist := strings.TrimSpace(os.Getenv("WEBHOOK_EGRESS_ALLOWLIST"))
+	if _, err := webhookworker.ParseEgressAllowlist(webhookEgressAllowlist); err != nil {
+		return config{}, fmt.Errorf("WEBHOOK_EGRESS_ALLOWLIST is invalid: %w", err)
+	}
+
 	cfg := config{
-		ServerAddr:        envDefault("SERVER_ADDR", ":8080"),
-		LogLevel:          envDefault("LOG_LEVEL", "info"),
-		DatabaseURL:       strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		RedisURL:          strings.TrimSpace(os.Getenv("REDIS_URL")),
-		JWTSecret:         strings.TrimSpace(os.Getenv("JWT_SECRET")),
-		Installed:         envBool("DEVICE_PLATFORM_INSTALLED", false),
-		ReadHeaderTimeout: envDuration("READ_HEADER_TIMEOUT", 5*time.Second),
-		WWTIOTAPIURL:      envDefault("WWTIOT_API_URL", "http://gps.wwtiot.com/api/"),
-		WWTIOTUserID:      strings.TrimSpace(os.Getenv("WWTIOT_USER_ID")),
-		WWTIOTUserKey:     os.Getenv("WWTIOT_USER_KEY"),
+		ServerAddr:             envDefault("SERVER_ADDR", ":8080"),
+		LogLevel:               envDefault("LOG_LEVEL", "info"),
+		DatabaseURL:            strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		RedisURL:               strings.TrimSpace(os.Getenv("REDIS_URL")),
+		JWTSecret:              strings.TrimSpace(os.Getenv("JWT_SECRET")),
+		Installed:              envBool("DEVICE_PLATFORM_INSTALLED", false),
+		ReadHeaderTimeout:      envDuration("READ_HEADER_TIMEOUT", 5*time.Second),
+		WebhookWorkerInterval:  webhookWorkerInterval,
+		WebhookRequestTimeout:  webhookRequestTimeout,
+		WebhookLeaseDuration:   webhookLeaseDuration,
+		WebhookMaxAttempts:     webhookMaxAttempts,
+		WebhookRetrySchedule:   webhookRetrySchedule,
+		WebhookEgressAllowlist: webhookEgressAllowlist,
+		WWTIOTAPIURL:           envDefault("WWTIOT_API_URL", "http://gps.wwtiot.com/api/"),
+		WWTIOTUserID:           strings.TrimSpace(os.Getenv("WWTIOT_USER_ID")),
+		WWTIOTUserKey:          os.Getenv("WWTIOT_USER_KEY"),
 	}
 	webhookEncryptionKey, err := decodeWebhookEncryptionKey(os.Getenv("WEBHOOK_SECRET_ENCRYPTION_KEY"))
 	if err != nil {
@@ -60,6 +103,51 @@ func loadConfig(envFiles ...string) (config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+func strictPositiveDuration(key string, fallback time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration", key)
+	}
+	return value, nil
+}
+
+func strictIntRange(key string, fallback, minimum, maximum int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < minimum || value > maximum {
+		return 0, fmt.Errorf("%s must be an integer from %d to %d", key, minimum, maximum)
+	}
+	return value, nil
+}
+
+func strictWebhookRetrySchedule(maxAttempts int) ([]time.Duration, error) {
+	defaults := []time.Duration{time.Second, 5 * time.Second, 30 * time.Second, 2 * time.Minute}
+	raw := strings.TrimSpace(os.Getenv("WEBHOOK_RETRY_SCHEDULE"))
+	if raw == "" {
+		return append([]time.Duration(nil), defaults[:maxAttempts-1]...), nil
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) != maxAttempts-1 {
+		return nil, fmt.Errorf("WEBHOOK_RETRY_SCHEDULE must contain WEBHOOK_MAX_ATTEMPTS minus one durations")
+	}
+	schedule := make([]time.Duration, len(parts))
+	for index, part := range parts {
+		value, err := time.ParseDuration(strings.TrimSpace(part))
+		if err != nil || value < defaults[index] {
+			return nil, fmt.Errorf("WEBHOOK_RETRY_SCHEDULE duration %d must be at least %s", index+1, defaults[index])
+		}
+		schedule[index] = value
+	}
+	return schedule, nil
 }
 
 func decodeWebhookEncryptionKey(raw string) ([]byte, error) {

@@ -18,6 +18,7 @@ import (
 	"github.com/qiyue2015/device-platform/internal/devicecore"
 	"github.com/qiyue2015/device-platform/internal/httpjson"
 	"github.com/qiyue2015/device-platform/internal/webhookaudit"
+	"github.com/qiyue2015/device-platform/internal/webhookworker"
 )
 
 const testJWTSecret = defaultMemoryJWTSecret
@@ -36,7 +37,18 @@ type lifecycleCommandWorker struct {
 	stopped chan struct{}
 }
 
+type lifecycleWebhookWorker struct {
+	started chan struct{}
+	stopped chan struct{}
+}
+
 func (w *lifecycleCommandWorker) Run(ctx context.Context, _ commandworker.ErrorReporter) {
+	close(w.started)
+	<-ctx.Done()
+	close(w.stopped)
+}
+
+func (w *lifecycleWebhookWorker) Run(ctx context.Context, _ webhookworker.ErrorReporter) {
 	close(w.started)
 	<-ctx.Done()
 	close(w.stopped)
@@ -111,6 +123,49 @@ func TestAppCommandWorkerReplacementStopsPreviousWorker(t *testing.T) {
 	case <-second.stopped:
 	default:
 		t.Fatal("shutdown returned before the current Command worker stopped")
+	}
+}
+
+func TestAppWebhookWorkerReplacementStopsPreviousWorker(t *testing.T) {
+	application := &app{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	first := &lifecycleWebhookWorker{started: make(chan struct{}), stopped: make(chan struct{})}
+	second := &lifecycleWebhookWorker{started: make(chan struct{}), stopped: make(chan struct{})}
+
+	application.replaceWebhookWorker(first)
+	<-first.started
+	application.replaceWebhookWorker(second)
+	select {
+	case <-first.stopped:
+	default:
+		t.Fatal("replacement returned before the previous Webhook worker stopped")
+	}
+	<-second.started
+
+	application.replaceWebhookWorker(nil)
+	select {
+	case <-second.stopped:
+	default:
+		t.Fatal("shutdown returned before the current Webhook worker stopped")
+	}
+}
+
+func TestAppCloseWaitsForCommandAndWebhookWorkers(t *testing.T) {
+	application := &app{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	command := &lifecycleCommandWorker{started: make(chan struct{}), stopped: make(chan struct{})}
+	webhook := &lifecycleWebhookWorker{started: make(chan struct{}), stopped: make(chan struct{})}
+	application.replaceCommandWorker(command)
+	application.replaceWebhookWorker(webhook)
+	<-command.started
+	<-webhook.started
+	if err := application.close(); err != nil {
+		t.Fatal(err)
+	}
+	for name, stopped := range map[string]<-chan struct{}{"Command": command.stopped, "Webhook": webhook.stopped} {
+		select {
+		case <-stopped:
+		default:
+			t.Fatalf("close returned before the %s worker stopped", name)
+		}
 	}
 }
 
@@ -295,6 +350,51 @@ func TestLoadConfigRequiresRuntimeFieldsAfterInstall(t *testing.T) {
 	_, err := loadConfig()
 	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
 		t.Fatalf("expected DATABASE_URL error after install, got %v", err)
+	}
+}
+
+func TestLoadConfigRejectsMalformedWebhookRuntimeSettings(t *testing.T) {
+	keys := []string{
+		"WEBHOOK_WORKER_INTERVAL", "WEBHOOK_REQUEST_TIMEOUT", "WEBHOOK_LEASE_DURATION",
+		"WEBHOOK_MAX_ATTEMPTS", "WEBHOOK_RETRY_SCHEDULE", "WEBHOOK_EGRESS_ALLOWLIST",
+	}
+	for _, test := range []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "worker interval", key: "WEBHOOK_WORKER_INTERVAL", value: "invalid"},
+		{name: "request timeout", key: "WEBHOOK_REQUEST_TIMEOUT", value: "0s"},
+		{name: "lease duration", key: "WEBHOOK_LEASE_DURATION", value: "10s"},
+		{name: "maximum attempts", key: "WEBHOOK_MAX_ATTEMPTS", value: "6"},
+		{name: "retry count", key: "WEBHOOK_RETRY_SCHEDULE", value: "1s,5s"},
+		{name: "retry shortening", key: "WEBHOOK_RETRY_SCHEDULE", value: "500ms,5s,30s,2m"},
+		{name: "egress allowlist", key: "WEBHOOK_EGRESS_ALLOWLIST", value: "not-a-prefix"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			unsetEnvForTest(t, keys...)
+			t.Setenv(test.key, test.value)
+			if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), test.key) {
+				t.Fatalf("loadConfig error=%v, want %s", err, test.key)
+			}
+		})
+	}
+}
+
+func TestLoadConfigAcceptsLowerWebhookAttemptLimitAndExtendedSchedule(t *testing.T) {
+	unsetEnvForTest(t,
+		"WEBHOOK_WORKER_INTERVAL", "WEBHOOK_REQUEST_TIMEOUT", "WEBHOOK_LEASE_DURATION",
+		"WEBHOOK_MAX_ATTEMPTS", "WEBHOOK_RETRY_SCHEDULE", "WEBHOOK_EGRESS_ALLOWLIST",
+	)
+	t.Setenv("WEBHOOK_MAX_ATTEMPTS", "3")
+	t.Setenv("WEBHOOK_RETRY_SCHEDULE", "2s,10s")
+	t.Setenv("WEBHOOK_EGRESS_ALLOWLIST", "10.20.0.0/16,2001:db8::1")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WebhookMaxAttempts != 3 || len(cfg.WebhookRetrySchedule) != 2 || cfg.WebhookRetrySchedule[0] != 2*time.Second || cfg.WebhookRetrySchedule[1] != 10*time.Second || cfg.WebhookLeaseDuration != 15*time.Second {
+		t.Fatalf("Webhook runtime config=%+v", cfg)
 	}
 }
 

@@ -32,6 +32,8 @@ pnpm --dir frontend install
 
 setup 会生成独立的 32 byte Webhook secret encryption key，并以无 padding base64url 写入忽略提交的 `backend/.env`。已有的已安装本地环境升级后也必须配置 `WEBHOOK_SECRET_ENCRYPTION_KEY`；缺失、解码失败或长度不是 32 byte 时后端会失败关闭，不能复用 `JWT_SECRET`。
 
+持久 Webhook dispatcher 默认每 2 秒扫描，单次 HTTP timeout 为 10 秒、lease 为 15 秒，最多执行 5 次 HTTP Attempt，失败间隔为 `1s,5s,30s,2m`。部署可用 `WEBHOOK_MAX_ATTEMPTS` 降低次数，并同步用 `WEBHOOK_RETRY_SCHEDULE` 提供少一次且不短于对应默认值的间隔；timeout、lease 或 schedule 非法时启动失败关闭。`WEBHOOK_EGRESS_ALLOWLIST` 默认留空，只允许解析为公开地址的目标；即使 Project 允许配置本机 HTTP URL，连接 loopback 或内网目标仍需在部署配置中显式加入受控 IP/CIDR，例如仅本地测试时使用 `127.0.0.1/32`。不要用宽网段替代目标清单，云 metadata 固定地址始终拒绝。
+
 仅对从未写入过加密 Webhook secret 的旧本地环境，可执行以下一次性升级；命令不会把 key 输出到终端。若数据库已经存在 `project_webhook_secrets`，必须恢复原部署 key，生成新 key 会使已有版本无法解密。
 
 ```bash
@@ -119,11 +121,11 @@ make check
 
 - setup 状态、管理员登录和已接入的后台页面。
 - Project、Device、Command 的当前 HTTP 行为。
-- Go 单元测试中的命令策略、幂等和独立 simulator engine 行为。
+- PostgreSQL 中的 Command/simulator/Webhook worker、重试、恢复、签名和审计行为。
 - 使用本地 `httptest` 伪造 Provider 的 WWTIOT HTTP 请求映射。
 - 前端类型、构建和双语 key 一致性。
 
-这些检查证明当前组件行为，不证明数据持久化、模拟器主链闭环、Webhook 可靠投递或真实智能锁执行结果。
+这些检查证明本地持久化、模拟器主链和 Webhook dispatcher 的代码行为，不证明目标部署网络、某个外部 Webhook endpoint、真实 WWTIOT 服务或智能锁执行结果。
 
 ## 目标验收路径
 
@@ -140,7 +142,7 @@ Shared-bicycle Project
   -> consistent Audit and admin diagnosis
 ```
 
-模拟器最终应通过同一链路执行 [API 合同冻结的受控 Provider outcome](./api-contract.md#simulator-配置)，不扩展为设备 ACK 或 final result 模式。当前仓库的业务 Command 与 simulator engine 尚未接通，因此现在不能执行或宣称模拟器主链验收。
+模拟器已通过同一持久 Command、Attempt、Event、Delivery 与 dispatcher 链路执行 [API 合同冻结的受控 Provider outcome](./api-contract.md#simulator-配置)，且不扩展为设备 ACK 或 final result 模式。该主链的本地验收不能替代真实设备证据。
 
 真实 WWTIOT 验收需要受控凭据、隔离测试设备、厂商执行结果合同和明确的真实设备写操作授权。缺少任一条件时保持 Unknown，不调用真实 Cloud API 写接口。
 

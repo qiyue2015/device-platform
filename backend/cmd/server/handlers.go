@@ -276,11 +276,19 @@ func (a *app) handleSetupInstall(w http.ResponseWriter, r *http.Request) error {
 		_ = db.Close()
 		return err
 	}
+	webhookWorker, err := newPersistentWebhookWorker(store, projects, cfg)
+	if err != nil {
+		_ = db.Close()
+		return err
+	}
+	a.stopMemoryWebhookWorker()
 	if previousDB := a.replaceRuntime(cfg, db, newDBAuthenticator(db, result.JWTSecret), projects, devices, commands); previousDB != nil && previousDB != db {
 		a.replaceCommandWorker(worker)
+		a.replaceWebhookWorker(webhookWorker)
 		_ = previousDB.Close()
 	} else {
 		a.replaceCommandWorker(worker)
+		a.replaceWebhookWorker(webhookWorker)
 	}
 	writeOK(w, map[string]bool{"installed": true})
 	return nil
