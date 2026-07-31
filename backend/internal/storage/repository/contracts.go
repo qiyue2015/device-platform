@@ -5,9 +5,18 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/qiyue2015/device-platform/internal/domain"
+)
+
+var (
+	ErrInvalidRepositoryRequest = errors.New("invalid repository request")
+	ErrWebhookEventNotFound     = errors.New("webhook event not found")
+	ErrWebhookDeliveryNotFound  = errors.New("webhook delivery not found")
+	ErrWebhookDeliveryNotDead   = errors.New("webhook delivery not dead")
+	ErrWebhookNotConfigured     = errors.New("webhook not configured")
 )
 
 type Store interface {
@@ -196,22 +205,17 @@ type EventRepository interface {
 }
 
 type ClaimWebhookRequest struct {
-	WorkerID   string
-	LeaseToken string
-	LeaseUntil time.Time
-	StartedAt  time.Time
-	Timestamp  int64
+	WorkerID      string
+	LeaseToken    string
+	LeaseDuration time.Duration
+	MaxAttempts   int
 }
 
 type RecoverExpiredWebhookRequest struct {
-	DeliveryID        string
-	AttemptID         string
-	ExpiredLeaseToken string
-	CompletedAt       time.Time
-	ErrorCode         string
-	ErrorDetail       string
-	NextStatus        domain.WebhookDeliveryStatus
-	NextAttemptAt     *time.Time
+	ErrorCode     string
+	ErrorDetail   string
+	RetrySchedule []time.Duration
+	MaxAttempts   int
 }
 
 type CompleteWebhookAttemptRequest struct {
@@ -220,9 +224,19 @@ type CompleteWebhookAttemptRequest struct {
 	ResponseSummary *string
 	ErrorCode       *string
 	ErrorDetail     *string
-	CompletedAt     time.Time
-	NextStatus      domain.WebhookDeliveryStatus
-	NextAttemptAt   *time.Time
+	RetryDelay      time.Duration
+	MaxAttempts     int
+}
+
+type CreateWebhookDeliveryRequest struct {
+	ID      string
+	EventID string
+	RawBody []byte
+}
+
+type CreateWebhookReplayRequest struct {
+	ID                 string
+	ReplayOfDeliveryID string
 }
 
 type WebhookQueries interface {
@@ -232,11 +246,12 @@ type WebhookQueries interface {
 
 type WebhookRepository interface {
 	WebhookQueries
-	CreateDelivery(ctx context.Context, delivery domain.WebhookDelivery) error
-	CreateReplay(ctx context.Context, delivery domain.WebhookDelivery) error
+	CreateDelivery(ctx context.Context, request CreateWebhookDeliveryRequest) (domain.WebhookDelivery, bool, error)
+	CreateReplay(ctx context.Context, request CreateWebhookReplayRequest) (domain.WebhookDelivery, error)
 	ClaimDue(ctx context.Context, request ClaimWebhookRequest) (domain.WebhookDelivery, domain.WebhookDeliveryAttempt, bool, error)
+	ExhaustRetryBudget(ctx context.Context, maxAttempts int) (domain.WebhookDelivery, bool, error)
 	CompleteAttempt(ctx context.Context, deliveryID, leaseToken string, request CompleteWebhookAttemptRequest) (bool, error)
-	RecoverExpiredSending(ctx context.Context, request RecoverExpiredWebhookRequest) (bool, error)
+	RecoverNextExpiredSending(ctx context.Context, request RecoverExpiredWebhookRequest) (domain.WebhookDelivery, bool, error)
 }
 
 type AuditQueries interface {
@@ -252,7 +267,12 @@ type SimulatorQueries interface {
 	Get(ctx context.Context) (domain.SimulatorConfig, error)
 }
 
+type UpdateSimulatorRequest struct {
+	Outcome domain.SimulatorOutcome
+	Delay   time.Duration
+}
+
 type SimulatorRepository interface {
 	SimulatorQueries
-	Update(ctx context.Context, expectedVersion int64, config domain.SimulatorConfig) (bool, error)
+	Update(ctx context.Context, expectedVersion int64, request UpdateSimulatorRequest) (bool, error)
 }

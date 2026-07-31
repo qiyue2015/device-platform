@@ -51,6 +51,14 @@ func (s *PostgresStore) Audits() AuditQueries {
 	return &postgresAuditRepository{exec: s.db}
 }
 
+func (s *PostgresStore) Webhooks() WebhookQueries {
+	return &postgresWebhookRepository{exec: s.db}
+}
+
+func (s *PostgresStore) Simulator() SimulatorQueries {
+	return &postgresSimulatorRepository{exec: s.db}
+}
+
 // WithinTransaction exposes only repositories already implemented on
 // PostgresTx. It will satisfy the complete Store contract once the remaining
 // persistence domains are added.
@@ -99,6 +107,14 @@ func (tx *PostgresTx) Events() EventRepository {
 
 func (tx *PostgresTx) Audits() AuditRepository {
 	return &postgresAuditRepository{exec: tx.tx}
+}
+
+func (tx *PostgresTx) Webhooks() WebhookRepository {
+	return &postgresWebhookRepository{exec: tx.tx}
+}
+
+func (tx *PostgresTx) Simulator() SimulatorRepository {
+	return &postgresSimulatorRepository{exec: tx.tx}
 }
 
 type postgresProjectRepository struct {

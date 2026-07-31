@@ -84,3 +84,20 @@ func TestTransportFailureTimingMigrationMatchesDispatcherContract(t *testing.T) 
 		t.Error("transport failure timing rollback must fail closed when the old constraint cannot represent current data")
 	}
 }
+
+func TestWebhookAttemptLimitMigrationMatchesFrozenContract(t *testing.T) {
+	upContent, err := embeddedMigrations.ReadFile("migrations/004_webhook_delivery_attempt_limit.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(upContent), "status = 'dead' AND attempt_count BETWEEN 1 AND 5") {
+		t.Error("Webhook migration must allow a deployment limit below five Attempts")
+	}
+	downContent, err := embeddedMigrations.ReadFile("migrations/004_webhook_delivery_attempt_limit.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(downContent), "cannot rollback configurable Webhook attempt limit while early-dead Deliveries exist") {
+		t.Error("Webhook attempt limit rollback must fail closed on early-dead Deliveries")
+	}
+}

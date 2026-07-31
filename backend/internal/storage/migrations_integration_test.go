@@ -26,7 +26,7 @@ func TestFrozenContractMigrationOnPostgres(t *testing.T) {
 			t.Fatalf("repeat migrations: %v", err)
 		}
 		var count int
-		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 3 {
+		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 4 {
 			t.Fatalf("migration count = %d, err = %v", count, err)
 		}
 		var profileHash string
@@ -239,6 +239,7 @@ func TestTransportFailureTimingRollbackRejectsIncompatibleData(t *testing.T) {
 		if err := ApplyMigrations(ctx, db); err != nil {
 			t.Fatal(err)
 		}
+		rollbackWebhookAttemptLimitMigration(t, ctx, db)
 		if _, err := db.Exec(`
 			INSERT INTO projects (id, name, api_key_hash)
 			VALUES ('10000000-0000-0000-0000-000000000001', 'rollback guard', decode(repeat('11', 32), 'hex'));
@@ -278,6 +279,69 @@ func TestTransportFailureTimingRollbackRejectsIncompatibleData(t *testing.T) {
 		var sentAt time.Time
 		if err := db.QueryRow(`SELECT sent_at FROM device_commands WHERE id = '30000000-0000-0000-0000-000000000001'`).Scan(&sentAt); err != nil {
 			t.Fatalf("refused rollback must preserve Command data: %v", err)
+		}
+	})
+}
+
+func TestWebhookAttemptLimitRollbackRejectsEarlyDeadDelivery(t *testing.T) {
+	baseURL := requireMigrationTestDatabase(t)
+	withIsolatedSchema(t, baseURL, func(db *sql.DB) {
+		ctx := context.Background()
+		if err := ApplyMigrations(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO projects (id, name, api_key_hash)
+			VALUES ('10000000-0000-0000-0000-000000000001', 'webhook rollback guard', decode(repeat('11', 32), 'hex'));
+			INSERT INTO project_webhook_secrets (project_id, version, ciphertext, nonce, encryption_key_version)
+			VALUES (
+				'10000000-0000-0000-0000-000000000001', 1,
+				decode(repeat('22', 17), 'hex'), decode(repeat('33', 12), 'hex'), 1
+			);
+			UPDATE projects
+			SET webhook_url = 'https://example.test/hook', webhook_config_version = 1,
+				current_webhook_secret_version = 1
+			WHERE id = '10000000-0000-0000-0000-000000000001';
+			INSERT INTO devices (
+				id, project_id, device_type_id, name, provider_code, provider_device_id,
+				access_type, transport_protocol, adapter
+			) VALUES (
+				'20000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001',
+				'00000000-0000-0000-0000-000000000001', 'webhook lock', 'wwtiot', 'WEBHOOK-LOCK-1',
+				'cloud_api', 'http', 'wwtiot_cloud_api'
+			);
+			INSERT INTO device_events (
+				id, project_id, device_id, event_type, source, payload, occurred_at, deduplication_key
+			) VALUES (
+				'30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001',
+				'20000000-0000-0000-0000-000000000001', 'device.created', 'admin',
+				'{"device_type_code":"smart-lock","provider_code":"wwtiot","lifecycle_status":"active"}',
+				now(), 'webhook-rollback-event'
+			);
+			INSERT INTO webhook_deliveries (
+				id, project_id, event_id, target_url, webhook_config_version,
+				webhook_secret_version, raw_body, attempt_count, status,
+				last_error_code, last_error_detail, next_attempt_at
+			) VALUES (
+				'40000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001',
+				'30000000-0000-0000-0000-000000000001', 'https://example.test/hook', 1, 1,
+				'body', 3, 'dead', 'attempt_limit', 'configured maximum reached', NULL
+			)
+		`); err != nil {
+			t.Fatal(err)
+		}
+
+		err := RollbackLastMigration(ctx, db)
+		if err == nil || !strings.Contains(err.Error(), "cannot rollback configurable Webhook attempt limit while early-dead Deliveries exist") {
+			t.Fatalf("expected fail-closed 004 rollback, got %v", err)
+		}
+		var applied bool
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '004_webhook_delivery_attempt_limit')`).Scan(&applied); err != nil || !applied {
+			t.Fatalf("004 must remain applied after refused rollback: applied=%v err=%v", applied, err)
+		}
+		var attemptCount int
+		if err := db.QueryRow(`SELECT attempt_count FROM webhook_deliveries WHERE id = '40000000-0000-0000-0000-000000000001'`).Scan(&attemptCount); err != nil || attemptCount != 3 {
+			t.Fatalf("refused rollback must preserve Delivery: attempts=%d err=%v", attemptCount, err)
 		}
 	})
 }
@@ -408,6 +472,7 @@ func TestMigrationDownRejectsSecurityAndRuntimeState(t *testing.T) {
 
 func rollbackTransportTimingMigration(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
+	rollbackWebhookAttemptLimitMigration(t, ctx, db)
 	if err := RollbackLastMigration(ctx, db); err != nil {
 		t.Fatalf("rollback 003: %v", err)
 	}
@@ -417,6 +482,20 @@ func rollbackTransportTimingMigration(t *testing.T, ctx context.Context, db *sql
 	}
 	if applied {
 		t.Fatal("003 must be removed before testing 002 rollback")
+	}
+}
+
+func rollbackWebhookAttemptLimitMigration(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	if err := RollbackLastMigration(ctx, db); err != nil {
+		t.Fatalf("rollback 004: %v", err)
+	}
+	var applied bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '004_webhook_delivery_attempt_limit')`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Fatal("004 must be removed before testing earlier rollback")
 	}
 }
 
