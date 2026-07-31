@@ -1156,6 +1156,7 @@ func TestUnknownAPIRoutesUseFrozenEnvelope(t *testing.T) {
 		headers map[string]string
 	}{
 		{path: "/v1/admin/diagnostics", headers: map[string]string{"Authorization": "Bearer " + testAdminToken(t)}},
+		{path: "/v1/auth/menu", headers: map[string]string{"Authorization": "Bearer " + testAdminToken(t)}},
 		{path: "/v1/open/diagnostics", headers: map[string]string{"X-API-Key": apiKey}},
 	}
 	for _, test := range tests {

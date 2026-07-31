@@ -2,7 +2,6 @@ import { computed } from 'vue';
 import { RouteRecordRaw, RouteRecordNormalized } from 'vue-router';
 import type { RouteMeta } from 'vue-router';
 import usePermission from '@/hooks/permission';
-import { useAppStore } from '@/store';
 import appClientMenus from '@/router/app-menus';
 import { cloneDeep } from 'lodash';
 
@@ -63,15 +62,8 @@ const groupTopLevelMenus = (routes: RouteRecordRaw[]) => {
 
 export default function useMenuTree() {
   const permission = usePermission();
-  const appStore = useAppStore();
-  const appRoute = computed(() => {
-    if (appStore.menuFromServer) {
-      return appStore.appAsyncMenus;
-    }
-    return appClientMenus;
-  });
   const menuTree = computed(() => {
-    const copyRouter = cloneDeep(appRoute.value) as RouteRecordNormalized[];
+    const copyRouter = cloneDeep(appClientMenus) as RouteRecordNormalized[];
     copyRouter.sort((a: RouteRecordNormalized, b: RouteRecordNormalized) => {
       return (a.meta.order || 0) - (b.meta.order || 0);
     });

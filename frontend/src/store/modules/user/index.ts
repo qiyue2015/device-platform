@@ -3,7 +3,6 @@ import { login as userLogin, logout as userLogout, getUserInfo, LoginData } from
 import { setToken, clearToken } from '@/utils/auth';
 import { removeRouteListener } from '@/utils/route-listener';
 import { UserState } from './types';
-import useAppStore from '../app';
 
 const useUserStore = defineStore('user', {
   state: (): UserState => ({
@@ -42,11 +41,9 @@ const useUserStore = defineStore('user', {
       }
     },
     logoutCallBack() {
-      const appStore = useAppStore();
       this.resetInfo();
       clearToken();
       removeRouteListener();
-      appStore.clearServerMenu();
     },
     async logout() {
       try {

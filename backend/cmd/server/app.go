@@ -178,7 +178,6 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/v1/auth/refresh", a.handle(a.requireBearer(a.handleRefresh)))
 	mux.HandleFunc("/v1/auth/logout", a.handle(a.requireBearer(a.handleLogout)))
 	mux.HandleFunc("/v1/auth/me", a.handle(a.requireBearer(a.handleMe)))
-	mux.HandleFunc("/v1/auth/menu", a.handle(a.requireBearer(a.handleMenu)))
 	mux.HandleFunc("/v1/cloud-providers", a.handle(a.requireBearer(a.handleCloudProviders)))
 	mux.HandleFunc("/v1/provider-callbacks/", a.handle(a.handleProviderCallback))
 

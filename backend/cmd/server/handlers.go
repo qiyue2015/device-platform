@@ -171,14 +171,6 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (a *app) handleMenu(w http.ResponseWriter, r *http.Request) error {
-	if r.Method != http.MethodGet {
-		return newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
-	}
-	writeOK(w, []interface{}{})
-	return nil
-}
-
 func (a *app) handleSetupStatus(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodGet {
 		return newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")

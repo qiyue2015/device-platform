@@ -1,7 +1,5 @@
 import { defineStore } from 'pinia';
-import type { RouteRecordNormalized } from 'vue-router';
 import defaultSettings from '@/config/settings.json';
-import { getMenuList } from '@/api/user';
 import { AppState } from './types';
 
 const useAppStore = defineStore('app', {
@@ -13,9 +11,6 @@ const useAppStore = defineStore('app', {
     },
     appDevice(state: AppState) {
       return state.device;
-    },
-    appAsyncMenus(state: AppState): RouteRecordNormalized[] {
-      return state.serverMenu as unknown as RouteRecordNormalized[];
     },
   },
 
@@ -41,18 +36,6 @@ const useAppStore = defineStore('app', {
     },
     toggleMenu(value: boolean) {
       this.hideMenu = value;
-    },
-    async fetchServerMenuConfig() {
-      try {
-        const { data } = await getMenuList();
-        this.serverMenu = data;
-      } catch (error) {
-        // eslint-disable-next-line no-console
-        console.error(error);
-      }
-    },
-    clearServerMenu() {
-      this.serverMenu = [];
     },
   },
 });

@@ -97,6 +97,7 @@ Setup 失败码固定为：参数/schema 不合法 `400 invalid_install_request`
 ## 单管理员认证
 
 - `POST /v1/auth/login` 接受 `email` 与 `password`，只认证 setup 创建的唯一管理员。密码使用 bcrypt hash 持久化，不进入环境文件或日志。
+- `GET /v1/auth/me` 需要 Bearer token，只返回当前唯一管理员的安全身份字段；后台菜单固定来自前端冻结路由，不存在服务端菜单或菜单权限 API。
 - 成功返回 `access_token`、`token_type="Bearer"`、整数 `expires_in=86400`。token 使用 HS256、至少 32 byte 的部署 `JWT_SECRET`、24 小时期限，并固定包含 `iss="device-platform"`、`aud="device-platform-admin"`、管理员 ID `sub`、`session_generation`、`iat`、`exp` 和随机 `jti`；验证必须同时检查算法、issuer、audience、时间和 generation。
 - `POST /v1/auth/refresh` 只接受尚未过期且 generation 有效的 Bearer token，并签发新的 24 小时 token；它不是无期限 refresh credential。
 - `POST /v1/auth/logout` 需要 Bearer token，并原子递增管理员 `session_generation`，使此前签发的全部 token 失效。单管理员模型不提供按设备选择 session 的产品能力。
