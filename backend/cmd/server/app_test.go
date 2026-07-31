@@ -1148,6 +1148,25 @@ func TestControlRoutesRequireAdminBearer(t *testing.T) {
 	}
 }
 
+func TestUnknownAPIRoutesUseFrozenEnvelope(t *testing.T) {
+	server := newTestServer()
+	_, apiKey := createProjectForOpenAPITest(t, server)
+	tests := []struct {
+		path    string
+		headers map[string]string
+	}{
+		{path: "/v1/admin/diagnostics", headers: map[string]string{"Authorization": "Bearer " + testAdminToken(t)}},
+		{path: "/v1/open/diagnostics", headers: map[string]string{"X-API-Key": apiKey}},
+	}
+	for _, test := range tests {
+		response := doRequest(t, server, http.MethodGet, test.path, "", test.headers)
+		envelope := assertEnvelope(t, response, http.StatusNotFound, false)
+		if envelope.ErrorCode != "not_found" {
+			t.Fatalf("GET %s error_code = %q, want not_found", test.path, envelope.ErrorCode)
+		}
+	}
+}
+
 func TestMemoryCompatibilityEventAndAuditRoutesAreReadOnly(t *testing.T) {
 	server := newTestServer()
 

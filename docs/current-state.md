@@ -3,7 +3,7 @@ title: 当前实现状态
 snapshot_date: 2026-07-31
 status: implementation-snapshot
 contract_freeze_revision: 2026-07-31.2
-verified_against_code_revision: implementation-unit-2026-07-31-frontend-template-cleanup
+verified_against_code_revision: implementation-unit-2026-07-31-explicit-api-surface
 ---
 
 # 当前实现状态
@@ -60,6 +60,7 @@ verified_against_code_revision: implementation-unit-2026-07-31-frontend-template
 - Provider HTTP acceptance 组件只产生 `provider_accepted/unverified`，不会生成 Device ACK/final；旧 HTTP Command 创建也不再同步调用 Provider。
 - 已安装运行时的 simulator 配置与 Command 已统一进入 PostgreSQL 主链。新领取 Attempt 在领取事务内锁定并保存当时的 outcome、delay 与 config version；PATCH 也锁定同一配置行，因此提交顺序决定后续 claim 使用的版本，已领取或重新领取的同一 Attempt 保留原 snapshot 和 request key。
 - 生产未安装状态不再启动内存 gateway 或旧 Webhook worker，只开放 setup/health 与明确失败关闭的业务入口。`devicecore` 中 `success`、`failure`、`timeout`、`offline_then_online` 等独立 engine/mode 仅由隔离测试兼容路径使用；它们不是生产事实或第二套产品合同，已安装 `/v1/simulator/gateway` 固定为 `404`。
+- `/v1/admin/**` 通配占位处理器已移除；后台只响应冻结合同明确列出的管理路由，未知技术路径返回统一 `404 not_found`，不以占位成功响应暗示能力存在。
 - 冻结 Command 主链已有持久 dispatcher、deadline scanner 和 dispatching crash recovery 调用方。claim/preflight、`sent` 事务提交、外部 I/O 与结果事务分离；过期 claimed Attempt 只续领同一 Attempt/request key，过期 dispatching Attempt 不重放并保守转 `unknown`。
 - 持久 Command 创建已与 Device、Provider registry 和发布 profile 统一，且 disabled/deleted Device、Provider 配置、payload 与 Project scope 均在落库前校验；本地集成测试能证明 `queued` 到 Provider 结果分类的代码主链，但不能证明真实 WWTIOT 服务或设备执行。
 

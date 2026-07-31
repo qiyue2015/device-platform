@@ -182,7 +182,6 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/v1/cloud-providers", a.handle(a.requireBearer(a.handleCloudProviders)))
 	mux.HandleFunc("/v1/provider-callbacks/", a.handle(a.handleProviderCallback))
 
-	mux.HandleFunc("/v1/admin/", a.handle(a.requireBearer(a.handleAdminPlaceholder)))
 	projectBridge := appProjectService{app: a}
 	deviceBridge := appDeviceService{app: a}
 	commandBridge := appCommandService{app: a}

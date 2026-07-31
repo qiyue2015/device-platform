@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/qiyue2015/device-platform/internal/commandservice"
@@ -290,16 +289,5 @@ func (a *app) handleSetupInstall(w http.ResponseWriter, r *http.Request) error {
 		a.replaceWebhookWorker(webhookWorker)
 	}
 	writeOK(w, map[string]bool{"installed": true})
-	return nil
-}
-
-func (a *app) handleAdminPlaceholder(w http.ResponseWriter, r *http.Request) error {
-	if r.Method != http.MethodGet {
-		return newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
-	}
-	writeOK(w, map[string]string{
-		"namespace": "admin",
-		"path":      strings.TrimPrefix(r.URL.Path, "/v1/admin/"),
-	})
 	return nil
 }

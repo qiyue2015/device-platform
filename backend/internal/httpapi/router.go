@@ -111,6 +111,9 @@ func NewRouterWithDomainServices(service DeviceService, projects ProjectService,
 	mux.HandleFunc("/v1/devices/", r.handleDeviceByID)
 	mux.HandleFunc("/v1/device-commands", r.handleAdminCommands)
 	mux.HandleFunc("/v1/device-commands/", r.handleAdminCommandByID)
+	mux.HandleFunc("/v1/", func(w http.ResponseWriter, _ *http.Request) {
+		notFound(w)
+	})
 	return mux
 }
 
@@ -138,6 +141,9 @@ func NewOpenRouterWithDomainServices(service DeviceService, projects ProjectServ
 	mux.HandleFunc("/v1/open/devices/", r.handleOpenDeviceByID)
 	mux.HandleFunc("/v1/open/device-commands", r.handleOpenCommands)
 	mux.HandleFunc("/v1/open/device-commands/", r.handleOpenCommandByID)
+	mux.HandleFunc("/v1/open/", func(w http.ResponseWriter, _ *http.Request) {
+		notFound(w)
+	})
 	return mux
 }
 
