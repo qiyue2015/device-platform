@@ -81,7 +81,7 @@ func (p *preparedDispatch) Dispatch(ctx context.Context) provideradapter.Dispatc
 		select {
 		case <-ctx.Done():
 			return simulatorResult(
-				domain.AttemptOutcomeTransportErrorAfterSend,
+				domain.AttemptOutcomeIndeterminate,
 				domain.ConfirmationTransportSent,
 				domain.EvidenceVerified,
 				p.outcome,
@@ -101,9 +101,9 @@ func (p *preparedDispatch) Dispatch(ctx context.Context) provideradapter.Dispatc
 	case domain.SimulatorOutcomeTransportErrorBeforeSend:
 		return simulatorResult(domain.AttemptOutcomeTransportErrorBeforeSend, domain.ConfirmationNone, domain.EvidenceNone, p.outcome, false, false, "Simulator configured transport error before send")
 	case domain.SimulatorOutcomeTransportErrorAfterSend:
-		return simulatorResult(domain.AttemptOutcomeTransportErrorAfterSend, domain.ConfirmationTransportSent, domain.EvidenceVerified, p.outcome, true, false, "Simulator configured transport error after send")
+		return simulatorResult(domain.AttemptOutcomeIndeterminate, domain.ConfirmationTransportSent, domain.EvidenceVerified, p.outcome, true, false, "Simulator configured transport error after send")
 	case domain.SimulatorOutcomeInvalidResponse:
-		return simulatorResult(domain.AttemptOutcomeInvalidResponse, domain.ConfirmationTransportSent, domain.EvidenceVerified, p.outcome, true, false, "Simulator configured invalid response")
+		return simulatorResult(domain.AttemptOutcomeIndeterminate, domain.ConfirmationTransportSent, domain.EvidenceVerified, p.outcome, true, false, "Simulator configured invalid response")
 	default:
 		return simulatorResult(domain.AttemptOutcomeInvalidRequest, domain.ConfirmationNone, domain.EvidenceNone, p.outcome, false, false, "Simulator snapshot outcome is invalid")
 	}
@@ -174,8 +174,16 @@ func simulatorResult(
 	timedOut bool,
 	detail string,
 ) provideradapter.DispatchResult {
+	reasonCode := ""
+	if outcome == domain.AttemptOutcomeIndeterminate {
+		reasonCode = "provider_delivery_unknown"
+		if !timedOut && configuredOutcome == domain.SimulatorOutcomeInvalidResponse {
+			reasonCode = "provider_response_invalid"
+		}
+	}
 	return provideradapter.DispatchResult{
 		Outcome: outcome, ConfirmationLevel: confirmation, EvidenceStatus: evidence,
+		ReasonCode: reasonCode,
 		ResponseSummary: map[string]any{
 			"configured_outcome": configuredOutcome,
 			"simulated_write":    simulatedWrite,

@@ -4,7 +4,7 @@ import "time"
 
 const (
 	DeviceTypeSmartLock         = "smart-lock"
-	DeviceTypeSmartLockRevision = 1
+	DeviceTypeSmartLockRevision = 2
 	ProviderCodeWWTIOT          = "wwtiot"
 	ProviderCodeSimulator       = "simulator"
 	EventSchemaVersion          = 1
@@ -70,12 +70,14 @@ const (
 	CommandStatusFailed    CommandStatus = "failed"
 	CommandStatusTimeout   CommandStatus = "timeout"
 	CommandStatusCancelled CommandStatus = "cancelled"
-	CommandStatusUnknown   CommandStatus = "unknown"
 )
 
 type DeliveryPolicy string
 
-const DeliveryPolicyDispatchOnce DeliveryPolicy = "dispatch_once"
+const (
+	DeliveryPolicyDispatchOnce DeliveryPolicy = "dispatch_once"
+	DeliveryPolicyOnlineOnly   DeliveryPolicy = "online_only"
+)
 
 type AttemptPhase string
 
@@ -93,11 +95,15 @@ const (
 	AttemptOutcomeProviderAccepted         AttemptOutcome = "provider_accepted"
 	AttemptOutcomeProviderRejected         AttemptOutcome = "provider_rejected"
 	AttemptOutcomeTransportErrorBeforeSend AttemptOutcome = "transport_error_before_send"
-	AttemptOutcomeTransportErrorAfterSend  AttemptOutcome = "transport_error_after_send"
-	AttemptOutcomeInvalidResponse          AttemptOutcome = "invalid_response"
-	AttemptOutcomeDeviceAcked              AttemptOutcome = "device_acked"
-	AttemptOutcomeDeviceSucceeded          AttemptOutcome = "device_succeeded"
-	AttemptOutcomeDeviceFailed             AttemptOutcome = "device_failed"
+	AttemptOutcomeIndeterminate            AttemptOutcome = "indeterminate"
+)
+
+type ResultOutcome string
+
+const (
+	ResultOutcomeDeviceAcked     ResultOutcome = "device_acked"
+	ResultOutcomeDeviceSucceeded ResultOutcome = "device_succeeded"
+	ResultOutcomeDeviceFailed    ResultOutcome = "device_failed"
 )
 
 type ConfirmationLevel string
@@ -138,6 +144,7 @@ const (
 	EventTypeCommandCreated          EventType = "command.created"
 	EventTypeCommandStatusChanged    EventType = "command.status_changed"
 	EventTypeCommandEvidenceUpdated  EventType = "command.evidence_updated"
+	EventTypeCommandResultRecorded   EventType = "command.result_recorded"
 )
 
 type RawMessageDirection string
@@ -287,10 +294,18 @@ type Command struct {
 	ProjectID          string
 	DeviceID           string
 	DeviceTypeID       string
+	DeviceTypeCode     string
+	ProviderCode       string
+	ProviderDeviceID   string
+	Adapter            Adapter
 	CommandType        ActionIdentifier
 	Payload            map[string]any
 	DeviceTypeRevision int
 	DeliveryPolicy     DeliveryPolicy
+	DispatchDeadline   time.Duration
+	ProviderTimeout    time.Duration
+	ResultTimeout      time.Duration
+	RetryAllowed       bool
 	Status             CommandStatus
 	ReasonCode         *string
 	ReasonDetail       *string
@@ -322,7 +337,7 @@ type CommandAttempt struct {
 	EvidenceStatus     EvidenceStatus
 	RequestSummary     map[string]any
 	ResponseSummary    map[string]any
-	ErrorCode          *string
+	ReasonCode         *string
 	ErrorDetail        *string
 	LeaseToken         string
 	LeaseOwner         string
@@ -333,6 +348,22 @@ type CommandAttempt struct {
 }
 
 type DeviceCommandAttempt = CommandAttempt
+
+type CommandResult struct {
+	ID                string
+	CommandID         string
+	AttemptID         *string
+	Source            EventSource
+	Outcome           ResultOutcome
+	ConfirmationLevel ConfirmationLevel
+	EvidenceStatus    EvidenceStatus
+	DeduplicationKey  string
+	ReportedAt        *time.Time
+	ObservedAt        time.Time
+	Late              bool
+	Payload           map[string]any
+	CreatedAt         time.Time
+}
 
 type RawMessage struct {
 	ID                string

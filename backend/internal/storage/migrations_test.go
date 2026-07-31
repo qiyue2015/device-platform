@@ -87,6 +87,41 @@ func TestCommandEvidenceEventMigrationMatchesFrozenContract(t *testing.T) {
 	}
 }
 
+func TestPlatformCoreV4MigrationMatchesFrozenContract(t *testing.T) {
+	upContent, err := embeddedMigrations.ReadFile("migrations/008_platform_core_v4.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		"cannot infer the complete effect fingerprint for historical Commands",
+		"smart-lock revision 1 profile hash",
+		"delivery_policy\":\"online_only",
+		"device_command_results",
+		"uq_command_results_source_deduplication",
+		"CommandResult records are immutable",
+		"command.result_recorded",
+		"provider_request_timeout_ms",
+		"result_observation_timeout_ms",
+		"'indeterminate'",
+	} {
+		if !strings.Contains(string(upContent), marker) {
+			t.Errorf("Platform Core v4 migration is missing %q", marker)
+		}
+	}
+	downContent, err := embeddedMigrations.ReadFile("migrations/008_platform_core_v4.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		"cannot rollback Platform Core v4 while CommandResult records exist",
+		"cannot rollback Platform Core v4 while revision 2 Commands exist",
+	} {
+		if !strings.Contains(string(downContent), marker) {
+			t.Errorf("Platform Core v4 rollback is missing %q", marker)
+		}
+	}
+}
+
 func TestInstallationSingletonMigrationMatchesFrozenContract(t *testing.T) {
 	content, err := embeddedMigrations.ReadFile("migrations/006_installation_single_admin.up.sql")
 	if err != nil {

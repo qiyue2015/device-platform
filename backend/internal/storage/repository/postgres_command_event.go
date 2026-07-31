@@ -88,31 +88,60 @@ func (r *postgresCommandRepository) ListAttempts(ctx context.Context, commandID 
 	return items, nil
 }
 
+func (r *postgresCommandRepository) ListResults(ctx context.Context, commandID string) ([]domain.CommandResult, error) {
+	rows, err := r.exec.QueryContext(ctx, commandResultSelect+` WHERE command_id = $1 ORDER BY observed_at ASC, id ASC`, commandID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []domain.CommandResult{}
+	for rows.Next() {
+		item, scanErr := scanCommandResult(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (r *postgresCommandRepository) Create(ctx context.Context, command domain.Command) error {
 	payload, err := marshalObject(command.Payload)
 	if err != nil {
 		return fmt.Errorf("encode Command payload: %w", err)
 	}
 	_, err = r.exec.ExecContext(ctx, `
-		INSERT INTO device_commands (
-			id, project_id, device_id, device_type_id, command_type, payload,
-			device_type_revision, delivery_policy, status, reason_code, reason_detail,
-			confirmation_level, evidence_status, idempotency_key, request_hash,
-			queued_at, dispatch_deadline_at, sent_at, result_deadline_at,
-			finished_at, created_at, updated_at
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-			$12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
-		)
+			INSERT INTO device_commands (
+				id, project_id, device_id, device_type_id, device_type_code, provider_code,
+				provider_device_id, adapter, command_type, payload,
+				device_type_revision, delivery_policy, dispatch_deadline_ms,
+				provider_request_timeout_ms, result_observation_timeout_ms, retry_allowed,
+				status, reason_code, reason_detail,
+				confirmation_level, evidence_status, idempotency_key, request_hash,
+				queued_at, dispatch_deadline_at, sent_at, result_deadline_at,
+				finished_at, created_at, updated_at
+			) VALUES (
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+				$11, $12, $13, $14, $15, $16, $17, $18, $19,
+				$20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
+			)
 	`,
 		command.ID,
 		command.ProjectID,
 		command.DeviceID,
 		command.DeviceTypeID,
+		command.DeviceTypeCode,
+		command.ProviderCode,
+		command.ProviderDeviceID,
+		command.Adapter,
 		command.CommandType,
 		payload,
 		command.DeviceTypeRevision,
 		command.DeliveryPolicy,
+		command.DispatchDeadline.Milliseconds(),
+		command.ProviderTimeout.Milliseconds(),
+		command.ResultTimeout.Milliseconds(),
+		command.RetryAllowed,
 		command.Status,
 		nullableString(command.ReasonCode),
 		nullableString(command.ReasonDetail),
@@ -142,12 +171,11 @@ func (r *postgresCommandRepository) ClaimNext(ctx context.Context, request Claim
 	command, err := scanCommand(r.exec.QueryRowContext(ctx, commandSelect+`
 		WHERE id = (
 			SELECT c.id
-			FROM device_commands c
-			JOIN devices d ON d.id = c.device_id
-				WHERE c.status = 'queued'
-					AND c.dispatch_deadline_at > now()
-					AND d.provider_code = $1
-					AND d.adapter = $2
+				FROM device_commands c
+					WHERE c.status = 'queued'
+						AND c.dispatch_deadline_at > now()
+						AND c.provider_code = $1
+						AND c.adapter = $2
 				AND NOT EXISTS (
 					SELECT 1 FROM device_command_attempts a
 					WHERE a.command_id = c.id AND a.phase <> 'completed'
@@ -339,8 +367,9 @@ func (r *postgresCommandRepository) CompleteAttempt(ctx context.Context, command
 	if locked.attemptPhase == domain.AttemptPhaseCompleted || locked.leaseToken != expectedLeaseToken || !locked.leaseValid {
 		return false, nil
 	}
-	if (request.Outcome == domain.AttemptOutcomeInvalidRequest && locked.commandStatus != domain.CommandStatusQueued) ||
-		(request.Outcome != domain.AttemptOutcomeInvalidRequest && locked.commandStatus != domain.CommandStatusSent) ||
+	beforeDispatch := request.Outcome == domain.AttemptOutcomeInvalidRequest || request.Outcome == domain.AttemptOutcomeNotDispatched
+	if (beforeDispatch && locked.commandStatus != domain.CommandStatusQueued) ||
+		(!beforeDispatch && locked.commandStatus != domain.CommandStatusSent) ||
 		!attemptCompletionAllowed(locked.providerCode, locked.attemptPhase, request) {
 		return false, nil
 	}
@@ -350,8 +379,8 @@ func (r *postgresCommandRepository) CompleteAttempt(ctx context.Context, command
 	}
 	result, err := r.exec.ExecContext(ctx, `
 		UPDATE device_command_attempts
-		SET phase = 'completed', outcome = $2, confirmation_level = $3,
-			evidence_status = $4, response_summary = $5, error_code = $6,
+			SET phase = 'completed', outcome = $2, confirmation_level = $3,
+				evidence_status = $4, response_summary = $5, reason_code = $6,
 			error_detail = $7, completed_at = now()
 		WHERE id = $1
 	`,
@@ -360,7 +389,7 @@ func (r *postgresCommandRepository) CompleteAttempt(ctx context.Context, command
 		request.ConfirmationLevel,
 		request.EvidenceStatus,
 		responseSummary,
-		nullableString(request.ErrorCode),
+		nullableString(request.ReasonCode),
 		nullableString(request.ErrorDetail),
 	)
 	return exactlyOneRow(result, err)
@@ -379,20 +408,18 @@ func (r *postgresCommandRepository) RecoverExpiredDispatching(ctx context.Contex
 	}
 	if _, err := r.exec.ExecContext(ctx, `
 		UPDATE device_command_attempts
-		SET phase = 'completed', outcome = 'transport_error_after_send',
-			confirmation_level = 'transport_sent', evidence_status = 'unverified',
-			response_summary = '{}'::jsonb, error_code = 'worker_lease_expired',
+			SET phase = 'completed', outcome = 'indeterminate',
+				confirmation_level = 'transport_sent', evidence_status = 'unverified',
+				response_summary = '{}'::jsonb, reason_code = 'provider_delivery_unknown',
 			error_detail = NULL, completed_at = now()
 		WHERE id = $1 AND command_id = $2 AND phase = 'dispatching' AND lease_token = $3
 	`, attemptID, commandID, expiredLeaseToken); err != nil {
 		return false, err
 	}
 	result, err := r.exec.ExecContext(ctx, `
-		UPDATE device_commands
-		SET status = 'unknown', reason_code = 'provider_delivery_unknown',
-			reason_detail = NULL, confirmation_level = 'transport_sent',
-			evidence_status = 'unverified', finished_at = now(), updated_at = now()
-		WHERE id = $1 AND status = 'sent'
+			UPDATE device_commands
+			SET confirmation_level = 'transport_sent', evidence_status = 'unverified', updated_at = now()
+			WHERE id = $1 AND status = 'sent'
 	`, commandID)
 	return exactlyOneRow(result, err)
 }
@@ -543,8 +570,8 @@ func (r *postgresCommandRepository) UpdateEvidenceFromAttempt(ctx context.Contex
 		return false, err
 	}
 	if locked.commandStatus != expectedStatus || expectedStatus != domain.CommandStatusSent || locked.attemptPhase != domain.AttemptPhaseCompleted ||
-		locked.leaseToken != expectedLeaseToken || locked.attemptOutcome == nil || *locked.attemptOutcome != domain.AttemptOutcomeProviderAccepted ||
-		locked.attemptConfirmation != domain.ConfirmationProviderAccepted ||
+		locked.leaseToken != expectedLeaseToken || locked.attemptOutcome == nil ||
+		(*locked.attemptOutcome != domain.AttemptOutcomeProviderAccepted && *locked.attemptOutcome != domain.AttemptOutcomeIndeterminate) ||
 		!evidenceProgresses(locked.commandConfirmation, locked.commandEvidence, locked.attemptConfirmation, locked.attemptEvidence) {
 		return false, nil
 	}
@@ -642,6 +669,67 @@ func (r *postgresCommandRepository) UpdateProviderAcceptanceFromVerifiedMessage(
 	return exactlyOneRow(result, err)
 }
 
+func (r *postgresCommandRepository) ApplyResult(ctx context.Context, result domain.CommandResult) (CommandResultAggregation, error) {
+	command, err := r.GetForUpdate(ctx, result.CommandID)
+	if err != nil {
+		return CommandResultAggregation{}, err
+	}
+	previous := command.Status
+	if result.Late != command.Status.IsTerminal() {
+		return CommandResultAggregation{}, ErrInvalidRepositoryRequest
+	}
+	if result.Late {
+		if evidenceProgresses(command.ConfirmationLevel, command.EvidenceStatus, result.ConfirmationLevel, result.EvidenceStatus) {
+			if _, err := r.exec.ExecContext(ctx, `
+				UPDATE device_commands SET confirmation_level = $2, evidence_status = $3, updated_at = $4
+				WHERE id = $1
+			`, result.CommandID, result.ConfirmationLevel, result.EvidenceStatus, result.ObservedAt); err != nil {
+				return CommandResultAggregation{}, err
+			}
+		}
+		current, err := r.Get(ctx, result.CommandID)
+		return CommandResultAggregation{PreviousStatus: previous, Command: current}, err
+	}
+
+	var status domain.CommandStatus
+	var reasonCode *string
+	var finishedAt *time.Time
+	switch result.Outcome {
+	case domain.ResultOutcomeDeviceAcked:
+		if command.Status != domain.CommandStatusSent {
+			return CommandResultAggregation{}, ErrInvalidRepositoryRequest
+		}
+		status = domain.CommandStatusAcked
+	case domain.ResultOutcomeDeviceSucceeded:
+		if command.Status != domain.CommandStatusSent && command.Status != domain.CommandStatusAcked {
+			return CommandResultAggregation{}, ErrInvalidRepositoryRequest
+		}
+		status = domain.CommandStatusSuccess
+		finishedAt = &result.ObservedAt
+	case domain.ResultOutcomeDeviceFailed:
+		if command.Status != domain.CommandStatusSent && command.Status != domain.CommandStatusAcked {
+			return CommandResultAggregation{}, ErrInvalidRepositoryRequest
+		}
+		status = domain.CommandStatusFailed
+		reason := "device_reported_failure"
+		reasonCode = &reason
+		finishedAt = &result.ObservedAt
+	default:
+		return CommandResultAggregation{}, ErrInvalidRepositoryRequest
+	}
+	if _, err := r.exec.ExecContext(ctx, `
+		UPDATE device_commands
+		SET status = $2, reason_code = $3, reason_detail = NULL,
+			confirmation_level = $4, evidence_status = $5, finished_at = $6, updated_at = $7
+		WHERE id = $1
+	`, result.CommandID, status, nullableString(reasonCode), result.ConfirmationLevel,
+		result.EvidenceStatus, nullableTime(finishedAt), result.ObservedAt); err != nil {
+		return CommandResultAggregation{}, err
+	}
+	current, err := r.Get(ctx, result.CommandID)
+	return CommandResultAggregation{PreviousStatus: previous, Command: current}, err
+}
+
 func (r *postgresCommandRepository) finishQueued(ctx context.Context, commandID string, status domain.CommandStatus, reasonCode string, reasonDetail *string, requireExpired bool) (bool, error) {
 	var commandStatus domain.CommandStatus
 	var dispatchDeadlineExpired bool
@@ -677,7 +765,7 @@ func (r *postgresCommandRepository) finishQueued(ctx context.Context, commandID 
 			UPDATE device_command_attempts
 			SET phase = 'completed', outcome = 'not_dispatched',
 				confirmation_level = 'none', evidence_status = 'none',
-				response_summary = '{}'::jsonb, error_code = $2,
+					response_summary = '{}'::jsonb, reason_code = $2,
 				error_detail = $3, completed_at = now()
 			WHERE id = $1 AND lease_token = $4
 		`, attemptID, reasonCode, nullableString(reasonDetail), leaseToken); err != nil {
@@ -785,12 +873,25 @@ func evidenceDoesNotRegress(currentLevel domain.ConfirmationLevel, currentEviden
 }
 
 func attemptCompletionAllowed(providerCode string, phase domain.AttemptPhase, request CompleteCommandAttemptRequest) bool {
-	if request.Outcome == domain.AttemptOutcomeInvalidRequest {
+	if request.Outcome == domain.AttemptOutcomeInvalidRequest || request.Outcome == domain.AttemptOutcomeNotDispatched {
 		return (providerCode == domain.ProviderCodeWWTIOT || providerCode == domain.ProviderCodeSimulator) &&
 			phase == domain.AttemptPhaseClaimed &&
-			request.ConfirmationLevel == domain.ConfirmationNone && request.EvidenceStatus == domain.EvidenceNone
+			request.ConfirmationLevel == domain.ConfirmationNone && request.EvidenceStatus == domain.EvidenceNone &&
+			request.ReasonCode != nil && (request.Outcome == domain.AttemptOutcomeInvalidRequest && *request.ReasonCode == "provider_not_configured" ||
+			request.Outcome == domain.AttemptOutcomeNotDispatched && *request.ReasonCode == "device_not_online")
 	}
 	if phase != domain.AttemptPhaseDispatching {
+		return false
+	}
+	reason := ""
+	if request.ReasonCode != nil {
+		reason = *request.ReasonCode
+	}
+	validReason := request.Outcome == domain.AttemptOutcomeProviderAccepted && reason == "" ||
+		request.Outcome == domain.AttemptOutcomeTransportErrorBeforeSend && reason == "provider_transport_error" ||
+		request.Outcome == domain.AttemptOutcomeProviderRejected && reason == "provider_rejected" ||
+		request.Outcome == domain.AttemptOutcomeIndeterminate && (reason == "provider_delivery_unknown" || reason == "provider_response_invalid")
+	if !validReason {
 		return false
 	}
 	switch providerCode {
@@ -798,7 +899,7 @@ func attemptCompletionAllowed(providerCode string, phase domain.AttemptPhase, re
 		switch request.Outcome {
 		case domain.AttemptOutcomeTransportErrorBeforeSend:
 			return request.ConfirmationLevel == domain.ConfirmationNone && request.EvidenceStatus == domain.EvidenceNone
-		case domain.AttemptOutcomeTransportErrorAfterSend, domain.AttemptOutcomeInvalidResponse:
+		case domain.AttemptOutcomeIndeterminate:
 			return request.ConfirmationLevel == domain.ConfirmationTransportSent && request.EvidenceStatus == domain.EvidenceVerified
 		case domain.AttemptOutcomeProviderRejected:
 			return request.ConfirmationLevel == domain.ConfirmationTransportSent && request.EvidenceStatus == domain.EvidenceUnverified
@@ -811,7 +912,7 @@ func attemptCompletionAllowed(providerCode string, phase domain.AttemptPhase, re
 		switch request.Outcome {
 		case domain.AttemptOutcomeTransportErrorBeforeSend:
 			return request.ConfirmationLevel == domain.ConfirmationNone && request.EvidenceStatus == domain.EvidenceNone
-		case domain.AttemptOutcomeTransportErrorAfterSend, domain.AttemptOutcomeInvalidResponse, domain.AttemptOutcomeProviderRejected:
+		case domain.AttemptOutcomeIndeterminate, domain.AttemptOutcomeProviderRejected:
 			return request.ConfirmationLevel == domain.ConfirmationTransportSent && request.EvidenceStatus == domain.EvidenceVerified
 		case domain.AttemptOutcomeProviderAccepted:
 			return request.ConfirmationLevel == domain.ConfirmationProviderAccepted && request.EvidenceStatus == domain.EvidenceVerified
@@ -835,10 +936,8 @@ func attemptTransitionMatches(outcome domain.AttemptOutcome, transition CommandS
 		return transition.From == domain.CommandStatusSent && transition.To == domain.CommandStatusFailed && reason == "provider_transport_error"
 	case domain.AttemptOutcomeProviderRejected:
 		return transition.From == domain.CommandStatusSent && transition.To == domain.CommandStatusFailed && reason == "provider_rejected"
-	case domain.AttemptOutcomeTransportErrorAfterSend:
-		return transition.From == domain.CommandStatusSent && transition.To == domain.CommandStatusUnknown && reason == "provider_delivery_unknown"
-	case domain.AttemptOutcomeInvalidResponse:
-		return transition.From == domain.CommandStatusSent && transition.To == domain.CommandStatusUnknown && reason == "provider_response_invalid"
+	case domain.AttemptOutcomeNotDispatched:
+		return transition.From == domain.CommandStatusQueued && transition.To == domain.CommandStatusFailed && reason == "device_not_online"
 	default:
 		return false
 	}
@@ -850,7 +949,9 @@ func (r *postgresCommandRepository) getAttempt(ctx context.Context, id string) (
 
 const commandSelect = `
 	SELECT id::text, project_id::text, device_id::text, device_type_id::text,
-		command_type, payload, device_type_revision, delivery_policy, status,
+		device_type_code, provider_code, provider_device_id, adapter,
+		command_type, payload, device_type_revision, delivery_policy,
+		dispatch_deadline_ms, provider_request_timeout_ms, result_observation_timeout_ms, retry_allowed, status,
 		reason_code, reason_detail, confirmation_level, evidence_status,
 		idempotency_key, request_hash, queued_at, dispatch_deadline_at,
 		sent_at, result_deadline_at, finished_at, created_at, updated_at
@@ -859,6 +960,7 @@ const commandSelect = `
 func scanCommand(row rowScanner) (domain.Command, error) {
 	var command domain.Command
 	var payload []byte
+	var dispatchDeadlineMS, providerTimeoutMS, resultTimeoutMS int64
 	var reasonCode, reasonDetail sql.NullString
 	var sentAt, resultDeadlineAt, finishedAt sql.NullTime
 	err := row.Scan(
@@ -866,10 +968,18 @@ func scanCommand(row rowScanner) (domain.Command, error) {
 		&command.ProjectID,
 		&command.DeviceID,
 		&command.DeviceTypeID,
+		&command.DeviceTypeCode,
+		&command.ProviderCode,
+		&command.ProviderDeviceID,
+		&command.Adapter,
 		&command.CommandType,
 		&payload,
 		&command.DeviceTypeRevision,
 		&command.DeliveryPolicy,
+		&dispatchDeadlineMS,
+		&providerTimeoutMS,
+		&resultTimeoutMS,
+		&command.RetryAllowed,
 		&command.Status,
 		&reasonCode,
 		&reasonDetail,
@@ -891,6 +1001,9 @@ func scanCommand(row rowScanner) (domain.Command, error) {
 	if err := json.Unmarshal(payload, &command.Payload); err != nil {
 		return domain.Command{}, fmt.Errorf("decode Command payload: %w", err)
 	}
+	command.DispatchDeadline = time.Duration(dispatchDeadlineMS) * time.Millisecond
+	command.ProviderTimeout = time.Duration(providerTimeoutMS) * time.Millisecond
+	command.ResultTimeout = time.Duration(resultTimeoutMS) * time.Millisecond
 	command.ReasonCode = stringPointer(reasonCode)
 	command.ReasonDetail = stringPointer(reasonDetail)
 	command.SentAt = timePointer(sentAt)
@@ -902,14 +1015,14 @@ func scanCommand(row rowScanner) (domain.Command, error) {
 const commandAttemptSelect = `
 	SELECT id::text, command_id::text, attempt_no, phase, provider_code,
 		adapter, provider_request_key, outcome, confirmation_level,
-		evidence_status, request_summary, response_summary, error_code,
+		evidence_status, request_summary, response_summary, reason_code,
 		error_detail, lease_token::text, lease_owner, lease_expires_at,
 		claimed_at, dispatching_at, completed_at
 	FROM device_command_attempts`
 
 func scanCommandAttempt(row rowScanner) (domain.CommandAttempt, error) {
 	var attempt domain.CommandAttempt
-	var outcome, errorCode, errorDetail sql.NullString
+	var outcome, reasonCode, errorDetail sql.NullString
 	var requestSummary, responseSummary []byte
 	var dispatchingAt, completedAt sql.NullTime
 	err := row.Scan(
@@ -925,7 +1038,7 @@ func scanCommandAttempt(row rowScanner) (domain.CommandAttempt, error) {
 		&attempt.EvidenceStatus,
 		&requestSummary,
 		&responseSummary,
-		&errorCode,
+		&reasonCode,
 		&errorDetail,
 		&attempt.LeaseToken,
 		&attempt.LeaseOwner,
@@ -947,11 +1060,68 @@ func scanCommandAttempt(row rowScanner) (domain.CommandAttempt, error) {
 		value := domain.AttemptOutcome(outcome.String)
 		attempt.Outcome = &value
 	}
-	attempt.ErrorCode = stringPointer(errorCode)
+	attempt.ReasonCode = stringPointer(reasonCode)
 	attempt.ErrorDetail = stringPointer(errorDetail)
 	attempt.DispatchingAt = timePointer(dispatchingAt)
 	attempt.CompletedAt = timePointer(completedAt)
 	return attempt, nil
+}
+
+const commandResultSelect = `
+	SELECT id::text, command_id::text, attempt_id::text, source, outcome,
+		confirmation_level, evidence_status, deduplication_key, reported_at,
+		observed_at, late, payload, created_at
+	FROM device_command_results`
+
+func scanCommandResult(row rowScanner) (domain.CommandResult, error) {
+	var result domain.CommandResult
+	var attemptID sql.NullString
+	var reportedAt sql.NullTime
+	var payload []byte
+	if err := row.Scan(
+		&result.ID, &result.CommandID, &attemptID, &result.Source, &result.Outcome,
+		&result.ConfirmationLevel, &result.EvidenceStatus, &result.DeduplicationKey,
+		&reportedAt, &result.ObservedAt, &result.Late, &payload, &result.CreatedAt,
+	); err != nil {
+		return domain.CommandResult{}, err
+	}
+	result.AttemptID = stringPointer(attemptID)
+	result.ReportedAt = timePointer(reportedAt)
+	if err := json.Unmarshal(payload, &result.Payload); err != nil {
+		return domain.CommandResult{}, fmt.Errorf("decode CommandResult payload: %w", err)
+	}
+	return result, nil
+}
+
+type postgresCommandResultRepository struct {
+	exec postgresExecutor
+}
+
+func (r *postgresCommandResultRepository) GetByDeduplicationKey(ctx context.Context, source domain.EventSource, deduplicationKey string) (domain.CommandResult, error) {
+	return scanCommandResult(r.exec.QueryRowContext(ctx, commandResultSelect+` WHERE source = $1 AND deduplication_key = $2`, source, deduplicationKey))
+}
+
+func (r *postgresCommandResultRepository) Create(ctx context.Context, result domain.CommandResult) error {
+	payload, err := marshalObject(result.Payload)
+	if err != nil {
+		return fmt.Errorf("encode CommandResult payload: %w", err)
+	}
+	_, err = r.exec.ExecContext(ctx, `
+		INSERT INTO device_command_results (
+			id, command_id, attempt_id, source, outcome, confirmation_level,
+			evidence_status, deduplication_key, reported_at, observed_at, late,
+			payload, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	`, result.ID, result.CommandID, nullableString(result.AttemptID), result.Source, result.Outcome,
+		result.ConfirmationLevel, result.EvidenceStatus, result.DeduplicationKey,
+		nullableTime(result.ReportedAt), result.ObservedAt, result.Late, payload, result.CreatedAt)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" && pqErr.Constraint == "uq_command_results_source_deduplication" {
+			return ErrCommandResultConflict
+		}
+	}
+	return err
 }
 
 type postgresRawMessageRepository struct {

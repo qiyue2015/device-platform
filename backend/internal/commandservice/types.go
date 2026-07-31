@@ -13,6 +13,7 @@ var (
 	ErrProjectNotFound        = errors.New("Project not found")
 	ErrDeviceNotFound         = errors.New("Device not found")
 	ErrDeviceDisabled         = errors.New("Device cannot accept Commands")
+	ErrDeviceNotOnline        = errors.New("Device is not online")
 	ErrCapabilityUnsupported  = errors.New("Device capability is unsupported")
 	ErrPayloadInvalid         = errors.New("Command payload is invalid")
 	ErrProviderNotConfigured  = errors.New("Provider is not configured")
@@ -89,5 +90,6 @@ type ListResult struct {
 type Detail struct {
 	Command  domain.Command
 	Attempts []domain.CommandAttempt
+	Results  []domain.CommandResult
 	Events   []domain.Event
 }

@@ -6,11 +6,13 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -67,7 +69,7 @@ func TestNewValidatesConfigWithoutPanicking(t *testing.T) {
 func TestWebhookRequestSignsExactTimestampAndRawBody(t *testing.T) {
 	delivery := domain.WebhookDelivery{
 		EventID: "event-1", TargetURL: "https://hooks.example.test/events",
-		RawBody: []byte("{\n  \"event_id\": \"event-1\"\n}"),
+		RawBody: []byte("{\n  \"event_id\": \"event-1\"\n}"), WebhookSecretVersion: 7,
 	}
 	attempt := domain.WebhookDeliveryAttempt{RequestTimestamp: 1785474000}
 	request, err := webhookRequest(context.Background(), delivery, attempt, "whsec_test")
@@ -79,14 +81,93 @@ func TestWebhookRequestSignsExactTimestampAndRawBody(t *testing.T) {
 		t.Fatalf("body=%q err=%v", body, err)
 	}
 	mac := hmac.New(sha256.New, []byte("whsec_test"))
-	_, _ = mac.Write([]byte("1785474000."))
+	_, _ = mac.Write([]byte("v1.1785474000.7."))
 	_, _ = mac.Write(delivery.RawBody)
-	wantSignature := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	wantSignature := "v1=" + hex.EncodeToString(mac.Sum(nil))
 	if request.Method != http.MethodPost || request.Header.Get("X-Device-Platform-Timestamp") != "1785474000" ||
 		request.Header.Get("X-Device-Platform-Signature") != wantSignature ||
-		request.Header.Get("X-Device-Platform-Event-ID") != delivery.EventID {
+		request.Header.Get("X-Device-Platform-Event-ID") != delivery.EventID ||
+		request.Header.Get("X-Device-Platform-Secret-Version") != "7" {
 		t.Fatalf("request=%s headers=%v", request.Method, request.Header)
 	}
+}
+
+func TestWebhookReceiverVerificationBoundariesRotationAndRetry(t *testing.T) {
+	body := []byte(`{"event_id":"event-1","event_type":"command.result_recorded"}`)
+	now := time.Unix(1785474000, 0)
+	for _, offset := range []time.Duration{-300 * time.Second, 300 * time.Second} {
+		delivery := domain.WebhookDelivery{
+			EventID: "event-1", TargetURL: "https://hooks.example.test/events",
+			RawBody: body, WebhookSecretVersion: 3,
+		}
+		request, err := webhookRequest(context.Background(), delivery, domain.WebhookDeliveryAttempt{RequestTimestamp: now.Add(offset).Unix()}, "secret-v3")
+		if err != nil || !verifyTestWebhookRequest(request, "secret-v3", now) {
+			t.Fatalf("offset=%s verification=%v err=%v", offset, verifyTestWebhookRequest(request, "secret-v3", now), err)
+		}
+	}
+	for _, offset := range []time.Duration{-301 * time.Second, 301 * time.Second} {
+		delivery := domain.WebhookDelivery{
+			EventID: "event-1", TargetURL: "https://hooks.example.test/events",
+			RawBody: body, WebhookSecretVersion: 3,
+		}
+		request, err := webhookRequest(context.Background(), delivery, domain.WebhookDeliveryAttempt{RequestTimestamp: now.Add(offset).Unix()}, "secret-v3")
+		if err != nil || verifyTestWebhookRequest(request, "secret-v3", now) {
+			t.Fatalf("offset=%s unexpectedly verified err=%v", offset, err)
+		}
+	}
+
+	deliveryV1 := domain.WebhookDelivery{
+		EventID: "event-1", TargetURL: "https://hooks.example.test/events",
+		RawBody: body, WebhookSecretVersion: 1,
+	}
+	deliveryV2 := deliveryV1
+	deliveryV2.WebhookSecretVersion = 2
+	first, err := webhookRequest(context.Background(), deliveryV1, domain.WebhookDeliveryAttempt{RequestTimestamp: now.Unix()}, "secret-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := webhookRequest(context.Background(), deliveryV2, domain.WebhookDeliveryAttempt{RequestTimestamp: now.Add(time.Second).Unix()}, "secret-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verifyTestWebhookRequest(first, "secret-v1", now) || !verifyTestWebhookRequest(retry, "secret-v2", now.Add(time.Second)) {
+		t.Fatal("matching secret versions did not verify")
+	}
+	if verifyTestWebhookRequest(first, "secret-v2", now) || verifyTestWebhookRequest(retry, "secret-v1", now.Add(time.Second)) {
+		t.Fatal("rotated secrets verified against the wrong Delivery snapshot")
+	}
+	if first.Header.Get("X-Device-Platform-Signature") == retry.Header.Get("X-Device-Platform-Signature") {
+		t.Fatal("retry reused a signature despite a new timestamp and secret version")
+	}
+	firstBody, _ := io.ReadAll(first.Body)
+	retryBody, _ := io.ReadAll(retry.Body)
+	if !bytes.Equal(firstBody, body) || !bytes.Equal(retryBody, body) {
+		t.Fatal("retry did not preserve the Delivery raw body byte-for-byte")
+	}
+}
+
+func verifyTestWebhookRequest(request *http.Request, secret string, now time.Time) bool {
+	timestamp, err := strconv.ParseInt(request.Header.Get("X-Device-Platform-Timestamp"), 10, 64)
+	if err != nil || timestamp < now.Add(-300*time.Second).Unix() || timestamp > now.Add(300*time.Second).Unix() {
+		return false
+	}
+	secretVersion, err := strconv.Atoi(request.Header.Get("X-Device-Platform-Secret-Version"))
+	if err != nil || secretVersion < 1 {
+		return false
+	}
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		return false
+	}
+	request.Body = io.NopCloser(bytes.NewReader(body))
+	var payload struct {
+		EventID string `json:"event_id"`
+	}
+	if json.Unmarshal(body, &payload) != nil || payload.EventID != request.Header.Get("X-Device-Platform-Event-ID") {
+		return false
+	}
+	want := signature(secret, timestamp, secretVersion, body)
+	return hmac.Equal([]byte(request.Header.Get("X-Device-Platform-Signature")), []byte(want))
 }
 
 func TestWebhookRequestRejectsUnsafeSnapshots(t *testing.T) {

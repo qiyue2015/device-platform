@@ -26,24 +26,152 @@ func TestFrozenContractMigrationOnPostgres(t *testing.T) {
 			t.Fatalf("repeat migrations: %v", err)
 		}
 		var count int
-		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 7 {
+		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 8 {
 			t.Fatalf("migration count = %d, err = %v", count, err)
 		}
 		var profileHash string
-		if err := db.QueryRow(`SELECT encode(profile_hash, 'hex') FROM device_type_profiles WHERE revision = 1`).Scan(&profileHash); err != nil {
+		if err := db.QueryRow(`SELECT encode(profile_hash, 'hex') FROM device_type_profiles WHERE revision = 2`).Scan(&profileHash); err != nil {
 			t.Fatal(err)
 		}
-		if profileHash != "81f6d5efb5f627a56fc19a2e2fb7fadcccc9b6a6b53fa411d7265a15eda5b596" {
+		if profileHash != "853c4d6f3ad2bc73931de0bb64998f6d94bd977fce5f03ed0a190eef342de0e2" {
 			t.Fatalf("database profile hash = %s", profileHash)
 		}
 		if err := ValidateFrozenContracts(ctx, db); err != nil {
 			t.Fatalf("validate frozen profile snapshot: %v", err)
 		}
-		if _, err := db.Exec(`UPDATE device_type_profiles SET profile = '{}' WHERE revision = 1`); err == nil {
+		if _, err := db.Exec(`UPDATE device_type_profiles SET profile = '{}' WHERE revision = 2`); err == nil {
 			t.Fatal("published Device Type profile must be immutable")
 		}
 		assertFrozenSchemaBehavior(t, db)
 	})
+}
+
+func TestPlatformCoreV4MigrationFailsClosed(t *testing.T) {
+	baseURL := requireMigrationTestDatabase(t)
+	tests := []struct {
+		name        string
+		seed        func(*testing.T, *sql.DB)
+		wantMessage string
+	}{
+		{
+			name: "historical unknown Command",
+			seed: func(t *testing.T, db *sql.DB) {
+				seedPlatformCoreV3Command(t, db, "unknown")
+			},
+			wantMessage: "cannot remove Command unknown",
+		},
+		{
+			name: "ambiguous historical Attempt outcome",
+			seed: func(t *testing.T, db *sql.DB) {
+				seedPlatformCoreV3Command(t, db, "sent")
+				if _, err := db.Exec(`
+					INSERT INTO device_command_attempts (
+						id, command_id, attempt_no, adapter, phase, provider_code,
+						provider_request_key, outcome, confirmation_level, evidence_status,
+						lease_token, lease_owner, lease_expires_at, claimed_at,
+						dispatching_at, completed_at
+					) VALUES (
+						'40000000-0000-0000-0000-000000000098',
+						'30000000-0000-0000-0000-000000000098', 1,
+						'wwtiot_cloud_api', 'completed', 'wwtiot', '100000098',
+						'invalid_response', 'transport_sent', 'verified',
+						'50000000-0000-0000-0000-000000000098', 'migration-test',
+						now() + interval '1 minute', now() - interval '3 seconds',
+						now() - interval '2 seconds', now() - interval '1 second'
+					)
+				`); err != nil {
+					t.Fatalf("seed ambiguous v3 Attempt: %v", err)
+				}
+			},
+			wantMessage: "cannot reinterpret historical CommandAttempt outcomes",
+		},
+		{
+			name: "missing effect fingerprint",
+			seed: func(t *testing.T, db *sql.DB) {
+				seedPlatformCoreV3Command(t, db, "queued")
+			},
+			wantMessage: "cannot infer the complete effect fingerprint",
+		},
+		{
+			name: "smart-lock profile hash conflict",
+			seed: func(t *testing.T, db *sql.DB) {
+				if _, err := db.Exec(`
+					DROP TRIGGER trg_device_type_profiles_immutable ON device_type_profiles;
+					UPDATE device_type_profiles
+					SET profile_hash = decode(repeat('99', 32), 'hex')
+					WHERE revision = 1
+				`); err != nil {
+					t.Fatalf("seed conflicting profile hash: %v", err)
+				}
+			},
+			wantMessage: "profile hash or revision state conflicts",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			withIsolatedSchema(t, baseURL, func(db *sql.DB) {
+				ctx := context.Background()
+				if err := ApplyMigrations(ctx, db); err != nil {
+					t.Fatal(err)
+				}
+				rollbackPlatformCoreV4Migration(t, ctx, db)
+				test.seed(t, db)
+				err := ApplyMigrations(ctx, db)
+				if err == nil || !strings.Contains(err.Error(), test.wantMessage) {
+					t.Fatalf("expected %q, got %v", test.wantMessage, err)
+				}
+				assertMigrationNotApplied(t, db, "008_platform_core_v4")
+			})
+		})
+	}
+}
+
+func TestPlatformCoreV4MigrationDownFailsClosed(t *testing.T) {
+	baseURL := requireMigrationTestDatabase(t)
+	tests := []struct {
+		name        string
+		seedResult  bool
+		wantMessage string
+	}{
+		{name: "CommandResult exists", seedResult: true, wantMessage: "CommandResult records exist"},
+		{name: "revision 2 Command exists", wantMessage: "revision 2 Commands exist"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			withIsolatedSchema(t, baseURL, func(db *sql.DB) {
+				ctx := context.Background()
+				if err := ApplyMigrations(ctx, db); err != nil {
+					t.Fatal(err)
+				}
+				seedPlatformCoreV4Command(t, db)
+				if test.seedResult {
+					if _, err := db.Exec(`
+						WITH observed AS (SELECT date_trunc('milliseconds', now()) AS at)
+						INSERT INTO device_command_results (
+							id, command_id, source, outcome, confirmation_level,
+							evidence_status, deduplication_key, observed_at, late,
+							payload, created_at
+						)
+						SELECT '70000000-0000-0000-0000-000000000098',
+							'30000000-0000-0000-0000-000000000098', 'system',
+							'device_acked', 'device_acked', 'verified', 'migration-down-98',
+							at, false, '{}'::jsonb, at
+						FROM observed
+					`); err != nil {
+						t.Fatalf("seed CommandResult: %v", err)
+					}
+				}
+				err := RollbackLastMigration(ctx, db)
+				if err == nil || !strings.Contains(err.Error(), test.wantMessage) {
+					t.Fatalf("expected %q, got %v", test.wantMessage, err)
+				}
+				var applied bool
+				if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '008_platform_core_v4')`).Scan(&applied); err != nil || !applied {
+					t.Fatalf("008 must remain applied after refused rollback: applied=%v err=%v", applied, err)
+				}
+			})
+		})
+	}
 }
 
 func TestValidateMigrationStateRequiresExactEmbeddedSet(t *testing.T) {
@@ -156,6 +284,7 @@ func TestCommandEvidenceMigrationPreservesInvalidLegacyEventOnFailure(t *testing
 		if err := ApplyMigrations(ctx, db); err != nil {
 			t.Fatal(err)
 		}
+		rollbackPlatformCoreV4Migration(t, ctx, db)
 		if err := RollbackLastMigration(ctx, db); err != nil {
 			t.Fatalf("rollback 007 before legacy seed: %v", err)
 		}
@@ -600,6 +729,7 @@ func TestMigrationRollbackUsesVersionOrderWhenTimestampsAreOutOfOrder(t *testing
 		if err := ApplyMigrations(ctx, db); err != nil {
 			t.Fatal(err)
 		}
+		rollbackPlatformCoreV4Migration(t, ctx, db)
 		if _, err := db.Exec(`
 			UPDATE schema_migrations
 			SET applied_at = CASE
@@ -630,7 +760,8 @@ func TestCommandEvidenceEventMigrationDownFailsClosed(t *testing.T) {
 		if err := ApplyMigrations(context.Background(), db); err != nil {
 			t.Fatal(err)
 		}
-		assertFrozenSchemaBehavior(t, db)
+		rollbackPlatformCoreV4Migration(t, context.Background(), db)
+		seedCommandEvidenceEvent(t, db)
 		err := RollbackLastMigration(context.Background(), db)
 		if err == nil || !strings.Contains(err.Error(), "cannot rollback command evidence Event contract while command.evidence_updated Events exist") {
 			t.Fatalf("expected fail-closed evidence Event rollback, got %v", err)
@@ -801,10 +932,191 @@ func rollbackInstallationSingletonMigration(t *testing.T, ctx context.Context, d
 
 func rollbackCommandEvidenceEventMigration(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
+	rollbackPlatformCoreV4Migration(t, ctx, db)
 	if err := RollbackLastMigration(ctx, db); err != nil {
 		t.Fatalf("rollback 007: %v", err)
 	}
 	assertMigrationNotApplied(t, db, "007_command_evidence_event")
+}
+
+func rollbackPlatformCoreV4Migration(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	var applied bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '008_platform_core_v4')`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		return
+	}
+	if err := RollbackLastMigration(ctx, db); err != nil {
+		t.Fatalf("rollback 008: %v", err)
+	}
+	assertMigrationNotApplied(t, db, "008_platform_core_v4")
+}
+
+func seedPlatformCoreV3Command(t *testing.T, db *sql.DB, status string) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO projects (id, name, api_key_hash)
+		VALUES ('10000000-0000-0000-0000-000000000098', 'v3 migration gate', decode(repeat('11', 32), 'hex'));
+		INSERT INTO devices (
+			id, project_id, device_type_id, name, provider_code, provider_device_id,
+			access_type, transport_protocol, adapter
+		) VALUES (
+			'20000000-0000-0000-0000-000000000098',
+			'10000000-0000-0000-0000-000000000098',
+			'00000000-0000-0000-0000-000000000001', 'v3 migration lock',
+			'wwtiot', 'MIGRATION-098', 'cloud_api', 'http', 'wwtiot_cloud_api'
+		)
+	`); err != nil {
+		t.Fatalf("seed v3 Command ownership: %v", err)
+	}
+	var statement string
+	switch status {
+	case "queued":
+		statement = `
+			WITH queued AS (SELECT date_trunc('milliseconds', now()) AS at)
+			INSERT INTO device_commands (
+				id, project_id, device_id, device_type_id, command_type, payload,
+				device_type_revision, delivery_policy, status, confirmation_level,
+				evidence_status, idempotency_key, request_hash, queued_at,
+				dispatch_deadline_at
+			)
+			SELECT '30000000-0000-0000-0000-000000000098',
+				'10000000-0000-0000-0000-000000000098',
+				'20000000-0000-0000-0000-000000000098',
+				'00000000-0000-0000-0000-000000000001', 'query_status', '{}',
+				1, 'dispatch_once', 'queued', 'none', 'none', 'v3-gate-98',
+				decode(repeat('22', 32), 'hex'), at, at + interval '30 seconds'
+			FROM queued`
+	case "sent":
+		statement = `
+			WITH sent AS (SELECT date_trunc('milliseconds', now()) AS at)
+			INSERT INTO device_commands (
+				id, project_id, device_id, device_type_id, command_type, payload,
+				device_type_revision, delivery_policy, status, confirmation_level,
+				evidence_status, idempotency_key, request_hash, queued_at,
+				dispatch_deadline_at, sent_at, result_deadline_at
+			)
+			SELECT '30000000-0000-0000-0000-000000000098',
+				'10000000-0000-0000-0000-000000000098',
+				'20000000-0000-0000-0000-000000000098',
+				'00000000-0000-0000-0000-000000000001', 'query_status', '{}',
+				1, 'dispatch_once', 'sent', 'transport_sent', 'verified', 'v3-gate-98',
+				decode(repeat('22', 32), 'hex'), at - interval '3 seconds',
+				at + interval '27 seconds', at - interval '2 seconds',
+				at + interval '58 seconds'
+			FROM sent`
+	case "unknown":
+		statement = `
+			WITH finished AS (SELECT date_trunc('milliseconds', now()) AS at)
+			INSERT INTO device_commands (
+				id, project_id, device_id, device_type_id, command_type, payload,
+				device_type_revision, delivery_policy, status, reason_code,
+				confirmation_level, evidence_status, idempotency_key, request_hash,
+				queued_at, dispatch_deadline_at, sent_at, result_deadline_at, finished_at
+			)
+			SELECT '30000000-0000-0000-0000-000000000098',
+				'10000000-0000-0000-0000-000000000098',
+				'20000000-0000-0000-0000-000000000098',
+				'00000000-0000-0000-0000-000000000001', 'query_status', '{}',
+				1, 'dispatch_once', 'unknown', 'provider_delivery_unknown',
+				'transport_sent', 'verified', 'v3-gate-98', decode(repeat('22', 32), 'hex'),
+				at - interval '3 seconds', at + interval '27 seconds',
+				at - interval '2 seconds', at + interval '58 seconds', at
+			FROM finished`
+	default:
+		t.Fatalf("unsupported v3 Command status %q", status)
+	}
+	if _, err := db.Exec(statement); err != nil {
+		t.Fatalf("seed v3 %s Command: %v", status, err)
+	}
+}
+
+func seedPlatformCoreV4Command(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO projects (id, name, api_key_hash)
+		VALUES ('10000000-0000-0000-0000-000000000098', 'v4 rollback gate', decode(repeat('11', 32), 'hex'));
+		INSERT INTO devices (
+			id, project_id, device_type_id, name, provider_code, provider_device_id,
+			access_type, transport_protocol, adapter
+		) VALUES (
+			'20000000-0000-0000-0000-000000000098',
+			'10000000-0000-0000-0000-000000000098',
+			'00000000-0000-0000-0000-000000000001', 'v4 rollback lock',
+			'simulator', '20000000-0000-0000-0000-000000000098',
+			'simulator', 'internal', 'simulator'
+		);
+		WITH queued AS (SELECT date_trunc('milliseconds', now()) AS at)
+		INSERT INTO device_commands (
+			id, project_id, device_id, device_type_id, device_type_code,
+			provider_code, provider_device_id, adapter, command_type, payload,
+			device_type_revision, delivery_policy, dispatch_deadline_ms,
+			provider_request_timeout_ms, result_observation_timeout_ms,
+			retry_allowed, status, confirmation_level, evidence_status,
+			idempotency_key, request_hash, queued_at, dispatch_deadline_at
+		)
+		SELECT '30000000-0000-0000-0000-000000000098',
+			'10000000-0000-0000-0000-000000000098',
+			'20000000-0000-0000-0000-000000000098',
+			'00000000-0000-0000-0000-000000000001', 'smart-lock',
+			'simulator', '20000000-0000-0000-0000-000000000098', 'simulator',
+			'query_status', '{}', 2, 'dispatch_once', 30000, 10000, 60000,
+			false, 'queued', 'none', 'none', 'v4-down-gate-98',
+			decode(repeat('22', 32), 'hex'), at, at + interval '30 seconds'
+		FROM queued
+	`); err != nil {
+		t.Fatalf("seed v4 Command: %v", err)
+	}
+}
+
+func seedCommandEvidenceEvent(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO projects (id, name, api_key_hash)
+		VALUES ('10000000-0000-0000-0000-000000000091', 'evidence rollback', decode(repeat('11', 32), 'hex'));
+		INSERT INTO devices (
+			id, project_id, device_type_id, name, provider_code, provider_device_id,
+			access_type, transport_protocol, adapter
+		) VALUES (
+			'20000000-0000-0000-0000-000000000091', '10000000-0000-0000-0000-000000000091',
+			'00000000-0000-0000-0000-000000000001', 'evidence lock', 'wwtiot', 'EVIDENCE-091',
+			'cloud_api', 'http', 'wwtiot_cloud_api'
+		);
+		INSERT INTO device_commands (
+			id, project_id, device_id, device_type_id, command_type, payload,
+			device_type_revision, delivery_policy, status, confirmation_level, evidence_status,
+			idempotency_key, request_hash, queued_at, dispatch_deadline_at, sent_at, result_deadline_at
+		) VALUES (
+			'30000000-0000-0000-0000-000000000091', '10000000-0000-0000-0000-000000000091',
+			'20000000-0000-0000-0000-000000000091', '00000000-0000-0000-0000-000000000001',
+			'query_status', '{}', 1, 'dispatch_once', 'sent', 'provider_accepted', 'unverified',
+			'evidence-rollback-091', decode(repeat('22', 32), 'hex'), now() - interval '2 seconds',
+			now() + interval '28 seconds', now() - interval '1 second', now() + interval '59 seconds'
+		);
+		INSERT INTO device_command_attempts (
+			id, command_id, attempt_no, adapter, phase, provider_code, provider_request_key,
+			outcome, confirmation_level, evidence_status, lease_token, lease_owner,
+			lease_expires_at, claimed_at, dispatching_at, completed_at
+		) VALUES (
+			'40000000-0000-0000-0000-000000000091', '30000000-0000-0000-0000-000000000091', 1,
+			'wwtiot_cloud_api', 'completed', 'wwtiot', '100000091', 'provider_accepted',
+			'provider_accepted', 'unverified', '50000000-0000-0000-0000-000000000091', 'worker',
+			now() + interval '1 minute', now() - interval '2 seconds', now() - interval '1 second', now()
+		);
+		INSERT INTO device_events (
+			id, project_id, device_id, command_id, event_type, source, payload, occurred_at, deduplication_key
+		) VALUES (
+			'60000000-0000-0000-0000-000000000091', '10000000-0000-0000-0000-000000000091',
+			'20000000-0000-0000-0000-000000000091', '30000000-0000-0000-0000-000000000091',
+			'command.evidence_updated', 'system',
+			'{"status":"sent","attempt_id":"40000000-0000-0000-0000-000000000091","outcome":"provider_accepted","confirmation_level":"provider_accepted","evidence_status":"unverified"}',
+			now(), 'command.evidence_updated:30000000-0000-0000-0000-000000000091:attempt:40000000-0000-0000-0000-000000000091:provider_accepted:provider_accepted:unverified'
+		)
+	`); err != nil {
+		t.Fatalf("seed command evidence Event: %v", err)
+	}
 }
 
 func assertFrozenSchemaBehavior(t *testing.T, db *sql.DB) {
@@ -852,22 +1164,30 @@ func assertFrozenSchemaBehavior(t *testing.T, db *sql.DB) {
 	}
 	if _, err := db.Exec(`
 		INSERT INTO device_commands (
-			id, project_id, device_id, device_type_id, command_type, payload, status, delivery_policy,
-			idempotency_key, request_hash, device_type_revision, queued_at, dispatch_deadline_at
+			id, project_id, device_id, device_type_id, device_type_code, provider_code,
+			provider_device_id, adapter, command_type, payload, status, delivery_policy,
+			idempotency_key, request_hash, device_type_revision, dispatch_deadline_ms,
+			provider_request_timeout_ms, result_observation_timeout_ms, retry_allowed,
+			queued_at, dispatch_deadline_at
 		) VALUES (
-			'30000000-0000-0000-0000-000000000001', $1, $2, $3, 'unlock', '{}', 'queued', 'dispatch_once',
-			'key-1', $4, 1, now(), now() + interval '30 seconds'
+			'30000000-0000-0000-0000-000000000001', $1, $2, $3, 'smart-lock', 'wwtiot',
+			'LOCK-001', 'wwtiot_cloud_api', 'unlock', '{}', 'queued', 'online_only',
+			'key-1', $4, 2, 30000, 10000, 60000, false, now(), now() + interval '30 seconds'
 		)
 	`, project2, device1, deviceType, make([]byte, 32)); err == nil {
 		t.Fatal("command Project must match Device Project")
 	}
 	if _, err := db.Exec(`
 		INSERT INTO device_commands (
-			id, project_id, device_id, device_type_id, command_type, payload, status, delivery_policy,
-			idempotency_key, request_hash, device_type_revision, queued_at, dispatch_deadline_at
+			id, project_id, device_id, device_type_id, device_type_code, provider_code,
+			provider_device_id, adapter, command_type, payload, status, delivery_policy,
+			idempotency_key, request_hash, device_type_revision, dispatch_deadline_ms,
+			provider_request_timeout_ms, result_observation_timeout_ms, retry_allowed,
+			queued_at, dispatch_deadline_at
 		) VALUES (
-			'30000000-0000-0000-0000-000000000001', $1, $2, $3, 'unlock', '{}', 'queued', 'dispatch_once',
-			'key-1', $4, 1, now(), now() + interval '30 seconds'
+			'30000000-0000-0000-0000-000000000001', $1, $2, $3, 'smart-lock', 'wwtiot',
+			'LOCK-001', 'wwtiot_cloud_api', 'unlock', '{}', 'queued', 'online_only',
+			'key-1', $4, 2, 30000, 10000, 60000, false, now(), now() + interval '30 seconds'
 		)
 	`, project1, device1, deviceType, make([]byte, 32)); err != nil {
 		t.Fatal(err)
@@ -902,7 +1222,7 @@ func assertFrozenSchemaBehavior(t *testing.T, db *sql.DB) {
 	assertSQLFails(t, db, `UPDATE device_commands SET status = 'success', sent_at = now(), result_deadline_at = now() + interval '1 minute', confirmation_level = 'provider_accepted', evidence_status = 'verified', finished_at = now() + interval '2 seconds' WHERE id = '30000000-0000-0000-0000-000000000001'`, "success without device final evidence")
 
 	if _, err := db.Exec(`
-		UPDATE device_command_attempts SET phase = 'completed', outcome = 'not_dispatched', completed_at = now()
+		UPDATE device_command_attempts SET phase = 'completed', outcome = 'not_dispatched', reason_code = 'cancelled_by_request', completed_at = now()
 		WHERE id = '40000000-0000-0000-0000-000000000001'
 	`); err != nil {
 		t.Fatal(err)

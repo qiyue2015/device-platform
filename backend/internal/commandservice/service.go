@@ -78,28 +78,12 @@ func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest
 	if err != nil {
 		return CreateResult{}, err
 	}
-	requestHash, err := canonicalRequestHash(deviceID, commandType, payload)
-	if err != nil {
-		return CreateResult{}, err
-	}
-
 	var result CreateResult
 	err = s.store.TransactCommand(ctx, func(tx repository.CommandTx) error {
 		if _, lockErr := tx.Projects().GetForUpdate(ctx, projectID); errors.Is(lockErr, sql.ErrNoRows) {
 			return ErrProjectNotFound
 		} else if lockErr != nil {
 			return lockErr
-		}
-		existing, existingErr := tx.Commands().GetByIdempotencyKey(ctx, projectID, idempotencyKey)
-		if existingErr == nil {
-			if !bytes.Equal(existing.RequestHash, requestHash) {
-				return ErrIdempotencyKeyConflict
-			}
-			result = CreateResult{Command: existing, IdempotentReplay: true}
-			return nil
-		}
-		if !errors.Is(existingErr, sql.ErrNoRows) {
-			return existingErr
 		}
 		device, deviceErr := tx.Devices().GetForUpdate(ctx, deviceID)
 		if errors.Is(deviceErr, sql.ErrNoRows) || deviceErr == nil && device.ProjectID != projectID {
@@ -130,8 +114,27 @@ func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest
 			return err
 		}
 		provider, registered := s.providers[device.ProviderCode]
-		if !registered || provider.IntegrationStatus == domain.ProviderIntegrationUnconfigured {
+		if !registered || provider.IntegrationStatus == domain.ProviderIntegrationUnconfigured ||
+			provider.Code != device.ProviderCode || provider.Adapter != device.Adapter {
 			return ErrProviderNotConfigured
+		}
+		requestHash, hashErr := canonicalRequestHash(device, commandType, payload, profile.Revision, action)
+		if hashErr != nil {
+			return hashErr
+		}
+		existing, existingErr := tx.Commands().GetByIdempotencyKey(ctx, projectID, idempotencyKey)
+		if existingErr == nil {
+			if !bytes.Equal(existing.RequestHash, requestHash) {
+				return ErrIdempotencyKeyConflict
+			}
+			result = CreateResult{Command: existing, IdempotentReplay: true}
+			return nil
+		}
+		if !errors.Is(existingErr, sql.ErrNoRows) {
+			return existingErr
+		}
+		if action.DeliveryPolicy == domain.DeliveryPolicyOnlineOnly && device.ConnectionStatus != domain.ConnectionStatusOnline {
+			return ErrDeviceNotOnline
 		}
 		commandID, idErr := randomUUID(s.random)
 		if idErr != nil {
@@ -140,8 +143,12 @@ func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest
 		now := s.clock.Now().UTC()
 		command := domain.Command{
 			ID: commandID, ProjectID: projectID, DeviceID: device.ID, DeviceTypeID: deviceType.ID,
+			DeviceTypeCode: deviceType.Code, ProviderCode: device.ProviderCode,
+			ProviderDeviceID: device.ProviderDeviceID, Adapter: device.Adapter,
 			CommandType: commandType, Payload: payload, DeviceTypeRevision: profile.Revision,
-			DeliveryPolicy: action.DeliveryPolicy, Status: domain.CommandStatusQueued,
+			DeliveryPolicy: action.DeliveryPolicy, DispatchDeadline: action.DispatchDeadline,
+			ProviderTimeout: action.ProviderRequestTimeout, ResultTimeout: action.ResultObservationTimeout,
+			RetryAllowed: action.RetryAllowed, Status: domain.CommandStatusQueued,
 			ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone,
 			IdempotencyKey: idempotencyKey, RequestHash: requestHash, QueuedAt: now,
 			DispatchDeadlineAt: now.Add(action.DispatchDeadline), CreatedAt: now, UpdatedAt: now,
@@ -198,11 +205,15 @@ func (s *Service) Get(ctx context.Context, scope Scope, commandID string) (Detai
 	if err != nil {
 		return Detail{}, err
 	}
+	results, err := s.store.Commands().ListResults(ctx, commandID)
+	if err != nil {
+		return Detail{}, err
+	}
 	events, err := s.store.Events().ListByCommand(ctx, commandID)
 	if err != nil {
 		return Detail{}, err
 	}
-	return Detail{Command: command, Attempts: attempts, Events: events}, nil
+	return Detail{Command: command, Attempts: attempts, Results: results, Events: events}, nil
 }
 
 func (s *Service) Cancel(ctx context.Context, scope Scope, commandID string, metadata RequestMetadata) (domain.Command, error) {
@@ -268,11 +279,20 @@ func validateActionPayload(action domain.CapabilityAction, payload map[string]an
 	return nil
 }
 
-func canonicalRequestHash(deviceID string, commandType domain.ActionIdentifier, payload map[string]any) ([]byte, error) {
+func canonicalRequestHash(device domain.Device, commandType domain.ActionIdentifier, payload map[string]any, revision int, action domain.CapabilityAction) ([]byte, error) {
 	encoded, err := json.Marshal(map[string]any{
-		"command_type": commandType,
-		"device_id":    deviceID,
-		"payload":      payload,
+		"command_type":                  commandType,
+		"delivery_policy":               action.DeliveryPolicy,
+		"device_id":                     device.ID,
+		"device_type_code":              device.DeviceTypeCode,
+		"device_type_revision":          revision,
+		"dispatch_deadline_ms":          action.DispatchDeadline.Milliseconds(),
+		"normalized_payload":            payload,
+		"provider_code":                 device.ProviderCode,
+		"provider_device_id":            device.ProviderDeviceID,
+		"provider_request_timeout_ms":   action.ProviderRequestTimeout.Milliseconds(),
+		"result_observation_timeout_ms": action.ResultObservationTimeout.Milliseconds(),
+		"retry_allowed":                 action.RetryAllowed,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode canonical Command request: %w", err)

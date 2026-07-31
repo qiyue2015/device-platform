@@ -13,6 +13,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -194,8 +195,9 @@ func webhookRequest(ctx context.Context, delivery domain.WebhookDelivery, attemp
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Device-Platform-Timestamp", fmt.Sprintf("%d", attempt.RequestTimestamp))
-	request.Header.Set("X-Device-Platform-Signature", signature(secret, attempt.RequestTimestamp, delivery.RawBody))
+	request.Header.Set("X-Device-Platform-Signature", signature(secret, attempt.RequestTimestamp, delivery.WebhookSecretVersion, delivery.RawBody))
 	request.Header.Set("X-Device-Platform-Event-ID", delivery.EventID)
+	request.Header.Set("X-Device-Platform-Secret-Version", strconv.Itoa(delivery.WebhookSecretVersion))
 	return request, nil
 }
 
@@ -286,11 +288,11 @@ func (w *Worker) newUUID() (string, error) {
 	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32], nil
 }
 
-func signature(secret string, timestamp int64, body []byte) string {
+func signature(secret string, timestamp int64, secretVersion int, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = fmt.Fprintf(mac, "%d.", timestamp)
+	_, _ = fmt.Fprintf(mac, "v1.%d.%d.", timestamp, secretVersion)
 	_, _ = mac.Write(body)
-	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return "v1=" + hex.EncodeToString(mac.Sum(nil))
 }
 
 func summarizeResponse(response *http.Response) string {

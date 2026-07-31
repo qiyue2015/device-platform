@@ -292,17 +292,19 @@ func transportBeforeSend(result DispatchResult) DispatchResult {
 }
 
 func transportAfterSend(result DispatchResult) DispatchResult {
-	result.Outcome = domain.AttemptOutcomeTransportErrorAfterSend
+	result.Outcome = domain.AttemptOutcomeIndeterminate
 	result.ConfirmationLevel = domain.ConfirmationTransportSent
 	result.EvidenceStatus = domain.EvidenceVerified
+	result.ReasonCode = "provider_delivery_unknown"
 	result.ErrorDetail = "WWTIOT transport failed after request write"
 	return result
 }
 
 func invalidResponse(result DispatchResult, response map[string]any, detail string) DispatchResult {
-	result.Outcome = domain.AttemptOutcomeInvalidResponse
+	result.Outcome = domain.AttemptOutcomeIndeterminate
 	result.ConfirmationLevel = domain.ConfirmationTransportSent
 	result.EvidenceStatus = domain.EvidenceVerified
+	result.ReasonCode = "provider_response_invalid"
 	result.ErrorDetail = truncateText(detail, maxSummaryTextBytes)
 	if result.ResponseSummary == nil {
 		result.ResponseSummary = responseSummary(response)

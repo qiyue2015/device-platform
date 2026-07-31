@@ -107,13 +107,13 @@ func (w *Worker) DispatchNext(ctx context.Context) (bool, error) {
 func (w *Worker) RecoverNext(ctx context.Context) (bool, error) {
 	var recovered bool
 	err := w.store.TransactCommand(ctx, func(tx repository.CommandTx) error {
-		command, _, updated, err := tx.Commands().RecoverNextExpiredDispatching(ctx)
+		command, attempt, updated, err := tx.Commands().RecoverNextExpiredDispatching(ctx)
 		if err != nil || !updated {
 			return err
 		}
 		recovered = true
-		return w.createStatusEvent(ctx, tx, command, domain.CommandStatusSent, domain.EventSourceSystem,
-			"command.status_changed:"+command.ID+":"+string(command.Status))
+		return w.createEvidenceEvent(ctx, tx, command, attempt.ID, domain.AttemptOutcomeIndeterminate, domain.EventSourceSystem,
+			"command.evidence_updated:"+command.ID+":attempt:"+attempt.ID+":indeterminate:transport_sent:unverified")
 	})
 	return recovered, err
 }
@@ -235,25 +235,15 @@ func (w *Worker) claimNext(ctx context.Context, registration AdapterRegistration
 }
 
 func (w *Worker) dispatchClaimed(ctx context.Context, registration AdapterRegistration, command domain.Command, attempt domain.CommandAttempt) error {
-	device, err := w.store.Devices().Get(ctx, command.DeviceID)
-	if err != nil {
-		return fmt.Errorf("load claimed Command Device: %w", err)
-	}
-	if device.ProjectID != command.ProjectID || device.DeviceTypeID != command.DeviceTypeID ||
-		device.ProviderCode != registration.ProviderCode || device.Adapter != registration.AdapterCode ||
+	if command.ProviderCode != registration.ProviderCode || command.Adapter != registration.AdapterCode ||
 		attempt.ProviderCode != registration.ProviderCode || attempt.Adapter != registration.AdapterCode {
 		return ErrRuntimeState
 	}
-	profile, err := w.store.DeviceTypes().GetProfile(ctx, command.DeviceTypeID, command.DeviceTypeRevision)
-	if err != nil {
-		return fmt.Errorf("load claimed Command profile: %w", err)
-	}
-	action, ok := actionFor(profile, command.CommandType)
-	if !ok || action.DeliveryPolicy != command.DeliveryPolicy || action.RetryAllowed {
+	if command.RetryAllowed || command.ProviderTimeout <= 0 || command.ResultTimeout <= 0 {
 		return ErrRuntimeState
 	}
 	request := provideradapter.DispatchRequest{
-		ProviderDeviceID: device.ProviderDeviceID, Action: command.CommandType,
+		ProviderDeviceID: command.ProviderDeviceID, Action: command.CommandType,
 		Payload: command.Payload, ProviderRequestKey: attempt.ProviderRequestKey,
 		AttemptRequestSummary: attempt.RequestSummary,
 	}
@@ -264,11 +254,12 @@ func (w *Worker) dispatchClaimed(ctx context.Context, registration AdapterRegist
 	if err != nil {
 		return w.failBeforeDispatch(ctx, command, attempt, registration.ResultSource, err.Error())
 	}
-	dispatchLeaseDuration := max(w.leaseDuration, action.ProviderRequestTimeout+5*time.Second)
-	if err := w.commitDispatch(ctx, command, attempt, registration.ResultSource, action.ResultObservationTimeout, dispatchLeaseDuration, prepared.RequestSummary()); err != nil {
+	dispatchLeaseDuration := max(w.leaseDuration, command.ProviderTimeout+5*time.Second)
+	dispatched, err := w.commitDispatch(ctx, command, attempt, registration.ResultSource, dispatchLeaseDuration, prepared.RequestSummary())
+	if err != nil || !dispatched {
 		return err
 	}
-	dispatchContext, cancel := context.WithTimeout(ctx, action.ProviderRequestTimeout)
+	dispatchContext, cancel := context.WithTimeout(ctx, command.ProviderTimeout)
 	defer cancel()
 	result := prepared.Dispatch(dispatchContext)
 	return w.persistResult(ctx, registration, command, attempt, result)
@@ -281,7 +272,7 @@ func (w *Worker) failBeforeDispatch(ctx context.Context, command domain.Command,
 		completed, err := tx.Commands().CompleteAttempt(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.CompleteCommandAttemptRequest{
 			Outcome: domain.AttemptOutcomeInvalidRequest, ConfirmationLevel: domain.ConfirmationNone,
 			EvidenceStatus: domain.EvidenceNone, ResponseSummary: map[string]any{},
-			ErrorCode: &reasonCode, ErrorDetail: optional(detail),
+			ReasonCode: &reasonCode, ErrorDetail: optional(detail),
 		})
 		if err != nil {
 			return err
@@ -308,10 +299,46 @@ func (w *Worker) failBeforeDispatch(ctx context.Context, command domain.Command,
 	})
 }
 
-func (w *Worker) commitDispatch(ctx context.Context, command domain.Command, attempt domain.CommandAttempt, source domain.EventSource, resultTimeout, dispatchLeaseDuration time.Duration, requestSummary map[string]any) error {
-	return w.store.TransactCommand(ctx, func(tx repository.CommandTx) error {
+func (w *Worker) commitDispatch(ctx context.Context, command domain.Command, attempt domain.CommandAttempt, source domain.EventSource, dispatchLeaseDuration time.Duration, requestSummary map[string]any) (bool, error) {
+	dispatched := false
+	err := w.store.TransactCommand(ctx, func(tx repository.CommandTx) error {
+		if command.DeliveryPolicy == domain.DeliveryPolicyOnlineOnly {
+			device, err := tx.Devices().GetForUpdate(ctx, command.DeviceID)
+			if err != nil {
+				return err
+			}
+			if device.ConnectionStatus != domain.ConnectionStatusOnline {
+				reasonCode := "device_not_online"
+				completed, err := tx.Commands().CompleteAttempt(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.CompleteCommandAttemptRequest{
+					Outcome: domain.AttemptOutcomeNotDispatched, ConfirmationLevel: domain.ConfirmationNone,
+					EvidenceStatus: domain.EvidenceNone, ResponseSummary: map[string]any{}, ReasonCode: &reasonCode,
+				})
+				if err != nil || !completed {
+					if err == nil {
+						err = ErrLeaseLost
+					}
+					return err
+				}
+				transitioned, err := tx.Commands().TransitionFromAttempt(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.CommandStatusTransition{
+					From: domain.CommandStatusQueued, To: domain.CommandStatusFailed, ReasonCode: &reasonCode,
+					ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone,
+				})
+				if err != nil || !transitioned {
+					if err == nil {
+						err = ErrLeaseLost
+					}
+					return err
+				}
+				failed, err := tx.Commands().Get(ctx, command.ID)
+				if err != nil {
+					return err
+				}
+				return w.createStatusEvent(ctx, tx, failed, domain.CommandStatusQueued, source,
+					"command.status_changed:"+command.ID+":"+string(failed.Status))
+			}
+		}
 		updated, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.MarkDispatchingRequest{
-			ResultObservationTimeout: resultTimeout, DispatchLeaseDuration: dispatchLeaseDuration,
+			ResultObservationTimeout: command.ResultTimeout, DispatchLeaseDuration: dispatchLeaseDuration,
 			RequestSummary: requestSummary,
 		})
 		if err != nil {
@@ -320,6 +347,7 @@ func (w *Worker) commitDispatch(ctx context.Context, command domain.Command, att
 		if !updated {
 			return ErrLeaseLost
 		}
+		dispatched = true
 		sent, err := tx.Commands().Get(ctx, command.ID)
 		if err != nil {
 			return err
@@ -327,18 +355,19 @@ func (w *Worker) commitDispatch(ctx context.Context, command domain.Command, att
 		return w.createStatusEvent(ctx, tx, sent, domain.CommandStatusQueued, source,
 			"command.status_changed:"+command.ID+":"+string(sent.Status))
 	})
+	return dispatched, err
 }
 
 func (w *Worker) persistResult(ctx context.Context, registration AdapterRegistration, command domain.Command, attempt domain.CommandAttempt, result provideradapter.DispatchResult) error {
 	return w.store.TransactCommand(ctx, func(tx repository.CommandTx) error {
-		reasonCode, target, err := resultTransition(result.Outcome)
+		reasonCode, target, err := resultTransition(result)
 		if err != nil {
 			return err
 		}
 		completed, err := tx.Commands().CompleteAttempt(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.CompleteCommandAttemptRequest{
 			Outcome: result.Outcome, ConfirmationLevel: result.ConfirmationLevel,
 			EvidenceStatus: result.EvidenceStatus, ResponseSummary: result.ResponseSummary,
-			ErrorCode: reasonCode, ErrorDetail: optional(truncate(result.ErrorDetail, 4096)),
+			ReasonCode: reasonCode, ErrorDetail: optional(truncate(result.ErrorDetail, 4096)),
 		})
 		if err != nil {
 			return err
@@ -346,7 +375,7 @@ func (w *Worker) persistResult(ctx context.Context, registration AdapterRegistra
 		if !completed {
 			return ErrLeaseLost
 		}
-		if result.Outcome == domain.AttemptOutcomeProviderAccepted {
+		if result.Outcome == domain.AttemptOutcomeProviderAccepted || result.Outcome == domain.AttemptOutcomeIndeterminate {
 			updated, updateErr := tx.Commands().UpdateEvidenceFromAttempt(ctx, command.ID, attempt.ID, attempt.LeaseToken, domain.CommandStatusSent)
 			if updateErr != nil {
 				return updateErr
@@ -384,18 +413,19 @@ func (w *Worker) persistResult(ctx context.Context, registration AdapterRegistra
 	})
 }
 
-func resultTransition(outcome domain.AttemptOutcome) (*string, domain.CommandStatus, error) {
+func resultTransition(result provideradapter.DispatchResult) (*string, domain.CommandStatus, error) {
 	var reason string
 	var target domain.CommandStatus
-	switch outcome {
+	switch result.Outcome {
 	case domain.AttemptOutcomeProviderAccepted:
 		return nil, domain.CommandStatusSent, nil
 	case domain.AttemptOutcomeTransportErrorBeforeSend:
 		reason, target = "provider_transport_error", domain.CommandStatusFailed
-	case domain.AttemptOutcomeTransportErrorAfterSend:
-		reason, target = "provider_delivery_unknown", domain.CommandStatusUnknown
-	case domain.AttemptOutcomeInvalidResponse:
-		reason, target = "provider_response_invalid", domain.CommandStatusUnknown
+	case domain.AttemptOutcomeIndeterminate:
+		if result.ReasonCode != "provider_delivery_unknown" && result.ReasonCode != "provider_response_invalid" {
+			return nil, "", ErrRuntimeState
+		}
+		reason, target = result.ReasonCode, domain.CommandStatusSent
 	case domain.AttemptOutcomeProviderRejected:
 		reason, target = "provider_rejected", domain.CommandStatusFailed
 	default:

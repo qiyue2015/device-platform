@@ -52,7 +52,7 @@ func TestPersistentWorkerWWTIOTResultMatrix(t *testing.T) {
 			name: "provider rejected fails",
 			result: provideradapter.DispatchResult{
 				Outcome: domain.AttemptOutcomeProviderRejected, ConfirmationLevel: domain.ConfirmationTransportSent,
-				EvidenceStatus: domain.EvidenceUnverified, ResponseSummary: map[string]any{"result": "denied"}, ErrorDetail: "denied",
+				EvidenceStatus: domain.EvidenceUnverified, ResponseSummary: map[string]any{"result": "denied"}, ReasonCode: "provider_rejected", ErrorDetail: "denied",
 			},
 			status: domain.CommandStatusFailed, reasonCode: "provider_rejected",
 		},
@@ -60,25 +60,25 @@ func TestPersistentWorkerWWTIOTResultMatrix(t *testing.T) {
 			name: "before send transport fails",
 			result: provideradapter.DispatchResult{
 				Outcome: domain.AttemptOutcomeTransportErrorBeforeSend, ConfirmationLevel: domain.ConfirmationNone,
-				EvidenceStatus: domain.EvidenceNone, ResponseSummary: map[string]any{}, ErrorDetail: "dial failed",
+				EvidenceStatus: domain.EvidenceNone, ResponseSummary: map[string]any{}, ReasonCode: "provider_transport_error", ErrorDetail: "dial failed",
 			},
 			status: domain.CommandStatusFailed, reasonCode: "provider_transport_error",
 		},
 		{
 			name: "after send transport is unknown",
 			result: provideradapter.DispatchResult{
-				Outcome: domain.AttemptOutcomeTransportErrorAfterSend, ConfirmationLevel: domain.ConfirmationTransportSent,
-				EvidenceStatus: domain.EvidenceVerified, ResponseSummary: map[string]any{}, ErrorDetail: "connection closed",
+				Outcome: domain.AttemptOutcomeIndeterminate, ConfirmationLevel: domain.ConfirmationTransportSent,
+				EvidenceStatus: domain.EvidenceVerified, ResponseSummary: map[string]any{}, ReasonCode: "provider_delivery_unknown", ErrorDetail: "connection closed",
 			},
-			status: domain.CommandStatusUnknown, reasonCode: "provider_delivery_unknown",
+			status: domain.CommandStatusSent,
 		},
 		{
 			name: "invalid response is unknown",
 			result: provideradapter.DispatchResult{
-				Outcome: domain.AttemptOutcomeInvalidResponse, ConfirmationLevel: domain.ConfirmationTransportSent,
-				EvidenceStatus: domain.EvidenceVerified, ResponseSummary: map[string]any{"result": "ok"}, ErrorDetail: "echo mismatch",
+				Outcome: domain.AttemptOutcomeIndeterminate, ConfirmationLevel: domain.ConfirmationTransportSent,
+				EvidenceStatus: domain.EvidenceVerified, ResponseSummary: map[string]any{"result": "ok"}, ReasonCode: "provider_response_invalid", ErrorDetail: "echo mismatch",
 			},
-			status: domain.CommandStatusUnknown, reasonCode: "provider_response_invalid",
+			status: domain.CommandStatusSent,
 		},
 	}
 	for _, test := range tests {
@@ -119,13 +119,13 @@ func TestPersistentWorkerWWTIOTResultMatrix(t *testing.T) {
 				if events[0].EventType != domain.EventTypeCommandStatusChanged || events[0].Payload["from"] != "queued" || events[0].Payload["to"] != "sent" {
 					t.Fatalf("dispatch status Event=%+v", events[0])
 				}
-				if test.result.Outcome == domain.AttemptOutcomeProviderAccepted {
+				if test.result.Outcome == domain.AttemptOutcomeProviderAccepted || test.result.Outcome == domain.AttemptOutcomeIndeterminate {
 					if events[1].EventType != domain.EventTypeCommandEvidenceUpdated ||
 						events[1].Payload["status"] != "sent" || events[1].Payload["attempt_id"] != attempt.ID ||
-						events[1].Payload["outcome"] != "provider_accepted" ||
-						events[1].Payload["confirmation_level"] != "provider_accepted" ||
-						events[1].Payload["evidence_status"] != "unverified" ||
-						!strings.Contains(events[1].DeduplicationKey, ":attempt:"+attempt.ID+":provider_accepted:provider_accepted:unverified") {
+						events[1].Payload["outcome"] != string(test.result.Outcome) ||
+						events[1].Payload["confirmation_level"] != string(test.result.ConfirmationLevel) ||
+						events[1].Payload["evidence_status"] != string(test.result.EvidenceStatus) ||
+						!strings.Contains(events[1].DeduplicationKey, ":attempt:"+attempt.ID+":"+string(test.result.Outcome)) {
 						t.Fatalf("Provider acceptance evidence Event=%+v", events[1])
 					}
 				} else if events[1].EventType != domain.EventTypeCommandStatusChanged ||
@@ -148,17 +148,19 @@ func TestPersistentWorkerWWTIOTResultMatrix(t *testing.T) {
 
 func TestPersistentWorkerSimulatorResultMatrix(t *testing.T) {
 	tests := []struct {
-		outcome      domain.SimulatorOutcome
-		status       domain.CommandStatus
-		reason       string
-		confirmation domain.ConfirmationLevel
-		evidence     domain.EvidenceStatus
+		outcome       domain.SimulatorOutcome
+		attempt       domain.AttemptOutcome
+		status        domain.CommandStatus
+		reason        string
+		attemptReason string
+		confirmation  domain.ConfirmationLevel
+		evidence      domain.EvidenceStatus
 	}{
-		{domain.SimulatorOutcomeProviderAccepted, domain.CommandStatusSent, "", domain.ConfirmationProviderAccepted, domain.EvidenceVerified},
-		{domain.SimulatorOutcomeProviderRejected, domain.CommandStatusFailed, "provider_rejected", domain.ConfirmationTransportSent, domain.EvidenceVerified},
-		{domain.SimulatorOutcomeTransportErrorBeforeSend, domain.CommandStatusFailed, "provider_transport_error", domain.ConfirmationNone, domain.EvidenceNone},
-		{domain.SimulatorOutcomeTransportErrorAfterSend, domain.CommandStatusUnknown, "provider_delivery_unknown", domain.ConfirmationTransportSent, domain.EvidenceVerified},
-		{domain.SimulatorOutcomeInvalidResponse, domain.CommandStatusUnknown, "provider_response_invalid", domain.ConfirmationTransportSent, domain.EvidenceVerified},
+		{domain.SimulatorOutcomeProviderAccepted, domain.AttemptOutcomeProviderAccepted, domain.CommandStatusSent, "", "", domain.ConfirmationProviderAccepted, domain.EvidenceVerified},
+		{domain.SimulatorOutcomeProviderRejected, domain.AttemptOutcomeProviderRejected, domain.CommandStatusFailed, "provider_rejected", "provider_rejected", domain.ConfirmationTransportSent, domain.EvidenceVerified},
+		{domain.SimulatorOutcomeTransportErrorBeforeSend, domain.AttemptOutcomeTransportErrorBeforeSend, domain.CommandStatusFailed, "provider_transport_error", "provider_transport_error", domain.ConfirmationNone, domain.EvidenceNone},
+		{domain.SimulatorOutcomeTransportErrorAfterSend, domain.AttemptOutcomeIndeterminate, domain.CommandStatusSent, "", "provider_delivery_unknown", domain.ConfirmationTransportSent, domain.EvidenceVerified},
+		{domain.SimulatorOutcomeInvalidResponse, domain.AttemptOutcomeIndeterminate, domain.CommandStatusSent, "", "provider_response_invalid", domain.ConfirmationTransportSent, domain.EvidenceVerified},
 	}
 	for _, test := range tests {
 		t.Run(string(test.outcome), func(t *testing.T) {
@@ -180,7 +182,7 @@ func TestPersistentWorkerSimulatorResultMatrix(t *testing.T) {
 					t.Fatalf("Simulator fabricated Device result: %s", command.Status)
 				}
 				attempts, err := store.Commands().ListAttempts(context.Background(), workerCommandID)
-				if err != nil || len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != domain.AttemptOutcome(test.outcome) {
+				if err != nil || len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != test.attempt || pointerValue(attempts[0].ReasonCode) != test.attemptReason {
 					t.Fatalf("Simulator Attempts=%+v err=%v", attempts, err)
 				}
 				attempt := attempts[0]
@@ -191,10 +193,10 @@ func TestPersistentWorkerSimulatorResultMatrix(t *testing.T) {
 				if err != nil || len(events) != 2 || events[0].Source != domain.EventSourceSimulator || events[1].Source != domain.EventSourceSimulator {
 					t.Fatalf("Simulator Events=%+v err=%v", events, err)
 				}
-				if test.outcome == domain.SimulatorOutcomeProviderAccepted {
+				if test.outcome == domain.SimulatorOutcomeProviderAccepted || test.outcome == domain.SimulatorOutcomeTransportErrorAfterSend || test.outcome == domain.SimulatorOutcomeInvalidResponse {
 					if events[1].EventType != domain.EventTypeCommandEvidenceUpdated || events[1].Payload["attempt_id"] != attempt.ID ||
-						events[1].Payload["status"] != "sent" || events[1].Payload["outcome"] != "provider_accepted" ||
-						events[1].Payload["confirmation_level"] != "provider_accepted" || events[1].Payload["evidence_status"] != "verified" {
+						events[1].Payload["status"] != "sent" || events[1].Payload["outcome"] != string(*attempt.Outcome) ||
+						events[1].Payload["confirmation_level"] != string(test.confirmation) || events[1].Payload["evidence_status"] != string(test.evidence) {
 						t.Fatalf("Simulator evidence Event=%+v", events[1])
 					}
 					var rawBody []byte
@@ -254,7 +256,7 @@ func TestPersistentWorkerSimulatorClaimSnapshotSurvivesConfigChangeAndReclaim(t 
 	})
 }
 
-func TestPersistentWorkerSimulatorProfileTimeoutIsAfterSend(t *testing.T) {
+func TestPersistentWorkerSimulatorUsesFrozenTimeoutInsteadOfFutureProfile(t *testing.T) {
 	withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
 		setSimulatorConfig(t, store, domain.SimulatorOutcomeTransportErrorBeforeSend, 100*time.Millisecond)
 		seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
@@ -265,11 +267,11 @@ func TestPersistentWorkerSimulatorProfileTimeoutIsAfterSend(t *testing.T) {
 		if err != nil || !worked {
 			t.Fatalf("DispatchNext worked=%v err=%v", worked, err)
 		}
-		assertCommandStatus(t, store, domain.CommandStatusUnknown, "provider_delivery_unknown")
+		assertCommandStatus(t, store, domain.CommandStatusFailed, "provider_transport_error")
 		attempts, err := store.Commands().ListAttempts(context.Background(), workerCommandID)
 		if err != nil || len(attempts) != 1 || attempts[0].Outcome == nil ||
-			*attempts[0].Outcome != domain.AttemptOutcomeTransportErrorAfterSend ||
-			attempts[0].ConfirmationLevel != domain.ConfirmationTransportSent || attempts[0].EvidenceStatus != domain.EvidenceVerified {
+			*attempts[0].Outcome != domain.AttemptOutcomeTransportErrorBeforeSend ||
+			attempts[0].ConfirmationLevel != domain.ConfirmationNone || attempts[0].EvidenceStatus != domain.EvidenceNone {
 			t.Fatalf("timeout Attempt=%+v err=%v", attempts, err)
 		}
 	})
@@ -549,11 +551,14 @@ func TestPersistentWorkerNearDispatchDeadlineKeepsDispatchLease(t *testing.T) {
 	})
 }
 
-func TestPersistentWorkerEnforcesProfileProviderRequestTimeout(t *testing.T) {
-	withWorkerDatabase(t, func(_ *sql.DB, store *repository.PostgresStore) {
+func TestPersistentWorkerEnforcesFrozenProviderRequestTimeout(t *testing.T) {
+	withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
 		seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
+		if _, err := db.Exec(`UPDATE device_commands SET provider_request_timeout_ms = 20 WHERE id = $1`, workerCommandID); err != nil {
+			t.Fatal(err)
+		}
 		adapter := &fakeAdapter{configured: true, result: acceptedResult(), delay: time.Second}
-		profileStore := &providerTimeoutStore{PostgresStore: store, timeout: 20 * time.Millisecond}
+		profileStore := &providerTimeoutStore{PostgresStore: store, timeout: time.Second}
 		worker := newTestWorker(t, profileStore, adapter, nil)
 
 		startedAt := time.Now()
@@ -561,12 +566,12 @@ func TestPersistentWorkerEnforcesProfileProviderRequestTimeout(t *testing.T) {
 		if err != nil || !worked {
 			t.Fatalf("DispatchNext worked=%v err=%v", worked, err)
 		}
-		if elapsed := time.Since(startedAt); elapsed >= time.Second {
-			t.Fatalf("Provider request ignored profile timeout: elapsed=%s", elapsed)
+		if elapsed := time.Since(startedAt); elapsed >= 500*time.Millisecond {
+			t.Fatalf("Provider request ignored frozen timeout: elapsed=%s", elapsed)
 		}
-		assertCommandStatus(t, store, domain.CommandStatusFailed, "provider_transport_error")
+		assertCommandStatus(t, store, domain.CommandStatusSent, "")
 		attempts, err := store.Commands().ListAttempts(context.Background(), workerCommandID)
-		if err != nil || len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != domain.AttemptOutcomeTransportErrorBeforeSend {
+		if err != nil || len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != domain.AttemptOutcomeIndeterminate || pointerValue(attempts[0].ReasonCode) != "provider_delivery_unknown" {
 			t.Fatalf("timed-out Attempt=%+v err=%v", attempts, err)
 		}
 		if adapter.calls.Load() != 1 {
@@ -606,11 +611,11 @@ func TestPersistentWorkerCrashRecoveryAndLateResultFencing(t *testing.T) {
 			t.Fatalf("late result error=%v, want ErrLeaseLost", err)
 		}
 		command, err := store.Commands().Get(context.Background(), workerCommandID)
-		if err != nil || command.Status != domain.CommandStatusUnknown || pointerValue(command.ReasonCode) != "provider_delivery_unknown" {
+		if err != nil || command.Status != domain.CommandStatusSent || command.ReasonCode != nil {
 			t.Fatalf("recovered Command=%+v err=%v", command, err)
 		}
 		attempts, _ := store.Commands().ListAttempts(context.Background(), workerCommandID)
-		if len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != domain.AttemptOutcomeTransportErrorAfterSend || adapter.calls.Load() != 1 {
+		if len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != domain.AttemptOutcomeIndeterminate || adapter.calls.Load() != 1 {
 			t.Fatalf("crash evidence/replay mismatch: attempts=%+v calls=%d", attempts, adapter.calls.Load())
 		}
 		again, err := worker.RecoverNext(context.Background())
@@ -639,8 +644,9 @@ func TestPersistentWorkerCrashAfterSentCommitDoesNotDispatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := worker.commitDispatch(context.Background(), command, attempt, domain.EventSourceSystem, time.Minute, 20*time.Millisecond, prepared.RequestSummary()); err != nil {
-			t.Fatal(err)
+		dispatched, err := worker.commitDispatch(context.Background(), command, attempt, domain.EventSourceSystem, 20*time.Millisecond, prepared.RequestSummary())
+		if err != nil || !dispatched {
+			t.Fatalf("commitDispatch=%v err=%v", dispatched, err)
 		}
 		if calls := adapter.calls.Load(); calls != 0 {
 			t.Fatalf("committing sent state performed %d Adapter dispatch calls", calls)
@@ -652,7 +658,7 @@ func TestPersistentWorkerCrashAfterSentCommitDoesNotDispatch(t *testing.T) {
 		if err != nil || !recovered {
 			t.Fatalf("RecoverNext=%v err=%v", recovered, err)
 		}
-		assertCommandStatus(t, store, domain.CommandStatusUnknown, "provider_delivery_unknown")
+		assertCommandStatus(t, store, domain.CommandStatusSent, "")
 		current, err := store.Commands().Get(context.Background(), workerCommandID)
 		if err != nil || current.ConfirmationLevel != domain.ConfirmationTransportSent || current.EvidenceStatus != domain.EvidenceUnverified {
 			t.Fatalf("recovered Command evidence=%+v err=%v", current, err)
@@ -700,8 +706,9 @@ func TestPersistentWorkerRunResumesQueuedAndExpiredDispatching(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := crashed.commitDispatch(context.Background(), command, attempt, domain.EventSourceSystem, time.Minute, 20*time.Millisecond, prepared.RequestSummary()); err != nil {
-				t.Fatal(err)
+			dispatched, err := crashed.commitDispatch(context.Background(), command, attempt, domain.EventSourceSystem, 20*time.Millisecond, prepared.RequestSummary())
+			if err != nil || !dispatched {
+				t.Fatalf("commitDispatch=%v err=%v", dispatched, err)
 			}
 			time.Sleep(25 * time.Millisecond)
 
@@ -710,9 +717,9 @@ func TestPersistentWorkerRunResumesQueuedAndExpiredDispatching(t *testing.T) {
 			})
 			runWorkerUntil(t, restarted, func() bool {
 				command, err := store.Commands().Get(context.Background(), workerCommandID)
-				return err == nil && command.Status == domain.CommandStatusUnknown
+				return err == nil && command.Status == domain.CommandStatusSent
 			})
-			assertCommandStatus(t, store, domain.CommandStatusUnknown, "provider_delivery_unknown")
+			assertCommandStatus(t, store, domain.CommandStatusSent, "")
 			if adapter.calls.Load() != 0 {
 				t.Fatalf("restart replayed expired dispatching Attempt: calls=%d", adapter.calls.Load())
 			}
@@ -920,6 +927,7 @@ func TestPersistentWorkerDeadlineDiscovery(t *testing.T) {
 					UPDATE device_commands
 					SET status = $2, confirmation_level = $3, evidence_status = $4,
 						queued_at = now() - interval '3 seconds',
+						dispatch_deadline_at = now() - interval '3 seconds' + dispatch_deadline_ms * interval '1 millisecond',
 						sent_at = now() - interval '2 seconds',
 						result_deadline_at = now() - interval '1 second'
 					WHERE id = $1
@@ -1034,8 +1042,8 @@ func (p *fakePrepared) Dispatch(ctx context.Context) provideradapter.DispatchRes
 		select {
 		case <-ctx.Done():
 			return provideradapter.DispatchResult{
-				Outcome:           domain.AttemptOutcomeTransportErrorBeforeSend,
-				ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone,
+				Outcome: domain.AttemptOutcomeIndeterminate, ConfirmationLevel: domain.ConfirmationTransportSent,
+				EvidenceStatus: domain.EvidenceVerified, ReasonCode: "provider_delivery_unknown",
 			}
 		case <-p.adapter.release:
 		}
@@ -1046,8 +1054,8 @@ func (p *fakePrepared) Dispatch(ctx context.Context) provideradapter.DispatchRes
 		select {
 		case <-ctx.Done():
 			return provideradapter.DispatchResult{
-				Outcome:           domain.AttemptOutcomeTransportErrorBeforeSend,
-				ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone,
+				Outcome: domain.AttemptOutcomeIndeterminate, ConfirmationLevel: domain.ConfirmationTransportSent,
+				EvidenceStatus: domain.EvidenceVerified, ReasonCode: "provider_delivery_unknown",
 			}
 		case <-timer.C:
 		}
@@ -1135,14 +1143,19 @@ func seedFairnessCommands(t *testing.T, store *repository.PostgresStore) {
 	secondWWTIOT.IdempotencyKey = "worker-key-2"
 	secondWWTIOT.RequestHash = bytes.Repeat([]byte{0x94}, 32)
 	secondWWTIOT.QueuedAt = first.QueuedAt.Add(time.Microsecond)
+	secondWWTIOT.DispatchDeadlineAt = secondWWTIOT.QueuedAt.Add(secondWWTIOT.DispatchDeadline)
 	secondWWTIOT.CreatedAt = secondWWTIOT.QueuedAt
 	secondWWTIOT.UpdatedAt = secondWWTIOT.QueuedAt
 	simulatorCommand := first
 	simulatorCommand.ID = "93000000-0000-4000-8000-000000000003"
 	simulatorCommand.DeviceID = "92000000-0000-4000-8000-000000000003"
+	simulatorCommand.ProviderCode = domain.ProviderCodeSimulator
+	simulatorCommand.ProviderDeviceID = simulatorCommand.DeviceID
+	simulatorCommand.Adapter = domain.AdapterSimulator
 	simulatorCommand.IdempotencyKey = "worker-key-3"
 	simulatorCommand.RequestHash = bytes.Repeat([]byte{0x95}, 32)
 	simulatorCommand.QueuedAt = first.QueuedAt.Add(2 * time.Microsecond)
+	simulatorCommand.DispatchDeadlineAt = simulatorCommand.QueuedAt.Add(simulatorCommand.DispatchDeadline)
 	simulatorCommand.CreatedAt = simulatorCommand.QueuedAt
 	simulatorCommand.UpdatedAt = simulatorCommand.QueuedAt
 	if err := store.TransactCommand(ctx, func(tx repository.CommandTx) error {
@@ -1206,6 +1219,13 @@ func makeWorkerDeviceSimulator(t *testing.T, db *sql.DB) {
 	`, workerDeviceID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`
+		UPDATE device_commands
+		SET provider_code = 'simulator', provider_device_id = device_id::text, adapter = 'simulator'
+		WHERE device_id = $1
+	`, workerDeviceID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func runWorkerUntil(t *testing.T, worker *Worker, done func() bool) {
@@ -1244,7 +1264,8 @@ func seedWorkerCommand(t *testing.T, store *repository.PostgresStore, dispatchDe
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	dispatchDeadline = dispatchDeadline.UTC().Truncate(time.Millisecond)
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	if !dispatchDeadline.After(now) {
 		now = dispatchDeadline.Add(-30 * time.Second).UTC().Truncate(time.Microsecond)
 	}
@@ -1279,8 +1300,12 @@ func seedWorkerCommand(t *testing.T, store *repository.PostgresStore, dispatchDe
 		}
 		return tx.Commands().Create(ctx, domain.Command{
 			ID: workerCommandID, ProjectID: workerProjectID, DeviceID: workerDeviceID, DeviceTypeID: deviceType.ID,
+			DeviceTypeCode: domain.DeviceTypeSmartLock, ProviderCode: domain.ProviderCodeWWTIOT,
+			ProviderDeviceID: "LOCK-WORKER-1", Adapter: domain.AdapterWWTIOTCloudAPI,
 			CommandType: "unlock", Payload: map[string]any{}, DeviceTypeRevision: 1,
 			DeliveryPolicy: domain.DeliveryPolicyDispatchOnce, Status: domain.CommandStatusQueued,
+			DispatchDeadline: dispatchDeadline.Sub(now), ProviderTimeout: 3 * time.Second,
+			ResultTimeout: time.Minute, RetryAllowed: false,
 			ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone,
 			IdempotencyKey: "worker-key", RequestHash: bytes.Repeat([]byte{0x93}, 32),
 			QueuedAt: now, DispatchDeadlineAt: dispatchDeadline, CreatedAt: now, UpdatedAt: now,

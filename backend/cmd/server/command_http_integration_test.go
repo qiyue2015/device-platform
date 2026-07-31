@@ -31,7 +31,7 @@ func TestCommandHTTPPostgresLifecycleIsolationAndValidation(t *testing.T) {
 		commandID := requiredStringField(t, createdData, "id")
 		if createdData["status"] != "queued" || createdData["delivery_policy"] != "dispatch_once" ||
 			createdData["confirmation_level"] != "none" || createdData["evidence_status"] != "none" ||
-			createdData["device_type_revision"] != float64(1) || len(createdData["payload"].(map[string]interface{})) != 0 {
+			createdData["device_type_revision"] != float64(2) || len(createdData["payload"].(map[string]interface{})) != 0 {
 			t.Fatalf("created Command = %+v", createdData)
 		}
 		if _, exists := createdData["attempts"]; exists {
@@ -57,12 +57,16 @@ func TestCommandHTTPPostgresLifecycleIsolationAndValidation(t *testing.T) {
 		assertErrorCode(t, doRequest(t, server, http.MethodPost, "/v1/open/device-commands",
 			commandCreateBody("", secondDevice, "lock", "foreign-device", ""), openFirst), http.StatusNotFound, "not_found")
 
+		for _, action := range []string{"unlock", "lock"} {
+			assertErrorCode(t, doRequest(t, server, http.MethodPost, "/v1/open/device-commands",
+				commandCreateBody("", firstDevice, action, "offline-"+action, `{}`), openFirst), http.StatusConflict, "device_not_online")
+		}
 		secondCommand := responseDataObject(t, assertEnvelope(t, doRequest(t, server, http.MethodPost, "/v1/open/device-commands",
-			commandCreateBody("", firstDevice, "lock", "command-key-2", `{}`), openFirst), http.StatusCreated, true))
+			commandCreateBody("", firstDevice, "query_status", "command-key-2", `{}`), openFirst), http.StatusCreated, true))
 		secondCommandID := requiredStringField(t, secondCommand, "id")
 		assertPaginatedEnvelope(t, doRequest(t, server, http.MethodGet,
-			"/v1/device-commands?project_id="+firstProject.ID+"&device_id="+firstDevice+"&command_type=lock&status=queued&page=1&page_size=1", "", admin),
-			http.StatusOK, 1, 1, 1)
+			"/v1/device-commands?project_id="+firstProject.ID+"&device_id="+firstDevice+"&command_type=query_status&status=queued&page=1&page_size=1", "", admin),
+			http.StatusOK, 1, 1, 2)
 		assertPaginatedEnvelope(t, doRequest(t, server, http.MethodGet, "/v1/open/device-commands", "", openSecond), http.StatusOK, 1, 20, 0)
 		for _, path := range []string{
 			"/v1/device-commands?unknown=true",
@@ -76,6 +80,9 @@ func TestCommandHTTPPostgresLifecycleIsolationAndValidation(t *testing.T) {
 		detailData := responseDataObject(t, assertEnvelope(t, doRequest(t, server, http.MethodGet, "/v1/device-commands/"+secondCommandID, "", admin), http.StatusOK, true))
 		if attempts, ok := detailData["attempts"].([]interface{}); !ok || len(attempts) != 0 {
 			t.Fatalf("Command attempts = %#v", detailData["attempts"])
+		}
+		if results, ok := detailData["results"].([]interface{}); !ok || len(results) != 0 {
+			t.Fatalf("Command results = %#v", detailData["results"])
 		}
 		if events, ok := detailData["events"].([]interface{}); !ok || len(events) != 1 || events[0].(map[string]interface{})["event_type"] != "command.created" {
 			t.Fatalf("Command events = %#v", detailData["events"])

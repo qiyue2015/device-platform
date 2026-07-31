@@ -12,7 +12,6 @@ func TestCommandTransitionsMatchFrozenContract(t *testing.T) {
 		{CommandStatusSent, CommandStatusSuccess},
 		{CommandStatusSent, CommandStatusFailed},
 		{CommandStatusSent, CommandStatusTimeout},
-		{CommandStatusSent, CommandStatusUnknown},
 		{CommandStatusAcked, CommandStatusSuccess},
 		{CommandStatusAcked, CommandStatusFailed},
 		{CommandStatusAcked, CommandStatusTimeout},
@@ -22,7 +21,7 @@ func TestCommandTransitionsMatchFrozenContract(t *testing.T) {
 			t.Fatalf("expected %s -> %s to be allowed", transition[0], transition[1])
 		}
 	}
-	for _, terminal := range []CommandStatus{CommandStatusSuccess, CommandStatusFailed, CommandStatusTimeout, CommandStatusCancelled, CommandStatusUnknown} {
+	for _, terminal := range []CommandStatus{CommandStatusSuccess, CommandStatusFailed, CommandStatusTimeout, CommandStatusCancelled} {
 		if !terminal.IsTerminal() {
 			t.Fatalf("expected %s to be terminal", terminal)
 		}

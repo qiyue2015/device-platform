@@ -28,6 +28,7 @@ type DispatchResult struct {
 	HTTPStatus        int
 	RequestSummary    map[string]any
 	ResponseSummary   map[string]any
+	ReasonCode        string
 	ErrorDetail       string
 }
 

@@ -18,6 +18,7 @@ var (
 	ErrWebhookDeliveryNotFound    = errors.New("webhook delivery not found")
 	ErrWebhookDeliveryNotDead     = errors.New("webhook delivery not dead")
 	ErrWebhookNotConfigured       = errors.New("webhook not configured")
+	ErrCommandResultConflict      = errors.New("CommandResult deduplication conflict")
 )
 
 type Store interface {
@@ -79,6 +80,7 @@ type CommandTx interface {
 	DeviceTypes() DeviceTypeQueries
 	Devices() DeviceRepository
 	Commands() CommandRepository
+	Results() CommandResultRepository
 	Events() EventRepository
 	Webhooks() WebhookRepository
 	Audits() AuditRepository
@@ -97,6 +99,7 @@ type Tx interface {
 	DeviceTypes() DeviceTypeQueries
 	Devices() DeviceRepository
 	Commands() CommandRepository
+	Results() CommandResultRepository
 	Messages() RawMessageRepository
 	Events() EventRepository
 	Webhooks() WebhookRepository
@@ -221,7 +224,7 @@ type CompleteCommandAttemptRequest struct {
 	ConfirmationLevel domain.ConfirmationLevel
 	EvidenceStatus    domain.EvidenceStatus
 	ResponseSummary   map[string]any
-	ErrorCode         *string
+	ReasonCode        *string
 	ErrorDetail       *string
 }
 
@@ -240,6 +243,11 @@ type CommandStatusTransition struct {
 	EvidenceStatus    domain.EvidenceStatus
 }
 
+type CommandResultAggregation struct {
+	PreviousStatus domain.CommandStatus
+	Command        domain.Command
+}
+
 type VerifiedEvidenceUpdateRequest struct {
 	AttemptID                  string
 	RawMessageID               string
@@ -254,6 +262,7 @@ type CommandQueries interface {
 	GetByIdempotencyKey(ctx context.Context, projectID, idempotencyKey string) (domain.Command, error)
 	List(ctx context.Context, request ListCommandsRequest) ([]domain.Command, int64, error)
 	ListAttempts(ctx context.Context, commandID string) ([]domain.CommandAttempt, error)
+	ListResults(ctx context.Context, commandID string) ([]domain.CommandResult, error)
 }
 
 type ListCommandsRequest struct {
@@ -291,6 +300,12 @@ type CommandRepository interface {
 	UpdateEvidenceFromAttempt(ctx context.Context, commandID, attemptID, expectedLeaseToken string, expectedStatus domain.CommandStatus) (bool, error)
 	TransitionFromAttempt(ctx context.Context, commandID, attemptID, expectedLeaseToken string, transition CommandStatusTransition) (bool, error)
 	UpdateProviderAcceptanceFromVerifiedMessage(ctx context.Context, commandID string, request VerifiedEvidenceUpdateRequest) (bool, error)
+	ApplyResult(ctx context.Context, result domain.CommandResult) (CommandResultAggregation, error)
+}
+
+type CommandResultRepository interface {
+	GetByDeduplicationKey(ctx context.Context, source domain.EventSource, deduplicationKey string) (domain.CommandResult, error)
+	Create(ctx context.Context, result domain.CommandResult) error
 }
 
 type RawMessageRepository interface {

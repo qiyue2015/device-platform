@@ -20,8 +20,8 @@ func TestAdapterResultMatrix(t *testing.T) {
 		{domain.SimulatorOutcomeProviderAccepted, domain.AttemptOutcomeProviderAccepted, domain.ConfirmationProviderAccepted, domain.EvidenceVerified, true},
 		{domain.SimulatorOutcomeProviderRejected, domain.AttemptOutcomeProviderRejected, domain.ConfirmationTransportSent, domain.EvidenceVerified, true},
 		{domain.SimulatorOutcomeTransportErrorBeforeSend, domain.AttemptOutcomeTransportErrorBeforeSend, domain.ConfirmationNone, domain.EvidenceNone, false},
-		{domain.SimulatorOutcomeTransportErrorAfterSend, domain.AttemptOutcomeTransportErrorAfterSend, domain.ConfirmationTransportSent, domain.EvidenceVerified, true},
-		{domain.SimulatorOutcomeInvalidResponse, domain.AttemptOutcomeInvalidResponse, domain.ConfirmationTransportSent, domain.EvidenceVerified, true},
+		{domain.SimulatorOutcomeTransportErrorAfterSend, domain.AttemptOutcomeIndeterminate, domain.ConfirmationTransportSent, domain.EvidenceVerified, true},
+		{domain.SimulatorOutcomeInvalidResponse, domain.AttemptOutcomeIndeterminate, domain.ConfirmationTransportSent, domain.EvidenceVerified, true},
 	}
 	for _, test := range tests {
 		t.Run(string(test.outcome), func(t *testing.T) {
@@ -58,7 +58,7 @@ func TestAdapterProviderTimeoutDuringDelayIsAfterSend(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 			defer cancel()
 			result := prepared.Dispatch(ctx)
-			if result.Outcome != domain.AttemptOutcomeTransportErrorAfterSend ||
+			if result.Outcome != domain.AttemptOutcomeIndeterminate ||
 				result.ConfirmationLevel != domain.ConfirmationTransportSent || result.EvidenceStatus != domain.EvidenceVerified ||
 				result.ResponseSummary["simulated_write"] != true || result.ResponseSummary["provider_timeout"] != true {
 				t.Fatalf("timeout result=%+v", result)

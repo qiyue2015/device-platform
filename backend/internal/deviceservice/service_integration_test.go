@@ -51,7 +51,7 @@ func TestDeviceServicePostgresLifecycleScopeAndState(t *testing.T) {
 		}
 
 		deviceTypes, err := service.ListDeviceTypes(ctx)
-		if err != nil || len(deviceTypes) != 1 || deviceTypes[0].Code != domain.DeviceTypeSmartLock || deviceTypes[0].Revision != 1 || len(deviceTypes[0].Actions) != 3 {
+		if err != nil || len(deviceTypes) != 1 || deviceTypes[0].Code != domain.DeviceTypeSmartLock || deviceTypes[0].Revision != 2 || len(deviceTypes[0].Actions) != 3 {
 			t.Fatalf("Device Types = %+v, %v", deviceTypes, err)
 		}
 		if deviceTypes[0].Actions[0].DispatchDeadlineMS != 30000 || deviceTypes[0].Actions[0].ProviderRequestTimeoutMS != 10000 || deviceTypes[0].Actions[0].ResultObservationTimeoutMS != 60000 {

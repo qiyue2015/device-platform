@@ -127,7 +127,7 @@ func validateListRequest(scope Scope, request ListRequest) (ListRequest, error) 
 func validCommandStatus(status domain.CommandStatus) bool {
 	switch status {
 	case domain.CommandStatusQueued, domain.CommandStatusSent, domain.CommandStatusAcked, domain.CommandStatusSuccess,
-		domain.CommandStatusFailed, domain.CommandStatusTimeout, domain.CommandStatusCancelled, domain.CommandStatusUnknown:
+		domain.CommandStatusFailed, domain.CommandStatusTimeout, domain.CommandStatusCancelled:
 		return true
 	default:
 		return false

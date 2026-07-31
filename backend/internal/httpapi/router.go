@@ -1283,7 +1283,7 @@ func commandDetailResponse(detail commandservice.Detail) v1.CommandDetailRespons
 			ProviderRequestKey: attempt.ProviderRequestKey, Outcome: attempt.Outcome,
 			ConfirmationLevel: attempt.ConfirmationLevel, EvidenceStatus: attempt.EvidenceStatus,
 			RequestSummary: attempt.RequestSummary, ResponseSummary: attempt.ResponseSummary,
-			ErrorCode: attempt.ErrorCode, ErrorDetail: attempt.ErrorDetail, ClaimedAt: attempt.ClaimedAt.UTC(),
+			ReasonCode: attempt.ReasonCode, ErrorDetail: attempt.ErrorDetail, ClaimedAt: attempt.ClaimedAt.UTC(),
 			DispatchingAt: utcTimePointer(attempt.DispatchingAt), CompletedAt: utcTimePointer(attempt.CompletedAt),
 		})
 	}
@@ -1295,7 +1295,15 @@ func commandDetailResponse(detail commandservice.Detail) v1.CommandDetailRespons
 			OccurredAt: event.OccurredAt.UTC(), Source: event.Source, Payload: event.Payload,
 		})
 	}
-	return v1.CommandDetailResponse{CommandResponse: commandResponse(detail.Command), Attempts: attempts, Events: events}
+	results := make([]v1.CommandResultResponse, 0, len(detail.Results))
+	for _, result := range detail.Results {
+		results = append(results, v1.CommandResultResponse{
+			ResultID: result.ID, AttemptID: result.AttemptID, Source: result.Source, Outcome: result.Outcome,
+			ConfirmationLevel: result.ConfirmationLevel, EvidenceStatus: result.EvidenceStatus,
+			ReportedAt: utcTimePointer(result.ReportedAt), ObservedAt: result.ObservedAt.UTC(), Late: result.Late,
+		})
+	}
+	return v1.CommandDetailResponse{CommandResponse: commandResponse(detail.Command), Attempts: attempts, Results: results, Events: events}
 }
 
 func writeCommandList(w http.ResponseWriter, result commandservice.ListResult) {
@@ -1325,6 +1333,8 @@ func writeCommandError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, commandservice.ErrDeviceDisabled):
 		writeError(w, http.StatusConflict, "device_disabled", "Device cannot accept Commands")
+	case errors.Is(err, commandservice.ErrDeviceNotOnline):
+		writeError(w, http.StatusConflict, "device_not_online", "Device is not online")
 	case errors.Is(err, commandservice.ErrProviderNotConfigured):
 		writeError(w, http.StatusConflict, "provider_not_configured", "Provider is not configured")
 	case errors.Is(err, commandservice.ErrIdempotencyKeyConflict):

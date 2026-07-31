@@ -5,7 +5,7 @@ var commandTransitions = map[CommandStatus]map[CommandStatus]struct{}{
 		CommandStatusSent: {}, CommandStatusCancelled: {}, CommandStatusFailed: {}, CommandStatusTimeout: {},
 	},
 	CommandStatusSent: {
-		CommandStatusAcked: {}, CommandStatusSuccess: {}, CommandStatusFailed: {}, CommandStatusTimeout: {}, CommandStatusUnknown: {},
+		CommandStatusAcked: {}, CommandStatusSuccess: {}, CommandStatusFailed: {}, CommandStatusTimeout: {},
 	},
 	CommandStatusAcked: {
 		CommandStatusSuccess: {}, CommandStatusFailed: {}, CommandStatusTimeout: {},
@@ -19,7 +19,7 @@ func CanTransitionCommand(from, to CommandStatus) bool {
 
 func (status CommandStatus) IsTerminal() bool {
 	switch status {
-	case CommandStatusSuccess, CommandStatusFailed, CommandStatusTimeout, CommandStatusCancelled, CommandStatusUnknown:
+	case CommandStatusSuccess, CommandStatusFailed, CommandStatusTimeout, CommandStatusCancelled:
 		return true
 	default:
 		return false

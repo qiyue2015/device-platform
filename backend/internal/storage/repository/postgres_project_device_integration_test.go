@@ -59,7 +59,7 @@ func TestPostgresProjectDeviceRepositories(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if deviceType.Code != domain.DeviceTypeSmartLock || deviceType.CurrentRevision != 1 || len(profile.Actions) != 3 {
+		if deviceType.Code != domain.DeviceTypeSmartLock || deviceType.CurrentRevision != 2 || len(profile.Actions) != 3 {
 			t.Fatalf("frozen Device Type drift: type=%+v profile=%+v", deviceType, profile)
 		}
 		if profile.Actions[0].DispatchDeadline != 30*time.Second || profile.Actions[0].ProviderRequestTimeout != 10*time.Second || profile.Actions[0].ResultObservationTimeout != time.Minute {

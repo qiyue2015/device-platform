@@ -14,10 +14,10 @@ func TestSmartLockProfileMatchesFrozenRevision(t *testing.T) {
 	if profile.DeviceTypeID != "" {
 		t.Fatalf("published profile must not fix a database UUID: %q", profile.DeviceTypeID)
 	}
-	if profile.Revision != 1 {
+	if profile.Revision != 2 {
 		t.Fatalf("revision = %d", profile.Revision)
 	}
-	if got := hex.EncodeToString(profile.ProfileHash); got != "81f6d5efb5f627a56fc19a2e2fb7fadcccc9b6a6b53fa411d7265a15eda5b596" {
+	if got := hex.EncodeToString(profile.ProfileHash); got != "853c4d6f3ad2bc73931de0bb64998f6d94bd977fce5f03ed0a190eef342de0e2" {
 		t.Fatalf("profile hash = %s", got)
 	}
 	if len(profile.Actions) != 3 {
@@ -28,7 +28,11 @@ func TestSmartLockProfileMatchesFrozenRevision(t *testing.T) {
 		if action.Identifier != want[index] {
 			t.Fatalf("action %d = %s", index, action.Identifier)
 		}
-		if action.DeliveryPolicy != domain.DeliveryPolicyDispatchOnce || action.DispatchDeadline != 30*time.Second ||
+		wantPolicy := domain.DeliveryPolicyDispatchOnce
+		if action.Identifier == "unlock" || action.Identifier == "lock" {
+			wantPolicy = domain.DeliveryPolicyOnlineOnly
+		}
+		if action.DeliveryPolicy != wantPolicy || action.DispatchDeadline != 30*time.Second ||
 			action.ProviderRequestTimeout != 10*time.Second || action.ResultObservationTimeout != 60*time.Second ||
 			action.RetryAllowed || action.DeliveryPolicyOverrideAllowed {
 			t.Fatalf("action %s has drifted safety metadata", action.Identifier)
@@ -46,8 +50,8 @@ func TestValidateSmartLockSnapshot(t *testing.T) {
 	}
 	semanticEquivalent := []byte(`{
 		"actions": [
-			{"delivery_policy_override_allowed":false,"retry_allowed":false,"result_observation_timeout_ms":60000,"provider_request_timeout_ms":10000,"dispatch_deadline_ms":30000,"delivery_policy":"dispatch_once","payload_schema":{"additionalProperties":false,"maxProperties":0,"type":"object"},"risk_level":"high","identifier":"unlock"},
-			{"identifier":"lock","risk_level":"high","payload_schema":{"type":"object","additionalProperties":false,"maxProperties":0},"delivery_policy":"dispatch_once","dispatch_deadline_ms":30000,"provider_request_timeout_ms":10000,"result_observation_timeout_ms":60000,"retry_allowed":false,"delivery_policy_override_allowed":false},
+			{"delivery_policy_override_allowed":false,"retry_allowed":false,"result_observation_timeout_ms":60000,"provider_request_timeout_ms":10000,"dispatch_deadline_ms":30000,"delivery_policy":"online_only","payload_schema":{"additionalProperties":false,"maxProperties":0,"type":"object"},"risk_level":"high","identifier":"unlock"},
+			{"identifier":"lock","risk_level":"high","payload_schema":{"type":"object","additionalProperties":false,"maxProperties":0},"delivery_policy":"online_only","dispatch_deadline_ms":30000,"provider_request_timeout_ms":10000,"result_observation_timeout_ms":60000,"retry_allowed":false,"delivery_policy_override_allowed":false},
 			{"identifier":"query_status","risk_level":"low","payload_schema":{"type":"object","maxProperties":0,"additionalProperties":false},"delivery_policy":"dispatch_once","dispatch_deadline_ms":30000,"provider_request_timeout_ms":10000,"result_observation_timeout_ms":60000,"retry_allowed":false,"delivery_policy_override_allowed":false}
 		]
 	}`)
@@ -61,9 +65,9 @@ func TestValidateSmartLockSnapshot(t *testing.T) {
 		hash     []byte
 		want     string
 	}{
-		{name: "revision", revision: 2, json: []byte(SmartLockProfileJSON), hash: profile.ProfileHash, want: "revision drift"},
-		{name: "hash", revision: 1, json: []byte(SmartLockProfileJSON), hash: make([]byte, 32), want: "hash drift"},
-		{name: "JSON", revision: 1, json: []byte(`{"actions":[]}`), hash: profile.ProfileHash, want: "JSON drift"},
+		{name: "revision", revision: 1, json: []byte(SmartLockProfileJSON), hash: profile.ProfileHash, want: "revision drift"},
+		{name: "hash", revision: 2, json: []byte(SmartLockProfileJSON), hash: make([]byte, 32), want: "hash drift"},
+		{name: "JSON", revision: 2, json: []byte(`{"actions":[]}`), hash: profile.ProfileHash, want: "JSON drift"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

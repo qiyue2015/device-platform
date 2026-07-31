@@ -141,11 +141,23 @@ type CommandAttemptResponse struct {
 	EvidenceStatus     domain.EvidenceStatus    `json:"evidence_status"`
 	RequestSummary     map[string]any           `json:"request_summary,omitempty"`
 	ResponseSummary    map[string]any           `json:"response_summary,omitempty"`
-	ErrorCode          *string                  `json:"error_code"`
+	ReasonCode         *string                  `json:"reason_code"`
 	ErrorDetail        *string                  `json:"error_detail"`
 	ClaimedAt          time.Time                `json:"claimed_at"`
 	DispatchingAt      *time.Time               `json:"dispatching_at"`
 	CompletedAt        *time.Time               `json:"completed_at"`
+}
+
+type CommandResultResponse struct {
+	ResultID          string                   `json:"result_id"`
+	AttemptID         *string                  `json:"attempt_id"`
+	Source            domain.EventSource       `json:"source"`
+	Outcome           domain.ResultOutcome     `json:"outcome"`
+	ConfirmationLevel domain.ConfirmationLevel `json:"confirmation_level"`
+	EvidenceStatus    domain.EvidenceStatus    `json:"evidence_status"`
+	ReportedAt        *time.Time               `json:"reported_at"`
+	ObservedAt        time.Time                `json:"observed_at"`
+	Late              bool                     `json:"late"`
 }
 
 type EventResponse struct {
@@ -186,6 +198,7 @@ type CommandResponse struct {
 type CommandDetailResponse struct {
 	CommandResponse
 	Attempts []CommandAttemptResponse `json:"attempts"`
+	Results  []CommandResultResponse  `json:"results"`
 	Events   []EventResponse          `json:"events"`
 }
 

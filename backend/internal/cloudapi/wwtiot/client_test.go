@@ -153,14 +153,14 @@ func TestDispatchStrictResponseMatrix(t *testing.T) {
 		{name: "accepted", status: 200, body: valid, outcome: domain.AttemptOutcomeProviderAccepted, confirm: domain.ConfirmationProviderAccepted, evidence: domain.EvidenceUnverified},
 		{name: "rejected", status: 200, body: `{"result":"denied","info":"not allowed"}`, outcome: domain.AttemptOutcomeProviderRejected, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceUnverified},
 		{name: "uppercase result rejected", status: 200, body: `{"result":"OK"}`, outcome: domain.AttemptOutcomeProviderRejected, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceUnverified},
-		{name: "non 2xx", status: 503, body: valid, outcome: domain.AttemptOutcomeInvalidResponse, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
-		{name: "empty", status: 200, body: "", outcome: domain.AttemptOutcomeInvalidResponse, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
-		{name: "array", status: 200, body: `[]`, outcome: domain.AttemptOutcomeInvalidResponse, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
-		{name: "duplicate key", status: 200, body: `{"result":"ok","result":"ok"}`, outcome: domain.AttemptOutcomeInvalidResponse, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
-		{name: "trailing JSON", status: 200, body: valid + `{}`, outcome: domain.AttemptOutcomeInvalidResponse, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
-		{name: "missing result", status: 200, body: `{"info":"cmd send ok"}`, outcome: domain.AttemptOutcomeInvalidResponse, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
-		{name: "wrong result type", status: 200, body: `{"result":true}`, outcome: domain.AttemptOutcomeInvalidResponse, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
-		{name: "missing success echo", status: 200, body: `{"result":"ok","sign":"x"}`, outcome: domain.AttemptOutcomeInvalidResponse, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
+		{name: "non 2xx", status: 503, body: valid, outcome: domain.AttemptOutcomeIndeterminate, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
+		{name: "empty", status: 200, body: "", outcome: domain.AttemptOutcomeIndeterminate, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
+		{name: "array", status: 200, body: `[]`, outcome: domain.AttemptOutcomeIndeterminate, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
+		{name: "duplicate key", status: 200, body: `{"result":"ok","result":"ok"}`, outcome: domain.AttemptOutcomeIndeterminate, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
+		{name: "trailing JSON", status: 200, body: valid + `{}`, outcome: domain.AttemptOutcomeIndeterminate, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
+		{name: "missing result", status: 200, body: `{"info":"cmd send ok"}`, outcome: domain.AttemptOutcomeIndeterminate, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
+		{name: "wrong result type", status: 200, body: `{"result":true}`, outcome: domain.AttemptOutcomeIndeterminate, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
+		{name: "missing success echo", status: 200, body: `{"result":"ok","sign":"x"}`, outcome: domain.AttemptOutcomeIndeterminate, confirm: domain.ConfirmationTransportSent, evidence: domain.EvidenceVerified},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -183,7 +183,7 @@ func TestDispatchResponseLimitAndSummaryLimit(t *testing.T) {
 		}))
 		defer server.Close()
 		result := testClient(server.URL).Dispatch(context.Background(), dispatchRequest("unlock"))
-		assertResult(t, result, domain.AttemptOutcomeInvalidResponse, domain.ConfirmationTransportSent, domain.EvidenceVerified)
+		assertResult(t, result, domain.AttemptOutcomeIndeterminate, domain.ConfirmationTransportSent, domain.EvidenceVerified)
 	})
 	t.Run("summary text", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -207,7 +207,7 @@ func TestDispatchDoesNotFollowRedirect(t *testing.T) {
 	}))
 	defer redirect.Close()
 	result := testClient(redirect.URL).Dispatch(context.Background(), dispatchRequest("unlock"))
-	assertResult(t, result, domain.AttemptOutcomeInvalidResponse, domain.ConfirmationTransportSent, domain.EvidenceVerified)
+	assertResult(t, result, domain.AttemptOutcomeIndeterminate, domain.ConfirmationTransportSent, domain.EvidenceVerified)
 	if result.HTTPStatus != http.StatusFound || redirected.Load() != 0 {
 		t.Fatalf("redirect status=%d followed=%d", result.HTTPStatus, redirected.Load())
 	}
@@ -241,7 +241,7 @@ func TestDispatchClassifiesTransportBeforeAndAfterSend(t *testing.T) {
 	}))
 	defer afterServer.Close()
 	after := testClient(afterServer.URL).Dispatch(context.Background(), dispatchRequest("unlock"))
-	assertResult(t, after, domain.AttemptOutcomeTransportErrorAfterSend, domain.ConfirmationTransportSent, domain.EvidenceVerified)
+	assertResult(t, after, domain.AttemptOutcomeIndeterminate, domain.ConfirmationTransportSent, domain.EvidenceVerified)
 	if after.ErrorDetail != "WWTIOT transport failed after request write" {
 		t.Fatalf("after-send detail = %q", after.ErrorDetail)
 	}

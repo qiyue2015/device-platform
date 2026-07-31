@@ -36,10 +36,11 @@ const (
 )
 
 type receivedWebhook struct {
-	body      []byte
-	timestamp string
-	signature string
-	eventID   string
+	body          []byte
+	timestamp     string
+	signature     string
+	eventID       string
+	secretVersion string
 }
 
 func TestPersistentWebhookWorkerDeliversSignedSnapshotAndHistory(t *testing.T) {
@@ -52,6 +53,7 @@ func TestPersistentWebhookWorkerDeliversSignedSnapshotAndHistory(t *testing.T) {
 			received = append(received, receivedWebhook{
 				body: body, timestamp: request.Header.Get("X-Device-Platform-Timestamp"),
 				signature: request.Header.Get("X-Device-Platform-Signature"), eventID: request.Header.Get("X-Device-Platform-Event-ID"),
+				secretVersion: request.Header.Get("X-Device-Platform-Secret-Version"),
 			})
 			mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
@@ -111,6 +113,7 @@ func TestPersistentWebhookWorkerRetriesExactBodyAndEndsDead(t *testing.T) {
 			received = append(received, receivedWebhook{
 				body: body, timestamp: request.Header.Get("X-Device-Platform-Timestamp"),
 				signature: request.Header.Get("X-Device-Platform-Signature"), eventID: request.Header.Get("X-Device-Platform-Event-ID"),
+				secretVersion: request.Header.Get("X-Device-Platform-Secret-Version"),
 			})
 			mu.Unlock()
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -492,10 +495,10 @@ func intPointer(value int) *int          { return &value }
 func assertWebhookSignature(t *testing.T, request receivedWebhook, secret string) {
 	t.Helper()
 	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(request.timestamp + "."))
+	_, _ = mac.Write([]byte("v1." + request.timestamp + "." + request.secretVersion + "."))
 	_, _ = mac.Write(request.body)
-	want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
-	if request.timestamp == "" || request.signature != want {
+	want := "v1=" + hex.EncodeToString(mac.Sum(nil))
+	if request.timestamp == "" || request.secretVersion == "" || request.signature != want {
 		t.Fatalf("signature timestamp/value=%q/%q, want %q", request.timestamp, request.signature, want)
 	}
 }

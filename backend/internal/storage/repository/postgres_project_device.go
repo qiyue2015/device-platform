@@ -127,6 +127,10 @@ func (tx *PostgresTx) Commands() CommandRepository {
 	return &postgresCommandRepository{exec: tx.tx}
 }
 
+func (tx *PostgresTx) Results() CommandResultRepository {
+	return &postgresCommandResultRepository{exec: tx.tx}
+}
+
 func (tx *PostgresTx) Messages() RawMessageRepository {
 	return &postgresRawMessageRepository{exec: tx.tx}
 }

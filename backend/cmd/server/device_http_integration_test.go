@@ -61,7 +61,7 @@ func TestDeviceHTTPPostgresLifecycleIsolationAndRestart(t *testing.T) {
 		deviceTypesBody := assertPaginatedEnvelope(t, deviceTypes, http.StatusOK, 1, 10, 1)
 		deviceTypeItems := responseDataObject(t, deviceTypesBody)["items"].([]interface{})
 		deviceType := deviceTypeItems[0].(map[string]interface{})
-		if deviceType["code"] != "smart-lock" || deviceType["revision"] != float64(1) {
+		if deviceType["code"] != "smart-lock" || deviceType["revision"] != float64(2) {
 			t.Fatalf("Device Type response = %+v", deviceType)
 		}
 		actions, ok := deviceType["actions"].([]interface{})

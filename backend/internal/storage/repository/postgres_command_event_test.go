@@ -35,12 +35,12 @@ func TestAttemptTransitionMatches(t *testing.T) {
 			want: true,
 		},
 		{
-			name:    "after-send transport failure is unknown",
-			outcome: domain.AttemptOutcomeTransportErrorAfterSend,
+			name:    "indeterminate does not change Command status",
+			outcome: domain.AttemptOutcomeIndeterminate,
 			transition: CommandStatusTransition{
-				From: domain.CommandStatusSent, To: domain.CommandStatusUnknown, ReasonCode: &providerDeliveryUnknown,
+				From: domain.CommandStatusSent, To: domain.CommandStatusSent, ReasonCode: &providerDeliveryUnknown,
 			},
-			want: true,
+			want: false,
 		},
 		{
 			name:    "Provider rejection",
@@ -51,16 +51,16 @@ func TestAttemptTransitionMatches(t *testing.T) {
 			want: true,
 		},
 		{
-			name:    "invalid response is unknown",
-			outcome: domain.AttemptOutcomeInvalidResponse,
+			name:    "invalid response reason does not change Command status",
+			outcome: domain.AttemptOutcomeIndeterminate,
 			transition: CommandStatusTransition{
-				From: domain.CommandStatusSent, To: domain.CommandStatusUnknown, ReasonCode: &providerResponseInvalid,
+				From: domain.CommandStatusSent, To: domain.CommandStatusSent, ReasonCode: &providerResponseInvalid,
 			},
-			want: true,
+			want: false,
 		},
 		{
 			name:    "invalid response cannot become rejection",
-			outcome: domain.AttemptOutcomeInvalidResponse,
+			outcome: domain.AttemptOutcomeIndeterminate,
 			transition: CommandStatusTransition{
 				From: domain.CommandStatusSent, To: domain.CommandStatusFailed, ReasonCode: &providerRejected,
 			},
@@ -70,7 +70,7 @@ func TestAttemptTransitionMatches(t *testing.T) {
 			name:    "Provider rejection cannot become invalid response",
 			outcome: domain.AttemptOutcomeProviderRejected,
 			transition: CommandStatusTransition{
-				From: domain.CommandStatusSent, To: domain.CommandStatusUnknown, ReasonCode: &providerResponseInvalid,
+				From: domain.CommandStatusSent, To: domain.CommandStatusSent, ReasonCode: &providerResponseInvalid,
 			},
 			want: false,
 		},
@@ -168,6 +168,8 @@ func TestEvidenceProgresses(t *testing.T) {
 }
 
 func TestAttemptCompletionAllowed(t *testing.T) {
+	providerNotConfigured := "provider_not_configured"
+	providerRejected := "provider_rejected"
 	tests := []struct {
 		name     string
 		provider string
@@ -185,11 +187,11 @@ func TestAttemptCompletionAllowed(t *testing.T) {
 		},
 		{
 			name: "WWTIOT cannot produce Device final", provider: domain.ProviderCodeWWTIOT, phase: domain.AttemptPhaseDispatching,
-			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeDeviceSucceeded, ConfirmationLevel: domain.ConfirmationDeviceFinal, EvidenceStatus: domain.EvidenceVerified}, want: false,
+			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcome("device_succeeded"), ConfirmationLevel: domain.ConfirmationDeviceFinal, EvidenceStatus: domain.EvidenceVerified}, want: false,
 		},
 		{
 			name: "simulator rejection is verified transport evidence", provider: domain.ProviderCodeSimulator, phase: domain.AttemptPhaseDispatching,
-			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeProviderRejected, ConfirmationLevel: domain.ConfirmationTransportSent, EvidenceStatus: domain.EvidenceVerified}, want: true,
+			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeProviderRejected, ConfirmationLevel: domain.ConfirmationTransportSent, EvidenceStatus: domain.EvidenceVerified, ReasonCode: &providerRejected}, want: true,
 		},
 		{
 			name: "simulator acceptance must be verified", provider: domain.ProviderCodeSimulator, phase: domain.AttemptPhaseDispatching,
@@ -201,15 +203,15 @@ func TestAttemptCompletionAllowed(t *testing.T) {
 		},
 		{
 			name: "simulator cannot produce Device ACK", provider: domain.ProviderCodeSimulator, phase: domain.AttemptPhaseDispatching,
-			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeDeviceAcked, ConfirmationLevel: domain.ConfirmationDeviceAcked, EvidenceStatus: domain.EvidenceVerified}, want: false,
+			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcome("device_acked"), ConfirmationLevel: domain.ConfirmationDeviceAcked, EvidenceStatus: domain.EvidenceVerified}, want: false,
 		},
 		{
 			name: "WWTIOT invalid request is pre-dispatch only", provider: domain.ProviderCodeWWTIOT, phase: domain.AttemptPhaseClaimed,
-			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeInvalidRequest, ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone}, want: true,
+			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeInvalidRequest, ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone, ReasonCode: &providerNotConfigured}, want: true,
 		},
 		{
 			name: "simulator invalid request is pre-dispatch only", provider: domain.ProviderCodeSimulator, phase: domain.AttemptPhaseClaimed,
-			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeInvalidRequest, ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone}, want: true,
+			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeInvalidRequest, ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone, ReasonCode: &providerNotConfigured}, want: true,
 		},
 	}
 	for _, test := range tests {

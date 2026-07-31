@@ -32,7 +32,7 @@ func TestPostgresCommandLifecycleAndEvidence(t *testing.T) {
 		deviceTypeID := createCommandFixtures(t, ctx, store, now)
 
 		command := testCommand("61000000-0000-0000-0000-000000000001", "request-1", deviceTypeID, now.Add(-20*time.Minute), now.Add(30*time.Minute))
-		command.DeviceID = commandSimulatorID
+		setCommandProviderSnapshot(&command, commandSimulatorID, domain.ProviderCodeSimulator, domain.AdapterSimulator)
 		createdEvent := testCommandEvent("71000000-0000-0000-0000-000000000001", command.ID, "command-created:1", domain.EventTypeCommandCreated, command.QueuedAt)
 		createdEvent.DeviceID = stringRef(commandSimulatorID)
 		createdAudit := testCommandAudit("81000000-0000-0000-0000-000000000001", command.ID, now)
@@ -332,14 +332,13 @@ func TestPostgresCommandLeaseRecoveryCancelAndExpiry(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		transportErrorCode := "connect_refused"
 		providerTransportReason := "provider_transport_error"
 		if err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
 			completed, err := tx.Commands().CompleteAttempt(ctx, reclaimCommand.ID, reclaimed.ID, reclaimed.LeaseToken, repository.CompleteCommandAttemptRequest{
 				Outcome:           domain.AttemptOutcomeTransportErrorBeforeSend,
 				ConfirmationLevel: domain.ConfirmationNone,
 				EvidenceStatus:    domain.EvidenceNone,
-				ErrorCode:         &transportErrorCode,
+				ReasonCode:        &providerTransportReason,
 			})
 			if err != nil || !completed {
 				return fmt.Errorf("complete before-send transport error=%v: %w", completed, err)
@@ -405,7 +404,11 @@ func TestPostgresCommandLeaseRecoveryCancelAndExpiry(t *testing.T) {
 			RequestKey:    "203",
 		})
 		setAttemptLeaseExpiry(t, db, expireAttempt.ID, now.Add(-time.Minute))
-		if _, err := db.ExecContext(ctx, `UPDATE device_commands SET dispatch_deadline_at = $2 WHERE id = $1`, expireCommand.ID, now.Add(-time.Minute)); err != nil {
+		if _, err := db.ExecContext(ctx, `
+			UPDATE device_commands SET dispatch_deadline_at = $2::timestamptz,
+				queued_at = $2::timestamptz - dispatch_deadline_ms * interval '1 millisecond'
+			WHERE id = $1
+		`, expireCommand.ID, now.Add(-time.Minute)); err != nil {
 			t.Fatal(err)
 		}
 		if err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
@@ -441,7 +444,12 @@ func TestPostgresCommandExpiredDeadlineCannotReclaimOrDispatch(t *testing.T) {
 			t.Fatalf("claimed lease exceeds dispatch deadline: lease=%s deadline=%s", attempt.LeaseExpiresAt, command.DispatchDeadlineAt)
 		}
 		setAttemptLeaseExpiry(t, db, attempt.ID, now.Add(-time.Minute))
-		if _, err := db.ExecContext(ctx, `UPDATE device_commands SET dispatch_deadline_at = now() - interval '1 second' WHERE id = $1`, command.ID); err != nil {
+		if _, err := db.ExecContext(ctx, `
+			UPDATE device_commands
+			SET dispatch_deadline_at = now() - interval '1 second',
+				queued_at = now() - interval '1 second' - dispatch_deadline_ms * interval '1 millisecond'
+			WHERE id = $1
+		`, command.ID); err != nil {
 			t.Fatal(err)
 		}
 
@@ -578,11 +586,11 @@ func TestPostgresCommandExpiredDispatchingRecoveryFencesWorker(t *testing.T) {
 		}
 
 		recovered, err := store.Commands().Get(ctx, command.ID)
-		if err != nil || recovered.Status != domain.CommandStatusUnknown || recovered.ReasonCode == nil || *recovered.ReasonCode != "provider_delivery_unknown" || recovered.ConfirmationLevel != domain.ConfirmationTransportSent || recovered.EvidenceStatus != domain.EvidenceUnverified {
+		if err != nil || recovered.Status != domain.CommandStatusSent || recovered.ReasonCode != nil || recovered.ConfirmationLevel != domain.ConfirmationTransportSent || recovered.EvidenceStatus != domain.EvidenceUnverified {
 			t.Fatalf("recovered Command mismatch: command=%+v err=%v", recovered, err)
 		}
 		attempts, err := store.Commands().ListAttempts(ctx, command.ID)
-		if err != nil || len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != domain.AttemptOutcomeTransportErrorAfterSend || attempts[0].ConfirmationLevel != domain.ConfirmationTransportSent || attempts[0].EvidenceStatus != domain.EvidenceUnverified {
+		if err != nil || len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != domain.AttemptOutcomeIndeterminate || attempts[0].ConfirmationLevel != domain.ConfirmationTransportSent || attempts[0].EvidenceStatus != domain.EvidenceUnverified {
 			t.Fatalf("recovered Attempt mismatch: attempts=%+v err=%v", attempts, err)
 		}
 	})
@@ -734,9 +742,10 @@ func TestPostgresCommandRejectsCrossedAttemptTransition(t *testing.T) {
 			if err != nil || !dispatched {
 				return fmt.Errorf("dispatch updated=%v: %w", dispatched, err)
 			}
+			providerResponseInvalid := "provider_response_invalid"
 			completed, err := tx.Commands().CompleteAttempt(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.CompleteCommandAttemptRequest{
-				Outcome: domain.AttemptOutcomeInvalidResponse, ConfirmationLevel: domain.ConfirmationTransportSent,
-				EvidenceStatus: domain.EvidenceVerified,
+				Outcome: domain.AttemptOutcomeIndeterminate, ConfirmationLevel: domain.ConfirmationTransportSent,
+				EvidenceStatus: domain.EvidenceVerified, ReasonCode: &providerResponseInvalid,
 			})
 			if err != nil || !completed {
 				return fmt.Errorf("complete updated=%v: %w", completed, err)
@@ -757,12 +766,8 @@ func TestPostgresCommandRejectsCrossedAttemptTransition(t *testing.T) {
 		if err != nil || unchanged.Status != domain.CommandStatusSent || unchanged.ReasonCode != nil || unchanged.FinishedAt != nil {
 			t.Fatalf("crossed transition changed Command: command=%+v err=%v", unchanged, err)
 		}
-		providerResponseInvalid := "provider_response_invalid"
 		if err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
-			updated, err := tx.Commands().TransitionFromAttempt(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.CommandStatusTransition{
-				From: domain.CommandStatusSent, To: domain.CommandStatusUnknown, ReasonCode: &providerResponseInvalid,
-				ConfirmationLevel: domain.ConfirmationTransportSent, EvidenceStatus: domain.EvidenceVerified,
-			})
+			updated, err := tx.Commands().UpdateEvidenceFromAttempt(ctx, command.ID, attempt.ID, attempt.LeaseToken, domain.CommandStatusSent)
 			if err != nil || !updated {
 				return fmt.Errorf("valid invalid-response transition updated=%v: %w", updated, err)
 			}
@@ -771,7 +776,7 @@ func TestPostgresCommandRejectsCrossedAttemptTransition(t *testing.T) {
 			t.Fatal(err)
 		}
 		asserted, err := store.Commands().Get(ctx, command.ID)
-		if err != nil || asserted.Status != domain.CommandStatusUnknown || asserted.ReasonCode == nil || *asserted.ReasonCode != providerResponseInvalid {
+		if err != nil || asserted.Status != domain.CommandStatusSent || asserted.ReasonCode != nil || asserted.ConfirmationLevel != domain.ConfirmationTransportSent || asserted.EvidenceStatus != domain.EvidenceVerified {
 			t.Fatalf("valid invalid-response transition mismatch: command=%+v err=%v", asserted, err)
 		}
 	})
@@ -797,7 +802,7 @@ func TestPostgresCommandCompletionRejectsProviderContractDrift(t *testing.T) {
 			}
 			for name, request := range map[string]repository.CompleteCommandAttemptRequest{
 				"Device final": {
-					Outcome: domain.AttemptOutcomeDeviceSucceeded, ConfirmationLevel: domain.ConfirmationDeviceFinal,
+					Outcome: domain.AttemptOutcome("device_succeeded"), ConfirmationLevel: domain.ConfirmationDeviceFinal,
 					EvidenceStatus: domain.EvidenceVerified,
 				},
 				"verified WWTIOT acceptance": {
@@ -852,7 +857,11 @@ func TestPostgresCommandConcurrentReclaimAndQueuedFinish(t *testing.T) {
 				})
 				setAttemptLeaseExpiry(t, db, attempt.ID, now.Add(-time.Minute))
 				if test.expire {
-					if _, err := db.ExecContext(ctx, `UPDATE device_commands SET dispatch_deadline_at = now() - interval '1 second' WHERE id = $1`, command.ID); err != nil {
+					if _, err := db.ExecContext(ctx, `
+						UPDATE device_commands SET dispatch_deadline_at = now() - interval '1 second',
+							queued_at = now() - interval '1 second' - dispatch_deadline_ms * interval '1 millisecond'
+						WHERE id = $1
+					`, command.ID); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -1098,15 +1107,25 @@ func createCommandFixtures(t *testing.T, ctx context.Context, store *repository.
 }
 
 func testCommand(id, key, deviceTypeID string, queuedAt, deadline time.Time) domain.Command {
+	queuedAt = queuedAt.UTC().Truncate(time.Millisecond)
+	deadline = deadline.UTC().Truncate(time.Millisecond)
 	return domain.Command{
 		ID:                 id,
 		ProjectID:          commandProjectID,
 		DeviceID:           commandDeviceID,
 		DeviceTypeID:       deviceTypeID,
+		DeviceTypeCode:     domain.DeviceTypeSmartLock,
+		ProviderCode:       domain.ProviderCodeWWTIOT,
+		ProviderDeviceID:   "LOCK-COMMAND-1",
+		Adapter:            domain.AdapterWWTIOTCloudAPI,
 		CommandType:        "unlock",
 		Payload:            map[string]any{},
 		DeviceTypeRevision: domain.DeviceTypeSmartLockRevision,
-		DeliveryPolicy:     domain.DeliveryPolicyDispatchOnce,
+		DeliveryPolicy:     domain.DeliveryPolicyOnlineOnly,
+		DispatchDeadline:   deadline.Sub(queuedAt),
+		ProviderTimeout:    10 * time.Second,
+		ResultTimeout:      time.Minute,
+		RetryAllowed:       false,
 		Status:             domain.CommandStatusQueued,
 		ConfirmationLevel:  domain.ConfirmationNone,
 		EvidenceStatus:     domain.EvidenceNone,
@@ -1166,7 +1185,7 @@ func createCompletedProviderAcceptance(
 ) (domain.Command, domain.CommandAttempt) {
 	t.Helper()
 	command := testCommand(commandID, idempotencyKey, deviceTypeID, now.Add(-time.Minute), now.Add(time.Minute))
-	command.DeviceID = deviceID
+	setCommandProviderSnapshot(&command, deviceID, providerCode, adapter)
 	createCommand(t, ctx, store, command)
 	attempt := claimOne(t, ctx, store, repository.ClaimCommandRequest{
 		WorkerID:      "evidence-worker-" + requestKey,
@@ -1211,6 +1230,15 @@ func createCommand(t *testing.T, ctx context.Context, store *repository.Postgres
 		return tx.Commands().Create(ctx, command)
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func setCommandProviderSnapshot(command *domain.Command, deviceID, providerCode string, adapter domain.Adapter) {
+	command.DeviceID = deviceID
+	command.ProviderCode = providerCode
+	command.Adapter = adapter
+	if providerCode == domain.ProviderCodeSimulator {
+		command.ProviderDeviceID = deviceID
 	}
 }
 
