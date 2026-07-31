@@ -224,6 +224,10 @@ func TestDispatchClassifiesTransportBeforeAndAfterSend(t *testing.T) {
 	}
 	before := testClient(closedURL).Dispatch(context.Background(), dispatchRequest("unlock"))
 	assertResult(t, before, domain.AttemptOutcomeTransportErrorBeforeSend, domain.ConfirmationNone, domain.EvidenceNone)
+	if before.ErrorDetail != "WWTIOT transport failed before request write" {
+		t.Fatalf("before-send detail = %q", before.ErrorDetail)
+	}
+	assertNoSecrets(t, before, closedURL, "test-user", "secret-key")
 
 	afterServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hijacker, ok := w.(http.Hijacker)
@@ -238,6 +242,10 @@ func TestDispatchClassifiesTransportBeforeAndAfterSend(t *testing.T) {
 	defer afterServer.Close()
 	after := testClient(afterServer.URL).Dispatch(context.Background(), dispatchRequest("unlock"))
 	assertResult(t, after, domain.AttemptOutcomeTransportErrorAfterSend, domain.ConfirmationTransportSent, domain.EvidenceVerified)
+	if after.ErrorDetail != "WWTIOT transport failed after request write" {
+		t.Fatalf("after-send detail = %q", after.ErrorDetail)
+	}
+	assertNoSecrets(t, after, afterServer.URL, "test-user", "secret-key")
 }
 
 func testClient(apiURL string) *Client {

@@ -43,6 +43,45 @@ func TestDecodeCallbackAcceptsDocumentedIntegerForms(t *testing.T) {
 	}
 }
 
+func TestDecodeCallbackPreservesWWTIOTV2DocumentSampleAsUnverified(t *testing.T) {
+	candidate, err := DecodeCallback(strings.NewReader(`{
+		"userid":"shrtwater","cmd":"close","deviceid":"768901019955",
+		"battery":100,"bike":0,"lockstatus":0,"lng":113.17122,"lat":22.575148,
+		"gx":435,"gy":435,"gz":10000,"time":"20210201193822","serialnum":0,
+		"sign":"de41d6168a839d648234736e94db6682"
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator, err := NewCallbackValidator("shrtwater", callbackLookup{ids: []string{"device-uuid"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapped, err := validator.Validate(context.Background(), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate.Command != "close" || candidate.ProviderDeviceID != "768901019955" ||
+		candidate.Battery != 100 || candidate.LockStatus != 0 || candidate.SerialNumber != 0 {
+		t.Fatalf("decoded V2 sample = %+v", candidate)
+	}
+	if mapped.ReportedAt != nil || mapped.NormalizedState["reported_at"] != nil ||
+		mapped.EvidenceStatus != domain.EvidenceUnverified || mapped.SignatureVerified {
+		t.Fatalf("V2 sample trust/time = %+v", mapped)
+	}
+	diagnostic := candidate.DiagnosticFields()
+	for _, field := range []string{"bike", "lng", "lat", "gx", "gy", "gz"} {
+		if _, ok := diagnostic[field]; !ok {
+			t.Fatalf("V2 sample diagnostic field %q missing: %+v", field, diagnostic)
+		}
+	}
+	for _, secret := range []string{"userid", "sign"} {
+		if _, ok := diagnostic[secret]; ok {
+			t.Fatalf("V2 sample diagnostic fields retained %q", secret)
+		}
+	}
+}
+
 func TestDecodeCallbackStableErrors(t *testing.T) {
 	valid := `{"userid":"u","cmd":"c","deviceid":"d","battery":1,"lockstatus":0,"time":"t","serialnum":0,"sign":"s"}`
 	tests := []struct {

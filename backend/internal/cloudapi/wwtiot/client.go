@@ -128,16 +128,16 @@ func (p *preparedDispatch) Dispatch(ctx context.Context) DispatchResult {
 	response, err := p.client.httpClient.Do(httpRequest)
 	if err != nil {
 		if wroteRequest.Load() {
-			return transportAfterSend(result, err)
+			return transportAfterSend(result)
 		}
-		return transportBeforeSend(result, err)
+		return transportBeforeSend(result)
 	}
 	defer response.Body.Close()
 	result.HTTPStatus = response.StatusCode
 
 	responseBytes, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
-		return transportAfterSend(result, err)
+		return transportAfterSend(result)
 	}
 	if len(responseBytes) > maxResponseBytes {
 		return invalidResponse(result, nil, "WWTIOT response exceeds 64 KiB")
@@ -283,19 +283,19 @@ func invalidRequestResult(detail string) DispatchResult {
 	}
 }
 
-func transportBeforeSend(result DispatchResult, err error) DispatchResult {
+func transportBeforeSend(result DispatchResult) DispatchResult {
 	result.Outcome = domain.AttemptOutcomeTransportErrorBeforeSend
 	result.ConfirmationLevel = domain.ConfirmationNone
 	result.EvidenceStatus = domain.EvidenceNone
-	result.ErrorDetail = truncateText(err.Error(), maxSummaryTextBytes)
+	result.ErrorDetail = "WWTIOT transport failed before request write"
 	return result
 }
 
-func transportAfterSend(result DispatchResult, err error) DispatchResult {
+func transportAfterSend(result DispatchResult) DispatchResult {
 	result.Outcome = domain.AttemptOutcomeTransportErrorAfterSend
 	result.ConfirmationLevel = domain.ConfirmationTransportSent
 	result.EvidenceStatus = domain.EvidenceVerified
-	result.ErrorDetail = truncateText(err.Error(), maxSummaryTextBytes)
+	result.ErrorDetail = "WWTIOT transport failed after request write"
 	return result
 }
 

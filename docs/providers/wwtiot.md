@@ -100,7 +100,7 @@ V2 同步响应包含 `sign`，但现有资料没有无歧义写明响应签名�
 
 结构正确的成功响应要求 `result`、`userid`、`deviceid`、`cmd`、`serialnum` 和非空 `sign`；`result` 必须严格等于小写 `ok`，前三个 echo 必须是与请求完全一致的 string。`serialnum` 接受 JSON integer 或十进制 integer string 后比较；`query_status` 还要求以同样规则匹配 `type=23`、`value=4`。`info` 和其他扩展字段不参与成功判断，只能进入 4 KiB allowlist 摘要；重复 key 或关键字段类型不符仍是 `invalid_response`。
 
-transport 是否已发送必须由 HTTP transport 的 `WroteRequest`（或可证明等价信号）记录；DNS/dial 等明确未写请求的错误使用 `confirmation_level=none`，一旦已写或无法证明未写就使用 `transport_sent` 并进入 `unknown`。
+transport 是否已发送必须由 HTTP transport 的 `WroteRequest`（或可证明等价信号）记录；DNS/dial 等明确未写请求的错误使用 `confirmation_level=none`，一旦已写或无法证明未写就使用 `transport_sent` 并进入 `unknown`。底层网络错误原文可能包含敏感 Provider endpoint，不得进入 Attempt、Command、Event、日志或 API；adapter 只返回稳定的发送前/发送后诊断。
 
 `evidence_status` 评价本次 outcome 所依赖的证据。由本地 `WroteRequest` 单独证明的 transport/invalid-response 分类为 `verified`，明确未发送且 confirmation 为 `none` 时为 `none`；依赖当前无法验签 HTTP body 的 `provider_accepted` 和 `provider_rejected` 均为 `unverified`。Provider rejection 可以保守地令 Command 失败，但不得把未签名响应提升为更高 confirmation level。
 
