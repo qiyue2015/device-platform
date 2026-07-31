@@ -1020,6 +1020,26 @@ func TestControlRoutesRequireAdminBearer(t *testing.T) {
 	}
 }
 
+func TestMemoryCompatibilityEventAndAuditRoutesAreReadOnly(t *testing.T) {
+	server := newTestServer()
+
+	for _, path := range []string{"/v1/events", "/v1/audit-logs"} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		request.Header.Set("Content-Type", "application/json")
+		setAdminBearer(request)
+		server.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("POST %s = %d, want 405: %s", path, recorder.Code, recorder.Body.String())
+		}
+		var body jsonResponse
+		decodeResponse(t, recorder, &body)
+		if body.ErrorCode != "method_not_allowed" {
+			t.Fatalf("POST %s error_code = %q, want method_not_allowed", path, body.ErrorCode)
+		}
+	}
+}
+
 func TestCommandCreationRecordsAuditWithoutLegacyProjectWebhookAuthority(t *testing.T) {
 	server := newTestServer()
 

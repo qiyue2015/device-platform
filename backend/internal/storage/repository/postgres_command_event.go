@@ -1058,6 +1058,51 @@ func (r *postgresEventRepository) ListByCommand(ctx context.Context, commandID s
 	return items, nil
 }
 
+func (r *postgresEventRepository) List(ctx context.Context, request ListEventsRequest) ([]domain.Event, int64, error) {
+	if request.Limit < 1 || request.Limit > 100 || request.Offset < 0 {
+		return nil, 0, ErrInvalidRepositoryRequest
+	}
+	const where = `
+		WHERE ($1::uuid IS NULL OR project_id = $1)
+			AND ($2::uuid IS NULL OR device_id = $2)
+			AND ($3::uuid IS NULL OR command_id = $3)
+			AND ($4::text IS NULL OR event_type = $4)`
+	arguments := []any{
+		nullableString(request.ProjectID), nullableString(request.DeviceID), nullableString(request.CommandID), nullableEventType(request.EventType),
+	}
+	var total int64
+	if err := r.exec.QueryRowContext(ctx, `SELECT count(*) FROM device_events`+where, arguments...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.exec.QueryContext(ctx, eventSelect+where+`
+		ORDER BY occurred_at DESC, id DESC
+		LIMIT $5 OFFSET $6
+	`, append(arguments, request.Limit, request.Offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]domain.Event, 0, request.Limit)
+	for rows.Next() {
+		item, err := scanEvent(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+func nullableEventType(value *domain.EventType) any {
+	if value == nil {
+		return nil
+	}
+	return string(*value)
+}
+
 func nullableActionIdentifier(value *domain.ActionIdentifier) any {
 	if value == nil {
 		return nil
@@ -1141,6 +1186,61 @@ type postgresAuditRepository struct {
 
 func (r *postgresAuditRepository) Get(ctx context.Context, id string) (domain.AuditLog, error) {
 	return scanAudit(r.exec.QueryRowContext(ctx, auditSelect+` WHERE id = $1`, id))
+}
+
+func (r *postgresAuditRepository) List(ctx context.Context, request ListAuditsRequest) ([]domain.AuditLog, int64, error) {
+	if request.Limit < 1 || request.Limit > 100 || request.Offset < 0 {
+		return nil, 0, ErrInvalidRepositoryRequest
+	}
+	const where = `
+		WHERE ($1::uuid IS NULL OR project_id = $1)
+			AND ($2::text IS NULL OR actor_type = $2)
+			AND ($3::text IS NULL OR action = $3)
+			AND ($4::text IS NULL OR result = $4)
+			AND ($5::text IS NULL OR resource_type = $5)
+			AND ($6::text IS NULL OR resource_id = $6)`
+	arguments := []any{
+		nullableString(request.ProjectID), nullableActorType(request.ActorType), nullableString(request.Action),
+		nullableAuditResult(request.Result), nullableString(request.ResourceType), nullableString(request.ResourceID),
+	}
+	var total int64
+	if err := r.exec.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs`+where, arguments...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.exec.QueryContext(ctx, auditSelect+where+`
+		ORDER BY occurred_at DESC, id DESC
+		LIMIT $7 OFFSET $8
+	`, append(arguments, request.Limit, request.Offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]domain.AuditLog, 0, request.Limit)
+	for rows.Next() {
+		item, err := scanAudit(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+func nullableActorType(value *domain.ActorType) any {
+	if value == nil {
+		return nil
+	}
+	return string(*value)
+}
+
+func nullableAuditResult(value *domain.AuditResult) any {
+	if value == nil {
+		return nil
+	}
+	return string(*value)
 }
 
 func (r *postgresAuditRepository) Create(ctx context.Context, log domain.AuditLog) error {

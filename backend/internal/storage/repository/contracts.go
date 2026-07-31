@@ -53,6 +53,18 @@ type SimulatorStore interface {
 	TransactSimulator(ctx context.Context, fn func(SimulatorTx) error) error
 }
 
+type WebhookAuditStore interface {
+	Events() EventQueries
+	Webhooks() WebhookQueries
+	Audits() AuditQueries
+	TransactWebhookAudit(ctx context.Context, fn func(WebhookAuditTx) error) error
+}
+
+type WebhookAuditTx interface {
+	Webhooks() WebhookRepository
+	Audits() AuditRepository
+}
+
 type DeviceTx interface {
 	Projects() ProjectRepository
 	DeviceTypes() DeviceTypeQueries
@@ -290,6 +302,16 @@ type EventQueries interface {
 	Get(ctx context.Context, id string) (domain.Event, error)
 	GetByDeduplicationKey(ctx context.Context, projectID, deduplicationKey string) (domain.Event, error)
 	ListByCommand(ctx context.Context, commandID string) ([]domain.Event, error)
+	List(ctx context.Context, request ListEventsRequest) ([]domain.Event, int64, error)
+}
+
+type ListEventsRequest struct {
+	ProjectID *string
+	DeviceID  *string
+	CommandID *string
+	EventType *domain.EventType
+	Limit     int
+	Offset    int
 }
 
 type EventRepository interface {
@@ -335,6 +357,15 @@ type CreateWebhookReplayRequest struct {
 type WebhookQueries interface {
 	GetDelivery(ctx context.Context, id string) (domain.WebhookDelivery, error)
 	ListAttempts(ctx context.Context, deliveryID string) ([]domain.WebhookDeliveryAttempt, error)
+	ListDeliveries(ctx context.Context, request ListWebhookDeliveriesRequest) ([]domain.WebhookDelivery, int64, error)
+}
+
+type ListWebhookDeliveriesRequest struct {
+	ProjectID *string
+	EventID   *string
+	Status    *domain.WebhookDeliveryStatus
+	Limit     int
+	Offset    int
 }
 
 type WebhookRepository interface {
@@ -349,6 +380,18 @@ type WebhookRepository interface {
 
 type AuditQueries interface {
 	Get(ctx context.Context, id string) (domain.AuditLog, error)
+	List(ctx context.Context, request ListAuditsRequest) ([]domain.AuditLog, int64, error)
+}
+
+type ListAuditsRequest struct {
+	ProjectID    *string
+	ActorType    *domain.ActorType
+	Action       *string
+	Result       *domain.AuditResult
+	ResourceType *string
+	ResourceID   *string
+	Limit        int
+	Offset       int
 }
 
 type AuditRepository interface {

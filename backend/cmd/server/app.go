@@ -41,6 +41,7 @@ type app struct {
 	cloudProviders cloudProviderRegistry
 	gateway        *gateway.Service
 	webhooks       *webhookaudit.Service
+	webhookAudit   *webhookaudit.PersistentService
 	workerMu       sync.Mutex
 	commandCancel  context.CancelFunc
 	commandDone    chan struct{}
@@ -135,8 +136,11 @@ func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authen
 		commandRouter = newCommandDispatchService(service, cloudProviders)
 	}
 	var simulatorService *simulatorruntime.Service
+	var webhookAuditService *webhookaudit.PersistentService
 	if db != nil {
-		simulatorService = simulatorruntime.NewService(repository.NewPostgresStore(db), nil)
+		store := repository.NewPostgresStore(db)
+		simulatorService = simulatorruntime.NewService(store, nil)
+		webhookAuditService = webhookaudit.NewPersistentService(store)
 	}
 	return &app{
 		cfg:            cfg,
@@ -151,6 +155,7 @@ func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authen
 		cloudProviders: cloudProviders,
 		gateway:        gatewayService,
 		webhooks:       webhookService,
+		webhookAudit:   webhookAuditService,
 	}
 }
 
@@ -193,7 +198,7 @@ func (a *app) routes() http.Handler {
 	})
 	mux.Handle("/v1/open/", openRouter)
 	protectedV1 := http.NewServeMux()
-	registerWebhookAuditRoutes(protectedV1, a.webhooks)
+	registerWebhookAuditRoutes(protectedV1, a)
 	protectedV1.HandleFunc("/v1/simulator", a.handle(a.handleSimulator))
 	protectedV1.HandleFunc("/v1/simulator/gateway", a.handle(a.handleSimulator))
 	legacyV1Router := httpapi.NewRouterWithResourceServices(a.commandRouter, projectBridge, nil, routerHooks)
@@ -245,8 +250,11 @@ func (a *app) replaceRuntime(cfg config, db *sql.DB, auth authenticator, project
 	a.devices = devices
 	a.commands = commands
 	a.simulator = nil
+	a.webhookAudit = nil
 	if db != nil {
-		a.simulator = simulatorruntime.NewService(repository.NewPostgresStore(db), nil)
+		store := repository.NewPostgresStore(db)
+		a.simulator = simulatorruntime.NewService(store, nil)
+		a.webhookAudit = webhookaudit.NewPersistentService(store)
 	}
 	return previousDB
 }
@@ -255,6 +263,12 @@ func (a *app) simulatorService() *simulatorruntime.Service {
 	a.runtimeMu.RLock()
 	defer a.runtimeMu.RUnlock()
 	return a.simulator
+}
+
+func (a *app) persistentWebhookAuditService() *webhookaudit.PersistentService {
+	a.runtimeMu.RLock()
+	defer a.runtimeMu.RUnlock()
+	return a.webhookAudit
 }
 
 func newPersistentCommandWorker(store commandworker.Store, providers cloudProviderRegistry) (*commandworker.Worker, error) {

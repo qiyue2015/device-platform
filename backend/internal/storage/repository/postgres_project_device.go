@@ -101,6 +101,12 @@ func (s *PostgresStore) TransactSimulator(ctx context.Context, fn func(Simulator
 	})
 }
 
+func (s *PostgresStore) TransactWebhookAudit(ctx context.Context, fn func(WebhookAuditTx) error) error {
+	return s.WithinTransaction(ctx, func(tx *PostgresTx) error {
+		return fn(tx)
+	})
+}
+
 type PostgresTx struct {
 	tx *sql.Tx
 }

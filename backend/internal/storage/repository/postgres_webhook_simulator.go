@@ -40,6 +40,48 @@ func (r *postgresWebhookRepository) ListAttempts(ctx context.Context, deliveryID
 	return items, nil
 }
 
+func (r *postgresWebhookRepository) ListDeliveries(ctx context.Context, request ListWebhookDeliveriesRequest) ([]domain.WebhookDelivery, int64, error) {
+	if request.Limit < 1 || request.Limit > 100 || request.Offset < 0 {
+		return nil, 0, ErrInvalidRepositoryRequest
+	}
+	const where = `
+		WHERE ($1::uuid IS NULL OR project_id = $1)
+			AND ($2::uuid IS NULL OR event_id = $2)
+			AND ($3::text IS NULL OR status = $3)`
+	arguments := []any{nullableString(request.ProjectID), nullableString(request.EventID), nullableWebhookStatus(request.Status)}
+	var total int64
+	if err := r.exec.QueryRowContext(ctx, `SELECT count(*) FROM webhook_deliveries`+where, arguments...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.exec.QueryContext(ctx, webhookDeliverySelect+where+`
+		ORDER BY created_at DESC, id DESC
+		LIMIT $4 OFFSET $5
+	`, append(arguments, request.Limit, request.Offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]domain.WebhookDelivery, 0, request.Limit)
+	for rows.Next() {
+		item, err := scanWebhookDelivery(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+func nullableWebhookStatus(value *domain.WebhookDeliveryStatus) any {
+	if value == nil {
+		return nil
+	}
+	return string(*value)
+}
+
 func (r *postgresWebhookRepository) CreateDelivery(ctx context.Context, request CreateWebhookDeliveryRequest) (domain.WebhookDelivery, bool, error) {
 	if strings.TrimSpace(request.ID) == "" || strings.TrimSpace(request.EventID) == "" || len(request.RawBody) == 0 {
 		return domain.WebhookDelivery{}, false, ErrInvalidRepositoryRequest
