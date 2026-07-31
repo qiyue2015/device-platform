@@ -26,7 +26,7 @@ func TestFrozenContractMigrationOnPostgres(t *testing.T) {
 			t.Fatalf("repeat migrations: %v", err)
 		}
 		var count int
-		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 4 {
+		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 5 {
 			t.Fatalf("migration count = %d, err = %v", count, err)
 		}
 		var profileHash string
@@ -232,6 +232,72 @@ func TestMigrationRollbackAndReapply(t *testing.T) {
 	})
 }
 
+func TestAuditLogActionsMigrationRollbackAndReapply(t *testing.T) {
+	baseURL := requireMigrationTestDatabase(t)
+	withIsolatedSchema(t, baseURL, func(db *sql.DB) {
+		ctx := context.Background()
+		if err := ApplyMigrations(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+		if err := RollbackLastMigration(ctx, db); err != nil {
+			t.Fatalf("rollback 005: %v", err)
+		}
+		assertSQLFails(t, db, `
+			INSERT INTO audit_logs (id, actor_type, action, resource_type, result)
+			VALUES ('80000000-0000-0000-0000-000000000001', 'system', 'provider.callback_rejected', 'provider_callback', 'failure')
+		`, "extended Audit action after 005 rollback")
+		if err := ApplyMigrations(ctx, db); err != nil {
+			t.Fatalf("reapply 005: %v", err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO audit_logs (id, actor_type, action, resource_type, result)
+			VALUES
+				('80000000-0000-0000-0000-000000000001', 'system', 'project.webhook_secret_decryption_failed', 'project', 'failure'),
+				('80000000-0000-0000-0000-000000000002', 'provider', 'provider.callback_rejected', 'provider_callback', 'failure')
+		`); err != nil {
+			t.Fatalf("insert extended Audit actions after reapply: %v", err)
+		}
+	})
+}
+
+func TestAuditLogActionsRollbackRejectsExtendedActions(t *testing.T) {
+	baseURL := requireMigrationTestDatabase(t)
+	tests := []string{
+		"project.webhook_secret_decryption_failed",
+		"provider.callback_rejected",
+	}
+	for index, action := range tests {
+		t.Run(action, func(t *testing.T) {
+			withIsolatedSchema(t, baseURL, func(db *sql.DB) {
+				ctx := context.Background()
+				if err := ApplyMigrations(ctx, db); err != nil {
+					t.Fatal(err)
+				}
+				id := fmt.Sprintf("80000000-0000-0000-0000-%012d", index+1)
+				if _, err := db.Exec(`
+					INSERT INTO audit_logs (id, actor_type, action, resource_type, result)
+					VALUES ($1, 'system', $2, 'audit_action', 'failure')
+				`, id, action); err != nil {
+					t.Fatalf("insert extended Audit action: %v", err)
+				}
+
+				err := RollbackLastMigration(ctx, db)
+				if err == nil || !strings.Contains(err.Error(), "cannot rollback audit log actions while extended Audit actions exist") {
+					t.Fatalf("expected fail-closed 005 rollback, got %v", err)
+				}
+				var applied bool
+				if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '005_audit_log_actions')`).Scan(&applied); err != nil || !applied {
+					t.Fatalf("005 must remain applied after refused rollback: applied=%v err=%v", applied, err)
+				}
+				var storedAction string
+				if err := db.QueryRow(`SELECT action FROM audit_logs WHERE id = $1`, id).Scan(&storedAction); err != nil || storedAction != action {
+					t.Fatalf("refused rollback must preserve Audit data: action=%q err=%v", storedAction, err)
+				}
+			})
+		})
+	}
+}
+
 func TestTransportFailureTimingRollbackRejectsIncompatibleData(t *testing.T) {
 	baseURL := requireMigrationTestDatabase(t)
 	withIsolatedSchema(t, baseURL, func(db *sql.DB) {
@@ -290,6 +356,7 @@ func TestWebhookAttemptLimitRollbackRejectsEarlyDeadDelivery(t *testing.T) {
 		if err := ApplyMigrations(ctx, db); err != nil {
 			t.Fatal(err)
 		}
+		rollbackAuditLogActionsMigration(t, ctx, db)
 		if _, err := db.Exec(`
 			INSERT INTO projects (id, name, api_key_hash)
 			VALUES ('10000000-0000-0000-0000-000000000001', 'webhook rollback guard', decode(repeat('11', 32), 'hex'));
@@ -487,6 +554,7 @@ func rollbackTransportTimingMigration(t *testing.T, ctx context.Context, db *sql
 
 func rollbackWebhookAttemptLimitMigration(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
+	rollbackAuditLogActionsMigration(t, ctx, db)
 	if err := RollbackLastMigration(ctx, db); err != nil {
 		t.Fatalf("rollback 004: %v", err)
 	}
@@ -496,6 +564,20 @@ func rollbackWebhookAttemptLimitMigration(t *testing.T, ctx context.Context, db 
 	}
 	if applied {
 		t.Fatal("004 must be removed before testing earlier rollback")
+	}
+}
+
+func rollbackAuditLogActionsMigration(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	if err := RollbackLastMigration(ctx, db); err != nil {
+		t.Fatalf("rollback 005: %v", err)
+	}
+	var applied bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '005_audit_log_actions')`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Fatal("005 must be removed before testing earlier rollback")
 	}
 }
 
