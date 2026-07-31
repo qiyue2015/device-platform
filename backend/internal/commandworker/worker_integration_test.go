@@ -461,6 +461,38 @@ func TestPersistentWorkerFailsClosedBeforeDispatch(t *testing.T) {
 	}
 }
 
+func TestPersistentWorkerFailsClosedForInvalidSimulatorClaimSnapshot(t *testing.T) {
+	withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
+		seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
+		makeWorkerDeviceSimulator(t, db)
+		worker := newSimulatorWorker(t, store, Config{WorkerID: "invalid-simulator-snapshot"})
+		registration := worker.adapters[0]
+
+		command, attempt, claimed, err := worker.claimNext(context.Background(), registration)
+		if err != nil || !claimed {
+			t.Fatalf("claimNext claimed=%v err=%v", claimed, err)
+		}
+		if _, err := db.Exec(`UPDATE device_command_attempts SET request_summary = '{}'::jsonb WHERE id = $1`, attempt.ID); err != nil {
+			t.Fatal(err)
+		}
+		attempt.RequestSummary = map[string]any{}
+
+		if err := worker.dispatchClaimed(context.Background(), registration, command, attempt); err != nil {
+			t.Fatalf("dispatchClaimed: %v", err)
+		}
+		assertCommandStatus(t, store, domain.CommandStatusFailed, "provider_not_configured")
+		attempts, err := store.Commands().ListAttempts(context.Background(), workerCommandID)
+		if err != nil || len(attempts) != 1 || attempts[0].Phase != domain.AttemptPhaseCompleted ||
+			attempts[0].Outcome == nil || *attempts[0].Outcome != domain.AttemptOutcomeInvalidRequest || attempts[0].DispatchingAt != nil {
+			t.Fatalf("invalid snapshot Attempt=%+v err=%v", attempts, err)
+		}
+		worked, err := worker.DispatchNext(context.Background())
+		if err != nil || worked {
+			t.Fatalf("completed invalid snapshot was reclaimed: worked=%v err=%v", worked, err)
+		}
+	})
+}
+
 func TestPersistentWorkerNearDispatchDeadlineKeepsDispatchLease(t *testing.T) {
 	withWorkerDatabase(t, func(_ *sql.DB, store *repository.PostgresStore) {
 		seedWorkerCommand(t, store, time.Now().UTC().Add(80*time.Millisecond), false)
@@ -557,7 +589,7 @@ func TestPersistentWorkerCrashAfterSentCommitDoesNotDispatch(t *testing.T) {
 		seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
 		adapter := &fakeAdapter{configured: true, result: acceptedResult()}
 		worker := newTestWorkerWithConfig(t, store, adapter, Config{
-			WorkerID: "crashed-worker", LeaseDuration: 20 * time.Millisecond,
+			WorkerID: "crashed-worker", LeaseDuration: time.Second,
 		})
 		registration := worker.adapters[0]
 		command, attempt, claimed, err := worker.claimNext(context.Background(), registration)
@@ -618,7 +650,7 @@ func TestPersistentWorkerRunResumesQueuedAndExpiredDispatching(t *testing.T) {
 			seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
 			adapter := &fakeAdapter{configured: true, result: acceptedResult()}
 			crashed := newTestWorkerWithConfig(t, store, adapter, Config{
-				WorkerID: "run-crashed", LeaseDuration: 20 * time.Millisecond,
+				WorkerID: "run-crashed", LeaseDuration: time.Second,
 			})
 			registration := crashed.adapters[0]
 			command, attempt, claimed, err := crashed.claimNext(context.Background(), registration)

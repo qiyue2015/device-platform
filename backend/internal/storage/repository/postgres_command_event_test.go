@@ -204,7 +204,11 @@ func TestAttemptCompletionAllowed(t *testing.T) {
 			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeDeviceAcked, ConfirmationLevel: domain.ConfirmationDeviceAcked, EvidenceStatus: domain.EvidenceVerified}, want: false,
 		},
 		{
-			name: "invalid request is pre-dispatch WWTIOT only", provider: domain.ProviderCodeWWTIOT, phase: domain.AttemptPhaseClaimed,
+			name: "WWTIOT invalid request is pre-dispatch only", provider: domain.ProviderCodeWWTIOT, phase: domain.AttemptPhaseClaimed,
+			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeInvalidRequest, ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone}, want: true,
+		},
+		{
+			name: "simulator invalid request is pre-dispatch only", provider: domain.ProviderCodeSimulator, phase: domain.AttemptPhaseClaimed,
 			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeInvalidRequest, ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone}, want: true,
 		},
 	}

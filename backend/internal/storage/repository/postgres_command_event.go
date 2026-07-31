@@ -786,7 +786,8 @@ func evidenceDoesNotRegress(currentLevel domain.ConfirmationLevel, currentEviden
 
 func attemptCompletionAllowed(providerCode string, phase domain.AttemptPhase, request CompleteCommandAttemptRequest) bool {
 	if request.Outcome == domain.AttemptOutcomeInvalidRequest {
-		return providerCode == domain.ProviderCodeWWTIOT && phase == domain.AttemptPhaseClaimed &&
+		return (providerCode == domain.ProviderCodeWWTIOT || providerCode == domain.ProviderCodeSimulator) &&
+			phase == domain.AttemptPhaseClaimed &&
 			request.ConfirmationLevel == domain.ConfirmationNone && request.EvidenceStatus == domain.EvidenceNone
 	}
 	if phase != domain.AttemptPhaseDispatching {
