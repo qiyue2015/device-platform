@@ -45,6 +45,27 @@ const routes: AppRouteRecordRaw[] = [
     ],
   },
   {
+    path: '/providers',
+    name: 'Providers',
+    component: DEFAULT_LAYOUT,
+    meta: {
+      locale: 'menu.providers',
+      icon: 'icon-apps',
+      requiresAuth: true,
+      menuGroup: 'menu.group.resources',
+      menuGroupOrder: 1,
+      order: 3,
+    },
+    children: [
+      {
+        path: 'index',
+        name: 'ProvidersIndex',
+        component: () => import('@/views/providers/index.vue'),
+        meta: { locale: 'menu.providers.index', requiresAuth: true, roles: ['*'] },
+      },
+    ],
+  },
+  {
     path: '/commands',
     name: 'Commands',
     component: DEFAULT_LAYOUT,
@@ -54,7 +75,7 @@ const routes: AppRouteRecordRaw[] = [
       requiresAuth: true,
       menuGroup: 'menu.group.commands',
       menuGroupOrder: 2,
-      order: 3,
+      order: 4,
     },
     children: [
       {
@@ -75,7 +96,7 @@ const routes: AppRouteRecordRaw[] = [
       requiresAuth: true,
       menuGroup: 'menu.group.commands',
       menuGroupOrder: 2,
-      order: 4,
+      order: 5,
     },
     children: [
       {
@@ -83,6 +104,27 @@ const routes: AppRouteRecordRaw[] = [
         name: 'WebhooksIndex',
         component: () => import('@/views/webhooks/index.vue'),
         meta: { locale: 'menu.webhooks.index', requiresAuth: true, roles: ['*'] },
+      },
+    ],
+  },
+  {
+    path: '/events',
+    name: 'Events',
+    component: DEFAULT_LAYOUT,
+    meta: {
+      locale: 'menu.events',
+      icon: 'icon-notification',
+      requiresAuth: true,
+      menuGroup: 'menu.group.operations',
+      menuGroupOrder: 3,
+      order: 6,
+    },
+    children: [
+      {
+        path: 'index',
+        name: 'EventsIndex',
+        component: () => import('@/views/events/index.vue'),
+        meta: { locale: 'menu.events.index', requiresAuth: true, roles: ['*'] },
       },
     ],
   },
@@ -96,7 +138,7 @@ const routes: AppRouteRecordRaw[] = [
       requiresAuth: true,
       menuGroup: 'menu.group.operations',
       menuGroupOrder: 3,
-      order: 5,
+      order: 7,
     },
     children: [
       {
@@ -117,7 +159,7 @@ const routes: AppRouteRecordRaw[] = [
       requiresAuth: true,
       menuGroup: 'menu.group.operations',
       menuGroupOrder: 3,
-      order: 6,
+      order: 8,
     },
     children: [
       {

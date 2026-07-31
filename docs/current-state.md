@@ -3,7 +3,7 @@ title: 当前实现状态
 snapshot_date: 2026-07-31
 status: implementation-snapshot
 contract_freeze_revision: 2026-07-31.2
-verified_against_code_revision: implementation-unit-2026-07-31-webhook-dispatcher
+verified_against_code_revision: implementation-unit-2026-07-31-admin-console
 ---
 
 # 当前实现状态
@@ -20,24 +20,24 @@ verified_against_code_revision: implementation-unit-2026-07-31-webhook-dispatche
 
 ## 能力快照
 
-| 能力                              | 状态             | 已验证事实                                                                                                                                                                                                      |
-| --------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 安装与单管理员认证                | 已实现           | 安装使用 PostgreSQL migration；JWT 固定 issuer/audience/jti/session generation，每次受保护请求回查数据库，logout 原子失效旧 token，login 持久限流且 login/refresh/logout 写安全审计；`backend/cmd/server/auth.go`。 |
-| Project、Device HTTP API          | 已实现           | 已安装运行时的 Project 与 Device 管理/Open 读取已接入 PostgreSQL，并执行冻结的字段、隔离、分页、lifecycle 与凭据边界。                                                                                              |
-| Command HTTP API                  | 已实现           | Admin/Open 创建、列表、详情和 queued cancel 已接入持久 Command aggregate；创建执行 profile/payload、Provider 配置、Project scope 与持久幂等校验，只提交 `queued`，不在 HTTP 请求内调用 Provider。                    |
-| 业务数据持久化                    | 部分实现         | Project、凭据版本、Device、Command/Attempt、Simulator 配置、Event、Webhook Delivery/Attempt、Audit 与 worker 进度已接入 PostgreSQL 运行时；公开 callback 仍按冻结合同关闭，因此 RawMessage 尚未进入运行时主链。                   |
-| Project 机器 API                  | 已实现           | 已安装运行时按 `X-API-Key` 的 SHA-256 digest 查找 Project，只信任 direct peer 执行 IPv4/IPv6 whitelist；普通 DTO 不返回 key、digest、Webhook secret、ciphertext 或 nonce，轮换提交后旧 key 立即失效。             |
-| Project 数据隔离                  | 已实现           | Project 认证、配置以及 Admin/Open Device 和 Command 查询/写入均使用 Project-scoped PostgreSQL 校验；Open API 不能用 body、header 或 query 切换 Project，跨 Project 资源按不可见处理。                               |
-| WWTIOT 下行                       | 部分实现         | 持久 dispatcher 已按冻结 profile 调用 V2 adapter；固定 10 秒 client、严格请求/响应、echo、失败分类、证据等级与脱敏摘要已有组件和集成测试。仅证明代码层投递链，不代表真实服务接受、设备 ACK 或设备成功。              |
-| WWTIOT callback                   | 部分实现 / Unknown | 已有 64 KiB 严格 decoder、字段校验、identity 映射和规范化候选组件；公开 `POST /v1/provider-callbacks/wwtiot` 固定 503 且不读取 body。签名顺序、防重放与命令关联仍为 Unknown。                                    |
-| Capability 分层                   | 已实现           | `smart-lock` revision 1 profile 与 Device Type 读取已接入持久运行时；Command 创建以及 WWTIOT/simulator dispatcher 消费同一持久 profile，派生 action、payload、revision、delivery policy、deadline、Provider timeout 与结果观察期限。               |
-| 设备最终执行语义                  | 未实现           | HTTP 创建 Command 不同步调用 WWTIOT；dispatcher 对 Provider HTTP acceptance 只保存 `sent/provider_accepted/unverified`，结果观察超时会结束悬挂状态，但可信 Device ACK/final evidence 尚未接入，真实设备最终执行仍无证据。 |
-| 模拟器核心链路                    | 已实现           | 已安装运行时使用持久 `GET/PATCH /v1/simulator`，并让 simulator Device 的 Command 经过统一 dispatcher、Attempt、Command 状态机、Event、初始 Delivery 与 timeout scanner；只产生受控 Provider 层结果，不产生 Device ACK/final 或 `success`。                                         |
-| Event、Webhook、Audit             | 已实现           | 已安装运行时的 Event、Webhook Delivery/Attempt 与 Audit 管理读取及持久 dispatcher 已接入 PostgreSQL；Event/Audit 只读，dead Delivery replay 使用当前 Project Webhook snapshot 创建新 Delivery 并与 `webhook.delivery_replayed` Audit 原子提交。 |
-| Webhook 配置                      | 已实现           | `/v1/projects` 是唯一配置入口；URL、AES-256-GCM secret 版本与 Audit 已持久化，初始与 replay Delivery 保存配置 snapshot，worker 按 snapshot 解析历史 secret，不使用 fallback。 |
-| 命令超时与崩溃恢复                | 已实现           | 持久 worker 周期处理 dispatch deadline、result observation deadline 与过期 dispatching Attempt；dispatching 崩溃保守转 `unknown/provider_delivery_unknown`，原 Attempt 和 request key 不重放，晚到 worker 结果被 fencing。 |
-| 管理后台                          | 部分实现         | 已有 Project、Device、Command、Webhook、Audit 和 simulator 页面/API 调用；部分字段、动作与后端不一致。                                                                                                          |
-| 请求关联与分页                    | 已实现           | envelope 固定输出全部字段；request ID 已贯穿 header、响应、日志和适用的持久 Audit。Project、Device Type、Provider、Admin/Open Device、Command、Event、Webhook Delivery 与 Audit 已实现严格分页和冻结排序。   |
+| 能力                     | 状态               | 已验证事实                                                                                                                                                                                                                                                                                                   |
+| ------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 安装与单管理员认证       | 已实现             | 安装使用 PostgreSQL migration；JWT 固定 issuer/audience/jti/session generation，每次受保护请求回查数据库，logout 原子失效旧 token，login 持久限流且 login/refresh/logout 写安全审计；`backend/cmd/server/auth.go`。                                                                                          |
+| Project、Device HTTP API | 已实现             | 已安装运行时的 Project 与 Device 管理/Open 读取已接入 PostgreSQL，并执行冻结的字段、隔离、分页、lifecycle 与凭据边界。                                                                                                                                                                                       |
+| Command HTTP API         | 已实现             | Admin/Open 创建、列表、详情和 queued cancel 已接入持久 Command aggregate；创建执行 profile/payload、Provider 配置、Project scope 与持久幂等校验，只提交 `queued`，不在 HTTP 请求内调用 Provider。                                                                                                            |
+| 业务数据持久化           | 部分实现           | Project、凭据版本、Device、Command/Attempt、Simulator 配置、Event、Webhook Delivery/Attempt、Audit 与 worker 进度已接入 PostgreSQL 运行时；公开 callback 仍按冻结合同关闭，因此 RawMessage 尚未进入运行时主链。                                                                                              |
+| Project 机器 API         | 已实现             | 已安装运行时按 `X-API-Key` 的 SHA-256 digest 查找 Project，只信任 direct peer 执行 IPv4/IPv6 whitelist；普通 DTO 不返回 key、digest、Webhook secret、ciphertext 或 nonce，轮换提交后旧 key 立即失效。                                                                                                        |
+| Project 数据隔离         | 已实现             | Project 认证、配置以及 Admin/Open Device 和 Command 查询/写入均使用 Project-scoped PostgreSQL 校验；Open API 不能用 body、header 或 query 切换 Project，跨 Project 资源按不可见处理。                                                                                                                        |
+| WWTIOT 下行              | 部分实现           | 持久 dispatcher 已按冻结 profile 调用 V2 adapter；固定 10 秒 client、严格请求/响应、echo、失败分类、证据等级与脱敏摘要已有组件和集成测试。仅证明代码层投递链，不代表真实服务接受、设备 ACK 或设备成功。                                                                                                      |
+| WWTIOT callback          | 部分实现 / Unknown | 已有 64 KiB 严格 decoder、字段校验、identity 映射和规范化候选组件；公开 `POST /v1/provider-callbacks/wwtiot` 固定 503 且不读取 body。签名顺序、防重放与命令关联仍为 Unknown。                                                                                                                                |
+| Capability 分层          | 已实现             | `smart-lock` revision 1 profile 与 Device Type 读取已接入持久运行时；Command 创建以及 WWTIOT/simulator dispatcher 消费同一持久 profile，派生 action、payload、revision、delivery policy、deadline、Provider timeout 与结果观察期限。                                                                         |
+| 设备最终执行语义         | 未实现             | HTTP 创建 Command 不同步调用 WWTIOT；dispatcher 对 Provider HTTP acceptance 只保存 `sent/provider_accepted/unverified`，结果观察超时会结束悬挂状态，但可信 Device ACK/final evidence 尚未接入，真实设备最终执行仍无证据。                                                                                    |
+| 模拟器核心链路           | 已实现             | 已安装运行时使用持久 `GET/PATCH /v1/simulator`，并让 simulator Device 的 Command 经过统一 dispatcher、Attempt、Command 状态机、Event、初始 Delivery 与 timeout scanner；只产生受控 Provider 层结果，不产生 Device ACK/final 或 `success`。                                                                   |
+| Event、Webhook、Audit    | 已实现             | 已安装运行时的 Event、Webhook Delivery/Attempt 与 Audit 管理读取及持久 dispatcher 已接入 PostgreSQL；Event/Audit 只读，dead Delivery replay 使用当前 Project Webhook snapshot 创建新 Delivery 并与 `webhook.delivery_replayed` Audit 原子提交。                                                              |
+| Webhook 配置             | 已实现             | `/v1/projects` 是唯一配置入口；URL、AES-256-GCM secret 版本与 Audit 已持久化，初始与 replay Delivery 保存配置 snapshot，worker 按 snapshot 解析历史 secret，不使用 fallback。                                                                                                                                |
+| 命令超时与崩溃恢复       | 已实现             | 持久 worker 周期处理 dispatch deadline、result observation deadline 与过期 dispatching Attempt；dispatching 崩溃保守转 `unknown/provider_delivery_unknown`，原 Attempt 和 request key 不重放，晚到 worker 结果被 fencing。真实独立 server 进程测试也覆盖共享幂等、worker ownership 与进程终止后 lease 恢复。 |
+| 管理后台                 | 已实现             | Project、Device、Provider/Device Type、Command、Event、Webhook、Audit 和 simulator 页面已按冻结 DTO、分页 envelope 与状态语义接入；Project 一次性凭据/轮换、Device lifecycle、profile action、queued cancel、Event/Attempt 详情、dead replay 与 Simulator outcome 均按后端事实展示。                         |
+| 请求关联与分页           | 已实现             | envelope 固定输出全部字段；request ID 已贯穿 header、响应、日志和适用的持久 Audit。Project、Device Type、Provider、Admin/Open Device、Command、Event、Webhook Delivery 与 Audit 已实现严格分页和冻结排序。                                                                                                   |
 
 ## 关键实现漂移
 
@@ -71,13 +71,14 @@ verified_against_code_revision: implementation-unit-2026-07-31-webhook-dispatche
 - worker 逐字节复用 Delivery raw body，以 Attempt Unix 秒和历史 secret version 生成 HMAC-SHA256，任意 2xx 进入 `delivered`。响应只保存不含正文值的 media type、长度、截断标记与 digest；secret 解密失败与固定安全 Audit 原子提交。
 - dispatcher 禁止 redirect 和环境代理，连接时校验 DNS 返回的每个地址以防 rebinding；默认拒绝非公开、loopback、link-local、multicast 与云 metadata 地址，只有部署 `WEBHOOK_EGRESS_ALLOWLIST` 可显式开放所需内部网段，metadata 固定地址不能由宽网段放行。
 - `/v1/events` 与 `/v1/audit-logs` 在已安装持久运行时和未安装兼容路径都严格只读；旧内存 service 的写方法仍是未接入路由的代码残留。
-- 前端 Audit 类型期望 `actor_id`、`ip`、`summary`，后端返回 `actor_type`、`ip_address`、`metadata`。
-- 后端具备部分 cancel/online 操作，但当前页面没有完整暴露；部分命令失败字段也存在前后端命名漂移。
+- 前端 API 类型与页面已使用后端冻结字段和 `{items}` 分页 envelope；所有资源表格只请求当前服务端页并使用 `meta.total`，Dashboard 也只读取有界第一页，不再隐式拉取全量。Project/Device 引用选择器按 100 条服务端页触底续载，不会静默截断第 101 条后的资源。Audit 展示 `actor_type`、`actor_id`、`ip_address`、`metadata`、资源与 `occurred_at`；Command 详情展示扁平 aggregate、Attempt/Event、confirmation/evidence 与终止原因；Webhook 展示 `target_url`、Attempt 详情并只允许对 `dead` Delivery replay。
+- Project 创建、更新和凭据轮换保留一次性明文披露；轮换入口在请求期间全局互斥，凭据弹窗关闭时立即清除前端引用并卸载内容。Device 创建只提交允许字段，Simulator identity 由平台派生，名称/lifecycle 更新受后端状态机约束；Command action 来自 Device Type profile，创建 body 使用 `project_id`，只有 `queued` 可取消。
+- 管理后台提供只读 Provider/Device Type 注册与 profile 诊断，以及可按 Project、Device、Command 和稳定类型筛选的独立 Event 列表/详情；Command 与 Webhook Attempt 仍在各自详情诊断，Audit 保持只读。页面没有将 Provider `integration_status`、Simulator 的 `provider_accepted/verified` 或 WWTIOT HTTP acceptance 展示为 Device ACK/final/success。
 
 ## 已有测试能证明什么
 
-- Go 测试覆盖持久 Project HTTP 生命周期、重启读取、一次性凭据披露、凭据轮换、IP whitelist、并发与回滚；也覆盖持久 Device 与 Command 的创建/读取/过滤/lifecycle、Project 隔离、Provider/profile gate、持久幂等与并发、取消、稳定排序，以及 Device/Command、Event、Delivery、Audit 原子回滚。PostgreSQL integration tests 另覆盖 Event/Webhook/Audit 严格查询、详情安全 DTO、dead replay 当前配置 snapshot、Webhook 精确签名、逐字节重试、Attempt/dead、secret 解密安全审计、lease 恢复、并发、回滚与重启读取，以及 Command worker 与 simulator 结果矩阵、profile timeout、Provider 公平领取、snapshot 不变性、deadline scanner 和晚结果 fencing。WWTIOT client/callback 仍只有无真实设备的组件合同证据。
-- 前端类型检查、i18n 检查和构建可验证静态一致性。
+- Go 测试覆盖持久 Project HTTP 生命周期、重启读取、一次性凭据披露、凭据轮换、IP whitelist、并发与回滚；也覆盖持久 Device 与 Command 的创建/读取/过滤/lifecycle、Project 隔离、Provider/profile gate、持久幂等与并发、取消、稳定排序，以及 Device/Command、Event、Delivery、Audit 原子回滚。PostgreSQL integration tests 另覆盖 Event/Webhook/Audit 严格查询、详情安全 DTO、dead replay 当前配置 snapshot、Webhook 精确签名、逐字节重试、Attempt/dead、secret 解密安全审计、lease 恢复、并发、回滚与重启读取，以及 Command worker 与 simulator 结果矩阵、profile timeout、Provider 公平领取、snapshot 不变性、deadline scanner 和晚结果 fencing。真实独立 server 子进程测试覆盖跨进程 Command 幂等、Webhook 单一领取，以及进程终止后等待 lease 到期并保守恢复为 `unknown/provider_delivery_unknown`；WWTIOT client/callback 仍只有无真实设备的组件合同证据。
+- 前端 `type:check`、`i18n:check`、生产 build、ESLint 与 Stylelint 已通过。ego-browser 在桌面与 390px 移动视口验收 Dashboard、Project、Device、Provider/Device Type、Command、Event、Webhook、Audit 和 Simulator；Command、Event、Webhook 与 Device Type Drawer 以及 Project/Device Modal 均受视口宽度约束。Event 翻到第 2 页时实际请求 `page=2&page_size=10`；含 106 个 Project 和单 Project 105 台 Device 的隔离数据验证两个引用选择器均实际请求 `page=2&page_size=100` 并显示末页选项。2 秒网络延迟下，一次 API Key 轮换期间当前页所有 API Key/Webhook secret 轮换入口都被禁用，只有目标入口显示 loading；凭据弹窗关闭后明文不再存在于 DOM。本地隔离数据库中的 Simulator Project/Device/Command 与 outcome 只产生和展示 Provider 层证据，未把它表述为设备成功。
 - 这些检查能证明持久 Command/Webhook worker、simulator 主链、并发和数据库恢复的代码行为，但不能证明某个外部业务 Webhook endpoint 可达、公开可信 callback、真实 WWTIOT 服务行为或真实智能锁最终执行；Command 创建的 `201`/幂等重放 `200` 仍只证明平台接受请求并持久化 `queued`，Simulator 与本地 HTTP 测试服务器都不能替代真实设备证据。
 
 ## Unknown 与验证条件
@@ -89,6 +90,5 @@ verified_against_code_revision: implementation-unit-2026-07-31-webhook-dispatche
 | V2 资料描述的设备信息 callback 在当前账号下是否可用，以及能否作为可关联的最终执行结果 | 厂商确认回调配置与签名规则，并用受控真实设备验证送达、关联、去重和结果终局性；详见 [WWTIOT Provider 合同](./providers/wwtiot.md)。 |
 | WWTIOT 实际可观测的最高 confirmation level，以及该层级是否足以支撑设备平台正式验收    | 厂商合同、受控真实设备端到端证据，以及产品所有者基于证据的验收决定。                                                               |
 | 生产网络、TLS、限流、配额和重试安全性                                                 | 目标部署网络与厂商限制说明。                                                                                                       |
-| 多进程实例下完整 HTTP/worker 主链的幂等、顺序和恢复行为                              | 当前已有同进程并发 ownership fencing、后台重启与故障注入测试；仍需独立进程并发运行和进程终止级故障测试。                            |
 
 不在本文记录本机数据库内容、真实密钥或真实业务数据；它们既敏感，也不能作为长期实现事实。

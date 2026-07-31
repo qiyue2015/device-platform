@@ -13,7 +13,6 @@ const fallbackStatus: BusinessStatusMeta = {
 };
 
 export const commandStatusMap: Record<string, BusinessStatusMeta> = {
-  created: { label: 'created', color: 'gray' },
   queued: { label: 'queued', color: 'arcoblue' },
   sent: { label: 'sent', color: 'purple' },
   acked: { label: 'acked', color: 'arcoblue' },
@@ -21,7 +20,7 @@ export const commandStatusMap: Record<string, BusinessStatusMeta> = {
   failed: { label: 'failed', color: 'red' },
   timeout: { label: 'timeout', color: 'red' },
   cancelled: { label: 'cancelled', color: 'gray' },
-  offline: { label: 'offline', color: 'orange' },
+  unknown: { label: 'unknown', color: 'orange' },
 };
 
 export const webhookStatusMap: Record<string, BusinessStatusMeta> = {

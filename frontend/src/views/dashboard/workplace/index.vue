@@ -1,14 +1,14 @@
 <template>
   <div class="page-container dashboard-page">
     <a-grid :cols="24" :col-gap="16" :row-gap="16">
-      <a-grid-item v-for="item in stats" :key="item.label" :span="6">
+      <a-grid-item v-for="item in stats" :key="item.label" :span="{ xs: 24, sm: 12, lg: 6 }">
         <a-card :bordered="false">
           <a-statistic :title="item.label" :value="item.value" :value-style="{ color: item.color }" />
         </a-card>
       </a-grid-item>
-      <a-grid-item :span="14">
+      <a-grid-item :span="{ xs: 24, lg: 14 }">
         <a-card title="Command Status" :bordered="false">
-          <a-table size="small" row-key="id" :pagination="{ pageSize: 6 }" :data="commands" :columns="commandColumns">
+          <a-table size="small" row-key="id" :pagination="false" :data="commands" :columns="commandColumns">
             <template #status="{ record }">
               <a-tag :color="getBusinessStatusMeta('command', record.status).color">
                 {{ getBusinessStatusMeta('command', record.status).label }}
@@ -17,7 +17,7 @@
           </a-table>
         </a-card>
       </a-grid-item>
-      <a-grid-item :span="10">
+      <a-grid-item :span="{ xs: 24, lg: 10 }">
         <a-card title="Quick Actions" :bordered="false">
           <a-space direction="vertical" fill>
             <a-button type="primary" @click="$router.push('/projects/index')">Create Project</a-button>
@@ -27,9 +27,9 @@
           </a-space>
         </a-card>
       </a-grid-item>
-      <a-grid-item :span="12">
+      <a-grid-item :span="{ xs: 24, lg: 12 }">
         <a-card title="Webhook Deliveries" :bordered="false">
-          <a-table size="small" row-key="id" :pagination="{ pageSize: 6 }" :data="webhooks" :columns="webhookColumns">
+          <a-table size="small" row-key="id" :pagination="false" :data="webhooks" :columns="webhookColumns">
             <template #status="{ record }">
               <a-tag :color="getBusinessStatusMeta('webhook', record.status).color">
                 {{ getBusinessStatusMeta('webhook', record.status).label }}
@@ -38,9 +38,13 @@
           </a-table>
         </a-card>
       </a-grid-item>
-      <a-grid-item :span="12">
+      <a-grid-item :span="{ xs: 24, lg: 12 }">
         <a-card title="Audit Logs" :bordered="false">
-          <a-table size="small" row-key="id" :pagination="{ pageSize: 6 }" :data="audits" :columns="auditColumns" />
+          <a-table size="small" row-key="id" :pagination="false" :data="audits" :columns="auditColumns">
+            <template #actor="{ record }">
+              {{ record.actor_type }}<span v-if="record.actor_id"> / {{ record.actor_id }}</span>
+            </template>
+          </a-table>
         </a-card>
       </a-grid-item>
     </a-grid>
@@ -48,7 +52,7 @@
 </template>
 
 <script lang="ts" setup>
-  import { computed, onMounted, ref } from 'vue';
+  import { computed, onMounted, reactive, ref } from 'vue';
   import {
     AuditLogRecord,
     CommandRecord,
@@ -70,12 +74,13 @@
   const commands = ref<CommandRecord[]>([]);
   const webhooks = ref<WebhookDeliveryRecord[]>([]);
   const audits = ref<AuditLogRecord[]>([]);
+  const totals = reactive({ projects: 0, devices: 0, commands: 0, webhooks: 0 });
 
   const stats = computed(() => [
-    { label: 'Projects', value: projects.value.length, color: 'rgb(var(--primary-6))' },
-    { label: 'Devices', value: devices.value.length, color: 'rgb(var(--green-6))' },
-    { label: 'Commands', value: commands.value.length, color: 'rgb(var(--orange-6))' },
-    { label: 'Webhooks', value: webhooks.value.length, color: 'rgb(var(--purple-6))' },
+    { label: 'Projects', value: totals.projects, color: 'rgb(var(--primary-6))' },
+    { label: 'Devices', value: totals.devices, color: 'rgb(var(--green-6))' },
+    { label: 'Commands', value: totals.commands, color: 'rgb(var(--orange-6))' },
+    { label: 'Webhooks', value: totals.webhooks, color: 'rgb(var(--purple-6))' },
   ]);
 
   const commandColumns = computed(() => [
@@ -92,23 +97,27 @@
 
   const auditColumns = computed(() => [
     { title: 'Action', dataIndex: 'action' },
-    { title: 'Actor', dataIndex: 'actor_id' },
-    { title: 'Created', dataIndex: 'created_at', ellipsis: true, tooltip: true },
+    { title: 'Actor', slotName: 'actor', ellipsis: true, tooltip: true },
+    { title: 'Occurred', dataIndex: 'occurred_at', ellipsis: true, tooltip: true },
   ]);
 
   const refresh = async () => {
     const [projectRes, deviceRes, commandRes, webhookRes, auditRes] = await Promise.all([
-      queryProjects(),
-      queryDevices(),
-      queryCommands(),
-      queryWebhookDeliveries(),
-      queryAuditLogs(),
+      queryProjects({ page: 1, page_size: 6 }),
+      queryDevices({ page: 1, page_size: 6 }),
+      queryCommands({ page: 1, page_size: 6 }),
+      queryWebhookDeliveries({ page: 1, page_size: 6 }),
+      queryAuditLogs({ page: 1, page_size: 6 }),
     ]);
     projects.value = projectRes.data;
     devices.value = deviceRes.data;
     commands.value = commandRes.data;
     webhooks.value = webhookRes.data;
     audits.value = auditRes.data;
+    totals.projects = projectRes.meta?.total ?? projectRes.data.length;
+    totals.devices = deviceRes.meta?.total ?? deviceRes.data.length;
+    totals.commands = commandRes.meta?.total ?? commandRes.data.length;
+    totals.webhooks = webhookRes.meta?.total ?? webhookRes.data.length;
   };
 
   onMounted(refresh);

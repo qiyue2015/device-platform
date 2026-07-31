@@ -15,11 +15,11 @@
       <div class="dp-metrics">
         <div class="dp-metric">
           <div class="dp-metric-label">{{ t('devicePlatform.simulator.metric.mode') }}</div>
-          <div class="dp-metric-value">{{ simulator?.mode || '-' }}</div>
+          <div class="dp-metric-value">{{ simulator?.outcome || '-' }}</div>
         </div>
-        <div class="dp-metric" :class="simulator?.heartbeat_active ? 'is-green' : 'is-orange'">
-          <div class="dp-metric-label">{{ t('devicePlatform.simulator.metric.heartbeat') }}</div>
-          <div class="dp-metric-value">{{ simulatorConnectionMeta.label }}</div>
+        <div class="dp-metric is-green">
+          <div class="dp-metric-label">{{ t('devicePlatform.simulator.metric.version') }}</div>
+          <div class="dp-metric-value">{{ simulator?.version || '-' }}</div>
         </div>
         <div class="dp-metric is-purple">
           <div class="dp-metric-label">{{ t('devicePlatform.simulator.metric.delay') }}</div>
@@ -36,11 +36,11 @@
       <div class="dp-split-panel">
         <section class="dp-panel">
           <h2 class="dp-panel-title">{{ t('devicePlatform.simulator.control.mode') }}</h2>
-          <a-radio-group v-model="simulatorMode" type="button" data-testid="simulator-mode">
-            <a-radio v-for="mode in simulatorModes" :key="mode" :value="mode">{{ mode }}</a-radio>
-          </a-radio-group>
+          <a-select v-model="simulatorOutcome" class="simulator-outcomes" data-testid="simulator-outcome">
+            <a-option v-for="outcome in simulatorOutcomes" :key="outcome" :value="outcome">{{ outcome }}</a-option>
+          </a-select>
           <h2 class="dp-panel-title simulator-control-title">{{ t('devicePlatform.simulator.control.delay') }}</h2>
-          <a-input-number v-model="simulatorDelay" :min="0" :step="100" hide-button>
+          <a-input-number v-model="simulatorDelay" :min="0" :max="60000" :step="100" hide-button>
             <template #append>ms</template>
           </a-input-number>
           <a-button
@@ -58,10 +58,12 @@
           <h2 class="dp-panel-title">{{ t('devicePlatform.simulator.statusPanel.title') }}</h2>
           <a-skeleton v-if="!simulator" animation />
           <a-descriptions v-else :column="1" bordered>
-            <a-descriptions-item :label="t('devicePlatform.simulator.metric.mode')">{{ simulator.mode }}</a-descriptions-item>
-            <a-descriptions-item :label="t('devicePlatform.simulator.metric.heartbeat')">
-              <a-tag :color="simulatorConnectionMeta.color">{{ simulatorConnectionMeta.label }}</a-tag>
-            </a-descriptions-item>
+            <a-descriptions-item :label="t('devicePlatform.simulator.metric.mode')">{{
+              simulator.outcome
+            }}</a-descriptions-item>
+            <a-descriptions-item :label="t('devicePlatform.simulator.metric.version')">{{
+              simulator.version
+            }}</a-descriptions-item>
             <a-descriptions-item :label="t('devicePlatform.simulator.metric.delay')"
               >{{ simulator.delay_ms }}ms</a-descriptions-item
             >
@@ -74,12 +76,11 @@
 </template>
 
 <script lang="ts" setup>
-  import { computed, onMounted, ref } from 'vue';
+  import { onMounted, ref } from 'vue';
   import { useI18n } from 'vue-i18n';
   import { Message } from '@arco-design/web-vue';
   import useLoading from '@/hooks/loading';
   import { SimulatorState, getSimulator, updateSimulator } from '@/api/device-platform';
-  import { getBusinessStatusMeta } from '@/utils/device-platform-status';
   import '../device-platform/workspace.less';
 
   defineOptions({ name: 'SimulatorIndex' });
@@ -87,24 +88,27 @@
   const { t } = useI18n();
   const { loading, setLoading } = useLoading(false);
   const simulator = ref<SimulatorState>();
-  const simulatorMode = ref('normal');
-  const simulatorDelay = ref(800);
-  const simulatorModes = ['normal', 'delay', 'offline', 'timeout_then_ack', 'duplicate_ack', 'fail'];
-  const simulatorConnectionMeta = computed(() =>
-    getBusinessStatusMeta('connection', simulator.value?.heartbeat_active ? 'online' : 'offline')
-  );
+  const simulatorOutcome = ref('provider_accepted');
+  const simulatorDelay = ref(0);
+  const simulatorOutcomes = [
+    'provider_accepted',
+    'provider_rejected',
+    'transport_error_before_send',
+    'transport_error_after_send',
+    'invalid_response',
+  ];
 
   const refresh = async () => {
     const res = await getSimulator();
     simulator.value = res.data;
-    simulatorMode.value = res.data.mode;
+    simulatorOutcome.value = res.data.outcome;
     simulatorDelay.value = res.data.delay_ms;
   };
 
   const handleSimulatorUpdate = async () => {
     setLoading(true);
     try {
-      await updateSimulator({ mode: simulatorMode.value, delay_ms: simulatorDelay.value });
+      await updateSimulator({ outcome: simulatorOutcome.value, delay_ms: simulatorDelay.value });
       await refresh();
       Message.success(t('devicePlatform.simulator.message.updated'));
     } finally {
@@ -118,6 +122,10 @@
 <style lang="less" scoped>
   .simulator-control-title {
     margin-top: 20px;
+  }
+
+  .simulator-outcomes {
+    width: 100%;
   }
 
   .simulator-apply {

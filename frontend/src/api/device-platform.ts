@@ -1,33 +1,57 @@
 import axios from 'axios';
 
+export interface PaginationMeta {
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+interface ListEnvelope<T> {
+  items: T[];
+}
+
+interface APIEnvelope<T> {
+  data: T;
+  meta?: PaginationMeta;
+}
+
+export interface PageParams {
+  page?: number;
+  page_size?: number;
+}
+
 export interface ProjectRecord {
   id: string;
-  code: string;
   name: string;
-  api_key?: string;
-  webhook_url: string;
-  webhook_secret?: string;
+  webhook_url: string | null;
+  webhook_configured: boolean;
   ip_whitelist: string[];
   created_at: string;
   updated_at: string;
 }
 
-export interface DeviceRecord {
-  id: string;
-  project_id: string;
-  device_type: string;
+export interface ProjectCredentialRecord extends ProjectRecord {
+  api_key?: string;
+  webhook_secret?: string;
+}
+
+export interface CapabilityActionRecord {
+  identifier: string;
+  payload_schema: Record<string, unknown>;
+  risk_level: string;
+  delivery_policy: string;
+  dispatch_deadline_ms: number;
+  provider_request_timeout_ms: number;
+  result_observation_timeout_ms: number;
+  retry_allowed: boolean;
+  delivery_policy_override_allowed: boolean;
+}
+
+export interface DeviceTypeRecord {
+  code: string;
+  revision: number;
   name: string;
-  lifecycle_status: string;
-  connection_status: string;
-  provider_code: string;
-  provider_device_id: string;
-  access_type: string;
-  transport_protocol: string;
-  adapter: string;
-  capabilities: string[];
-  current_state: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
+  actions: CapabilityActionRecord[];
 }
 
 export interface CloudProviderRecord {
@@ -36,7 +60,32 @@ export interface CloudProviderRecord {
   access_type: string;
   transport_protocol: string;
   adapter: string;
-  configured: boolean;
+  integration_status: 'unconfigured' | 'configured_unverified' | 'verified';
+}
+
+export interface DeviceStateRecord {
+  state: Record<string, unknown>;
+  evidence_status: string;
+  reported_at: string | null;
+  observed_at: string;
+}
+
+export interface DeviceRecord {
+  id: string;
+  project_id: string;
+  device_type_code: string;
+  name: string;
+  provider_code: string;
+  provider_device_id: string;
+  access_type: string;
+  transport_protocol: string;
+  adapter: string;
+  connection_status: string;
+  lifecycle_status: string;
+  current_state: DeviceStateRecord | null;
+  last_seen_at: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface CommandRecord {
@@ -45,148 +94,245 @@ export interface CommandRecord {
   device_id: string;
   command_type: string;
   payload: Record<string, unknown>;
-  idempotency_key?: string;
+  device_type_revision: number;
   delivery_policy: string;
   status: string;
-  failure_reason?: string;
-  cancel_reason?: string;
-  corrected?: boolean;
+  reason_code: string | null;
+  reason_detail: string | null;
+  confirmation_level: string;
+  evidence_status: string;
+  idempotency_key: string;
+  queued_at: string;
+  dispatch_deadline_at: string;
+  sent_at: string | null;
+  result_deadline_at: string | null;
+  finished_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface CommandAttemptRecord {
+  attempt_no: number;
+  phase: string;
+  provider_code: string;
+  adapter: string;
+  provider_request_key: string;
+  outcome: string | null;
+  confirmation_level: string;
+  evidence_status: string;
+  request_summary?: Record<string, unknown>;
+  response_summary?: Record<string, unknown>;
+  error_code: string | null;
+  error_detail: string | null;
+  claimed_at: string;
+  dispatching_at: string | null;
+  completed_at: string | null;
+}
+
+export interface EventRecord {
+  event_id: string;
+  schema_version: number;
+  event_type: string;
+  project_id: string;
+  device_id: string | null;
+  command_id: string | null;
+  occurred_at: string;
+  source: string;
+  payload: Record<string, unknown>;
+}
+
+export interface CommandDetail extends CommandRecord {
+  attempts: CommandAttemptRecord[];
+  events: EventRecord[];
+}
+
+export interface WebhookDeliveryAttemptRecord {
+  attempt_no: number;
+  started_at: string;
+  completed_at: string | null;
+  http_status: number | null;
+  response_summary: string | null;
+  error_code: string | null;
+  error_detail: string | null;
 }
 
 export interface WebhookDeliveryRecord {
   id: string;
   event_id: string;
   project_id: string;
-  device_id: string;
-  webhook_url: string;
+  target_url: string;
+  webhook_config_version: number;
   status: string;
   attempt_count: number;
-  max_attempts: number;
-  last_error?: string;
+  next_attempt_at: string | null;
+  replay_of_delivery_id: string | null;
+  delivered_at: string | null;
   created_at: string;
-  delivered_at?: string;
+  updated_at: string;
+  attempts?: WebhookDeliveryAttemptRecord[];
 }
 
 export interface AuditLogRecord {
   id: string;
+  actor_type: string;
+  actor_id: string | null;
+  project_id: string | null;
   action: string;
-  actor_id: string;
-  project_id?: string;
-  device_id?: string;
-  ip: string;
-  summary: Record<string, unknown>;
-  created_at: string;
+  result: string;
+  resource_type: string;
+  resource_id: string | null;
+  ip_address: string | null;
+  request_id: string | null;
+  metadata: Record<string, unknown>;
+  occurred_at: string;
 }
 
 export interface SimulatorState {
-  mode: string;
+  outcome: string;
   delay_ms: number;
-  heartbeat_active: boolean;
+  version: number;
   updated_at: string;
 }
 
-export interface CommandDetail {
-  command: CommandRecord;
-  attempts: Array<Record<string, unknown>>;
-  events: Array<Record<string, unknown>>;
+async function queryPage<T>(url: string, filters: object = {}): Promise<APIEnvelope<T[]>> {
+  const response = (await axios.get<ListEnvelope<T>>(url, { params: filters })) as unknown as APIEnvelope<ListEnvelope<T>>;
+
+  return { ...response, data: response.data.items || [] };
 }
 
-interface ListEnvelope<T> {
-  items: T[];
+export function queryProjects(filters: { name?: string } & PageParams = {}) {
+  return queryPage<ProjectRecord>('/v1/projects', filters);
 }
 
-function normalizeList<T>(value: T[] | ListEnvelope<T>): T[] {
-  if (Array.isArray(value)) {
-    return value;
-  }
-  return value.items || [];
+export function createProject(data: { name: string; webhook_url?: string; ip_whitelist?: string[] }) {
+  return axios.post<ProjectCredentialRecord>('/v1/projects', data);
 }
 
-export function queryProjects() {
-  return axios.get<ProjectRecord[]>('/v1/projects');
+export function updateProject(id: string, data: { name?: string; webhook_url?: string | null; ip_whitelist?: string[] }) {
+  return axios.patch<ProjectCredentialRecord>(`/v1/projects/${id}`, data);
 }
 
-export function createProject(data: Partial<ProjectRecord>) {
-  return axios.post<ProjectRecord>('/v1/projects', data);
+export function rotateProjectAPIKey(id: string) {
+  return axios.post<ProjectCredentialRecord>(`/v1/projects/${id}/api-key/rotate`);
 }
 
-export function updateProject(id: string, data: Partial<ProjectRecord>) {
-  return axios.patch<ProjectRecord>(`/v1/projects/${id}`, data);
+export function rotateProjectWebhookSecret(id: string) {
+  return axios.post<ProjectCredentialRecord>(`/v1/projects/${id}/webhook-secret/rotate`);
 }
 
-export function queryCloudProviders() {
-  return axios.get<CloudProviderRecord[]>('/v1/cloud-providers');
+export function queryDeviceTypes(filters: PageParams = {}) {
+  return queryPage<DeviceTypeRecord>('/v1/device-types', filters);
 }
 
-export function queryDevices(projectId?: string) {
-  return axios.get<DeviceRecord[]>('/v1/devices', {
-    params: projectId ? { project_id: projectId } : undefined,
-  });
+export function queryCloudProviders(filters: PageParams = {}) {
+  return queryPage<CloudProviderRecord>('/v1/cloud-providers', filters);
 }
 
-export function createDevice(data: Partial<DeviceRecord>) {
+export function queryDevices(
+  filters: {
+    project_id?: string;
+    device_type_code?: string;
+    provider_code?: string;
+    connection_status?: string;
+    lifecycle_status?: string;
+  } & PageParams = {}
+) {
+  return queryPage<DeviceRecord>('/v1/devices', filters);
+}
+
+export function createDevice(data: {
+  project_id: string;
+  name: string;
+  device_type_code: string;
+  provider_code: string;
+  provider_device_id?: string;
+}) {
   return axios.post<DeviceRecord>('/v1/devices', data);
 }
 
-export function queryCommands(projectId?: string) {
-  return axios.get<CommandRecord[]>('/v1/device-commands', {
-    params: projectId ? { project_id: projectId } : undefined,
-  });
+export function updateDevice(id: string, data: { name?: string; lifecycle_status?: string }) {
+  return axios.patch<DeviceRecord>(`/v1/devices/${id}`, data);
+}
+
+export function queryCommands(
+  filters: {
+    project_id?: string;
+    device_id?: string;
+    command_type?: string;
+    status?: string;
+  } & PageParams = {}
+) {
+  return queryPage<CommandRecord>('/v1/device-commands', filters);
 }
 
 export function createCommand(data: {
-  project_id?: string;
+  project_id: string;
   device_id: string;
   command_type: string;
   payload?: Record<string, unknown>;
-  idempotency_key?: string;
-  delivery_policy?: string;
+  idempotency_key: string;
 }) {
-  return axios.post<CommandRecord>(
-    '/v1/device-commands',
-    {
-      device_id: data.device_id,
-      command_type: data.command_type,
-      payload: data.payload || {},
-      idempotency_key: data.idempotency_key,
-      delivery_policy: data.delivery_policy,
-    },
-    {
-      headers: data.project_id ? { 'X-Project-ID': data.project_id } : undefined,
-    }
-  );
-}
-
-export function queryCommandDetail(id: string, projectId?: string) {
-  return axios.get<CommandDetail>(`/v1/device-commands/${id}`, {
-    params: projectId ? { project_id: projectId } : undefined,
+  return axios.post<CommandRecord>('/v1/device-commands', {
+    project_id: data.project_id,
+    device_id: data.device_id,
+    command_type: data.command_type,
+    payload: data.payload || {},
+    idempotency_key: data.idempotency_key,
   });
 }
 
-export function queryWebhookDeliveries() {
-  return axios.get<WebhookDeliveryRecord[] | ListEnvelope<WebhookDeliveryRecord>>('/v1/webhook-deliveries').then((res) => ({
-    ...res,
-    data: normalizeList(res.data),
-  }));
+export function queryCommandDetail(id: string) {
+  return axios.get<CommandDetail>(`/v1/device-commands/${id}`);
+}
+
+export function cancelCommand(id: string) {
+  return axios.post<CommandRecord>(`/v1/device-commands/${id}/cancel`);
+}
+
+export function queryEvents(
+  filters: {
+    project_id?: string;
+    device_id?: string;
+    command_id?: string;
+    event_type?: string;
+  } & PageParams = {}
+) {
+  return queryPage<EventRecord>('/v1/events', filters);
+}
+
+export function queryEventDetail(id: string) {
+  return axios.get<EventRecord>(`/v1/events/${id}`);
+}
+
+export function queryWebhookDeliveries(filters: { project_id?: string; event_id?: string; status?: string } & PageParams = {}) {
+  return queryPage<WebhookDeliveryRecord>('/v1/webhook-deliveries', filters);
+}
+
+export function queryWebhookDeliveryDetail(id: string) {
+  return axios.get<WebhookDeliveryRecord>(`/v1/webhook-deliveries/${id}`);
 }
 
 export function resendWebhookDelivery(id: string) {
   return axios.post<WebhookDeliveryRecord>(`/v1/webhook-deliveries/${id}/resend`);
 }
 
-export function queryAuditLogs() {
-  return axios.get<AuditLogRecord[] | ListEnvelope<AuditLogRecord>>('/v1/audit-logs').then((res) => ({
-    ...res,
-    data: normalizeList(res.data),
-  }));
+export function queryAuditLogs(
+  filters: {
+    project_id?: string;
+    actor_type?: string;
+    action?: string;
+    result?: string;
+    resource_type?: string;
+    resource_id?: string;
+  } & PageParams = {}
+) {
+  return queryPage<AuditLogRecord>('/v1/audit-logs', filters);
 }
 
 export function getSimulator() {
   return axios.get<SimulatorState>('/v1/simulator');
 }
 
-export function updateSimulator(data: { mode: string; delay_ms?: number }) {
+export function updateSimulator(data: { outcome: string; delay_ms: number }) {
   return axios.patch<SimulatorState>('/v1/simulator', data);
 }
