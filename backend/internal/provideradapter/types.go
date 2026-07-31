@@ -13,6 +13,9 @@ type DispatchRequest struct {
 	Action             domain.ActionIdentifier
 	Payload            map[string]any
 	ProviderRequestKey string
+	// AttemptRequestSummary is the allowlisted snapshot persisted when the
+	// Attempt was claimed. Adapters may use it to preserve claim-time config.
+	AttemptRequestSummary map[string]any
 }
 
 // DispatchResult records only evidence that the adapter can support. It never

@@ -20,6 +20,7 @@ import (
 	"github.com/qiyue2015/device-platform/internal/httpapi"
 	"github.com/qiyue2015/device-platform/internal/httpjson"
 	"github.com/qiyue2015/device-platform/internal/projectservice"
+	simulatorruntime "github.com/qiyue2015/device-platform/internal/simulator"
 	"github.com/qiyue2015/device-platform/internal/storage"
 	"github.com/qiyue2015/device-platform/internal/storage/repository"
 	"github.com/qiyue2015/device-platform/internal/webhookaudit"
@@ -36,6 +37,7 @@ type app struct {
 	projects       httpapi.ProjectService
 	devices        httpapi.DeviceResourceService
 	commands       httpapi.CommandResourceService
+	simulator      *simulatorruntime.Service
 	cloudProviders cloudProviderRegistry
 	gateway        *gateway.Service
 	webhooks       *webhookaudit.Service
@@ -132,6 +134,10 @@ func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authen
 	if len(cloudProviders.List()) > 0 {
 		commandRouter = newCommandDispatchService(service, cloudProviders)
 	}
+	var simulatorService *simulatorruntime.Service
+	if db != nil {
+		simulatorService = simulatorruntime.NewService(repository.NewPostgresStore(db), nil)
+	}
 	return &app{
 		cfg:            cfg,
 		logger:         logger,
@@ -141,6 +147,7 @@ func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authen
 		commandRouter:  commandRouter,
 		projects:       projects,
 		devices:        devices,
+		simulator:      simulatorService,
 		cloudProviders: cloudProviders,
 		gateway:        gatewayService,
 		webhooks:       webhookService,
@@ -187,7 +194,8 @@ func (a *app) routes() http.Handler {
 	mux.Handle("/v1/open/", openRouter)
 	protectedV1 := http.NewServeMux()
 	registerWebhookAuditRoutes(protectedV1, a.webhooks)
-	gateway.NewHandler(a.gateway).RegisterSimulator(protectedV1)
+	protectedV1.HandleFunc("/v1/simulator", a.handle(a.handleSimulator))
+	protectedV1.HandleFunc("/v1/simulator/gateway", a.handle(a.handleSimulator))
 	legacyV1Router := httpapi.NewRouterWithResourceServices(a.commandRouter, projectBridge, nil, routerHooks)
 	resourceV1Router := httpapi.NewRouterWithDomainServices(a.commandRouter, projectBridge, deviceBridge, commandBridge, routerHooks)
 	protectedV1.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +244,17 @@ func (a *app) replaceRuntime(cfg config, db *sql.DB, auth authenticator, project
 	a.projects = projects
 	a.devices = devices
 	a.commands = commands
+	a.simulator = nil
+	if db != nil {
+		a.simulator = simulatorruntime.NewService(repository.NewPostgresStore(db), nil)
+	}
 	return previousDB
+}
+
+func (a *app) simulatorService() *simulatorruntime.Service {
+	a.runtimeMu.RLock()
+	defer a.runtimeMu.RUnlock()
+	return a.simulator
 }
 
 func newPersistentCommandWorker(store commandworker.Store, providers cloudProviderRegistry) (*commandworker.Worker, error) {
@@ -248,6 +266,11 @@ func newPersistentCommandWorker(store commandworker.Store, providers cloudProvid
 		{
 			ProviderCode: domain.ProviderCodeWWTIOT, AdapterCode: domain.AdapterWWTIOTCloudAPI,
 			Adapter: client, ResultSource: domain.EventSourceSystem,
+		},
+		{
+			ProviderCode: domain.ProviderCodeSimulator, AdapterCode: domain.AdapterSimulator,
+			Adapter: simulatorruntime.NewAdapter(), ResultSource: domain.EventSourceSimulator,
+			ClaimSnapshot: simulatorruntime.ClaimSnapshot,
 		},
 	}})
 }

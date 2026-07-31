@@ -523,12 +523,20 @@ type postgresSimulatorRepository struct {
 }
 
 func (r *postgresSimulatorRepository) Get(ctx context.Context) (domain.SimulatorConfig, error) {
+	return r.get(ctx, "")
+}
+
+func (r *postgresSimulatorRepository) GetForUpdate(ctx context.Context) (domain.SimulatorConfig, error) {
+	return r.get(ctx, " FOR UPDATE")
+}
+
+func (r *postgresSimulatorRepository) get(ctx context.Context, lockClause string) (domain.SimulatorConfig, error) {
 	var config domain.SimulatorConfig
 	var delayMilliseconds int64
-	err := r.exec.QueryRowContext(ctx, `
+	query := `
 		SELECT outcome, delay_ms, version, updated_at
-		FROM simulator_config WHERE singleton
-	`).Scan(&config.Outcome, &delayMilliseconds, &config.Version, &config.UpdatedAt)
+		FROM simulator_config WHERE singleton` + lockClause
+	err := r.exec.QueryRowContext(ctx, query).Scan(&config.Outcome, &delayMilliseconds, &config.Version, &config.UpdatedAt)
 	if err != nil {
 		return domain.SimulatorConfig{}, err
 	}

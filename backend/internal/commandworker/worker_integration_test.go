@@ -21,6 +21,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/qiyue2015/device-platform/internal/domain"
 	"github.com/qiyue2015/device-platform/internal/provideradapter"
+	simulatorruntime "github.com/qiyue2015/device-platform/internal/simulator"
 	"github.com/qiyue2015/device-platform/internal/storage"
 	"github.com/qiyue2015/device-platform/internal/storage/repository"
 )
@@ -124,6 +125,239 @@ func TestPersistentWorkerWWTIOTResultMatrix(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestPersistentWorkerSimulatorResultMatrix(t *testing.T) {
+	tests := []struct {
+		outcome      domain.SimulatorOutcome
+		status       domain.CommandStatus
+		reason       string
+		confirmation domain.ConfirmationLevel
+		evidence     domain.EvidenceStatus
+	}{
+		{domain.SimulatorOutcomeProviderAccepted, domain.CommandStatusSent, "", domain.ConfirmationProviderAccepted, domain.EvidenceVerified},
+		{domain.SimulatorOutcomeProviderRejected, domain.CommandStatusFailed, "provider_rejected", domain.ConfirmationTransportSent, domain.EvidenceVerified},
+		{domain.SimulatorOutcomeTransportErrorBeforeSend, domain.CommandStatusFailed, "provider_transport_error", domain.ConfirmationNone, domain.EvidenceNone},
+		{domain.SimulatorOutcomeTransportErrorAfterSend, domain.CommandStatusUnknown, "provider_delivery_unknown", domain.ConfirmationTransportSent, domain.EvidenceVerified},
+		{domain.SimulatorOutcomeInvalidResponse, domain.CommandStatusUnknown, "provider_response_invalid", domain.ConfirmationTransportSent, domain.EvidenceVerified},
+	}
+	for _, test := range tests {
+		t.Run(string(test.outcome), func(t *testing.T) {
+			withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
+				setSimulatorConfig(t, store, test.outcome, 0)
+				seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), true)
+				makeWorkerDeviceSimulator(t, db)
+				worker := newSimulatorWorker(t, store, Config{WorkerID: "simulator-matrix-worker"})
+				worked, err := worker.DispatchNext(context.Background())
+				if err != nil || !worked {
+					t.Fatalf("DispatchNext worked=%v err=%v", worked, err)
+				}
+				command, err := store.Commands().Get(context.Background(), workerCommandID)
+				if err != nil || command.Status != test.status || pointerValue(command.ReasonCode) != test.reason ||
+					command.ConfirmationLevel != test.confirmation || command.EvidenceStatus != test.evidence {
+					t.Fatalf("Simulator Command=%+v err=%v", command, err)
+				}
+				if command.Status == domain.CommandStatusAcked || command.Status == domain.CommandStatusSuccess {
+					t.Fatalf("Simulator fabricated Device result: %s", command.Status)
+				}
+				attempts, err := store.Commands().ListAttempts(context.Background(), workerCommandID)
+				if err != nil || len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != domain.AttemptOutcome(test.outcome) {
+					t.Fatalf("Simulator Attempts=%+v err=%v", attempts, err)
+				}
+				attempt := attempts[0]
+				if attempt.RequestSummary["simulator_outcome"] != string(test.outcome) || attempt.RequestSummary["simulator_config_version"] != float64(2) {
+					t.Fatalf("Simulator request snapshot=%+v", attempt.RequestSummary)
+				}
+				events, err := store.Events().ListByCommand(context.Background(), workerCommandID)
+				if err != nil || len(events) != 2 || events[0].Source != domain.EventSourceSimulator || events[1].Source != domain.EventSourceSimulator {
+					t.Fatalf("Simulator Events=%+v err=%v", events, err)
+				}
+				assertWorkerTableCount(t, db, "webhook_deliveries", 2)
+			})
+		})
+	}
+}
+
+func TestPersistentWorkerSimulatorClaimSnapshotSurvivesConfigChangeAndReclaim(t *testing.T) {
+	withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
+		setSimulatorConfig(t, store, domain.SimulatorOutcomeProviderRejected, 0)
+		seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
+		makeWorkerDeviceSimulator(t, db)
+		first := newSimulatorWorker(t, store, Config{WorkerID: "simulator-first", LeaseDuration: time.Second})
+		registration := first.adapters[0]
+		command, attempt, claimed, err := first.claimNext(context.Background(), registration)
+		if err != nil || !claimed {
+			t.Fatalf("first claim=%v err=%v", claimed, err)
+		}
+		if attempt.RequestSummary["simulator_outcome"] != string(domain.SimulatorOutcomeProviderRejected) {
+			t.Fatalf("first claim snapshot=%+v", attempt.RequestSummary)
+		}
+		setSimulatorConfig(t, store, domain.SimulatorOutcomeProviderAccepted, 0)
+		if _, err := db.Exec(`
+			UPDATE device_command_attempts
+			SET claimed_at = now() - interval '2 seconds', lease_expires_at = now() - interval '1 second'
+			WHERE id = $1
+		`, attempt.ID); err != nil {
+			t.Fatal(err)
+		}
+
+		second := newSimulatorWorker(t, store, Config{WorkerID: "simulator-second", LeaseDuration: time.Second})
+		secondRegistration := second.adapters[0]
+		reclaimedCommand, reclaimedAttempt, reclaimed, err := second.claimNext(context.Background(), secondRegistration)
+		if err != nil || !reclaimed || reclaimedAttempt.ID != attempt.ID || reclaimedCommand.ID != command.ID {
+			t.Fatalf("reclaim=%v Command=%+v Attempt=%+v err=%v", reclaimed, reclaimedCommand, reclaimedAttempt, err)
+		}
+		if reclaimedAttempt.RequestSummary["simulator_outcome"] != string(domain.SimulatorOutcomeProviderRejected) ||
+			reclaimedAttempt.RequestSummary["simulator_config_version"] != float64(2) {
+			t.Fatalf("reclaim applied live Simulator config: %+v", reclaimedAttempt.RequestSummary)
+		}
+		if err := second.dispatchClaimed(context.Background(), secondRegistration, reclaimedCommand, reclaimedAttempt); err != nil {
+			t.Fatal(err)
+		}
+		assertCommandStatus(t, store, domain.CommandStatusFailed, "provider_rejected")
+	})
+}
+
+func TestPersistentWorkerSimulatorProfileTimeoutIsAfterSend(t *testing.T) {
+	withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
+		setSimulatorConfig(t, store, domain.SimulatorOutcomeTransportErrorBeforeSend, 100*time.Millisecond)
+		seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
+		makeWorkerDeviceSimulator(t, db)
+		timeoutStore := &providerTimeoutStore{PostgresStore: store, timeout: time.Millisecond}
+		worker := newSimulatorWorker(t, timeoutStore, Config{WorkerID: "simulator-timeout-worker"})
+		worked, err := worker.DispatchNext(context.Background())
+		if err != nil || !worked {
+			t.Fatalf("DispatchNext worked=%v err=%v", worked, err)
+		}
+		assertCommandStatus(t, store, domain.CommandStatusUnknown, "provider_delivery_unknown")
+		attempts, err := store.Commands().ListAttempts(context.Background(), workerCommandID)
+		if err != nil || len(attempts) != 1 || attempts[0].Outcome == nil ||
+			*attempts[0].Outcome != domain.AttemptOutcomeTransportErrorAfterSend ||
+			attempts[0].ConfirmationLevel != domain.ConfirmationTransportSent || attempts[0].EvidenceStatus != domain.EvidenceVerified {
+			t.Fatalf("timeout Attempt=%+v err=%v", attempts, err)
+		}
+	})
+}
+
+func TestPersistentWorkerSimulatorSnapshotLockOrdersClaimAndConfigCommit(t *testing.T) {
+	t.Run("claim lock commits before config update", func(t *testing.T) {
+		withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
+			setSimulatorConfig(t, store, domain.SimulatorOutcomeProviderRejected, 0)
+			seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
+			makeWorkerDeviceSimulator(t, db)
+			locked, release := make(chan struct{}), make(chan struct{})
+			defer closeIfOpen(release)
+			worker := newSimulatorWorkerWithSnapshot(t, store, Config{WorkerID: "claim-lock-worker"}, func(ctx context.Context, tx repository.CommandTx) (map[string]any, error) {
+				snapshot, err := simulatorruntime.ClaimSnapshot(ctx, tx)
+				close(locked)
+				<-release
+				return snapshot, err
+			})
+			type claimResult struct {
+				attempt domain.CommandAttempt
+				err     error
+			}
+			claimed := make(chan claimResult, 1)
+			go func() {
+				_, attempt, _, err := worker.claimNext(context.Background(), worker.adapters[0])
+				claimed <- claimResult{attempt: attempt, err: err}
+			}()
+			<-locked
+			updateStarted, updateDone := make(chan struct{}), make(chan error, 1)
+			go func() {
+				close(updateStarted)
+				updateDone <- updateSimulatorConfig(store, domain.SimulatorOutcomeInvalidResponse, 0)
+			}()
+			<-updateStarted
+			waitForSimulatorLockWait(t, db)
+			close(release)
+			claim := <-claimed
+			if claim.err != nil || claim.attempt.RequestSummary["simulator_outcome"] != string(domain.SimulatorOutcomeProviderRejected) {
+				t.Fatalf("claim result=%+v", claim)
+			}
+			if err := <-updateDone; err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+
+	t.Run("config lock commits before claim snapshot", func(t *testing.T) {
+		withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
+			seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
+			makeWorkerDeviceSimulator(t, db)
+			updateLocked, releaseUpdate, updateDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+			defer closeIfOpen(releaseUpdate)
+			go func() {
+				updateDone <- store.TransactSimulator(context.Background(), func(tx repository.SimulatorTx) error {
+					current, err := tx.Simulator().GetForUpdate(context.Background())
+					if err != nil {
+						return err
+					}
+					updated, err := tx.Simulator().Update(context.Background(), current.Version, repository.UpdateSimulatorRequest{
+						Outcome: domain.SimulatorOutcomeInvalidResponse, Delay: 5 * time.Millisecond,
+					})
+					if err != nil || !updated {
+						return fmt.Errorf("update=%v: %w", updated, err)
+					}
+					close(updateLocked)
+					<-releaseUpdate
+					return nil
+				})
+			}()
+			<-updateLocked
+			worker := newSimulatorWorker(t, store, Config{WorkerID: "update-lock-worker"})
+			claimed := make(chan domain.CommandAttempt, 1)
+			claimErrors := make(chan error, 1)
+			go func() {
+				_, attempt, _, err := worker.claimNext(context.Background(), worker.adapters[0])
+				claimed <- attempt
+				claimErrors <- err
+			}()
+			waitForSimulatorLockWait(t, db)
+			close(releaseUpdate)
+			if err := <-updateDone; err != nil {
+				t.Fatal(err)
+			}
+			attempt := <-claimed
+			if err := <-claimErrors; err != nil {
+				t.Fatal(err)
+			}
+			if attempt.RequestSummary["simulator_outcome"] != string(domain.SimulatorOutcomeInvalidResponse) ||
+				attempt.RequestSummary["simulator_delay_ms"] != float64(5) || attempt.RequestSummary["simulator_config_version"] != float64(2) {
+				t.Fatalf("claim did not observe committed config=%+v", attempt.RequestSummary)
+			}
+		})
+	})
+}
+
+func TestPersistentWorkerRotatesProviderClaimPriority(t *testing.T) {
+	withWorkerDatabase(t, func(_ *sql.DB, store *repository.PostgresStore) {
+		seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
+		setSimulatorConfig(t, store, domain.SimulatorOutcomeProviderAccepted, 0)
+		seedFairnessCommands(t, store)
+		wwtiotAdapter := &fakeAdapter{configured: true, result: acceptedResult()}
+		worker, err := New(store, Config{WorkerID: "provider-fairness-worker", Adapters: []AdapterRegistration{
+			{ProviderCode: domain.ProviderCodeWWTIOT, AdapterCode: domain.AdapterWWTIOTCloudAPI, Adapter: wwtiotAdapter, ResultSource: domain.EventSourceSystem},
+			{ProviderCode: domain.ProviderCodeSimulator, AdapterCode: domain.AdapterSimulator, Adapter: simulatorruntime.NewAdapter(), ResultSource: domain.EventSourceSimulator, ClaimSnapshot: simulatorruntime.ClaimSnapshot},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			worked, dispatchErr := worker.DispatchNext(context.Background())
+			if dispatchErr != nil || !worked {
+				t.Fatalf("DispatchNext worked=%v err=%v", worked, dispatchErr)
+			}
+		}
+		simulatorCommand, err := store.Commands().Get(context.Background(), "93000000-0000-4000-8000-000000000003")
+		if err != nil || simulatorCommand.Status != domain.CommandStatusSent {
+			t.Fatalf("Simulator Command starved=%+v err=%v", simulatorCommand, err)
+		}
+		secondWWTIOT, err := store.Commands().Get(context.Background(), "93000000-0000-4000-8000-000000000002")
+		if err != nil || secondWWTIOT.Status != domain.CommandStatusQueued {
+			t.Fatalf("second WWTIOT Command should remain queued after rotated claim=%+v err=%v", secondWWTIOT, err)
+		}
+	})
 }
 
 func TestPersistentWorkerClaimsOnceAndReclaimsExpiredClaim(t *testing.T) {
@@ -337,7 +571,7 @@ func TestPersistentWorkerCrashAfterSentCommitDoesNotDispatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := worker.commitDispatch(context.Background(), command, attempt, time.Minute, 20*time.Millisecond, prepared.RequestSummary()); err != nil {
+		if err := worker.commitDispatch(context.Background(), command, attempt, domain.EventSourceSystem, time.Minute, 20*time.Millisecond, prepared.RequestSummary()); err != nil {
 			t.Fatal(err)
 		}
 		if calls := adapter.calls.Load(); calls != 0 {
@@ -398,7 +632,7 @@ func TestPersistentWorkerRunResumesQueuedAndExpiredDispatching(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := crashed.commitDispatch(context.Background(), command, attempt, time.Minute, 20*time.Millisecond, prepared.RequestSummary()); err != nil {
+			if err := crashed.commitDispatch(context.Background(), command, attempt, domain.EventSourceSystem, time.Minute, 20*time.Millisecond, prepared.RequestSummary()); err != nil {
 				t.Fatal(err)
 			}
 			time.Sleep(25 * time.Millisecond)
@@ -734,6 +968,134 @@ func newTestWorkerWithConfig(t *testing.T, store Store, adapter provideradapter.
 		t.Fatal(err)
 	}
 	return worker
+}
+
+func newSimulatorWorker(t *testing.T, store Store, config Config) *Worker {
+	t.Helper()
+	return newSimulatorWorkerWithSnapshot(t, store, config, simulatorruntime.ClaimSnapshot)
+}
+
+func newSimulatorWorkerWithSnapshot(t *testing.T, store Store, config Config, snapshot func(context.Context, repository.CommandTx) (map[string]any, error)) *Worker {
+	t.Helper()
+	config.Adapters = []AdapterRegistration{{
+		ProviderCode: domain.ProviderCodeSimulator, AdapterCode: domain.AdapterSimulator,
+		Adapter: simulatorruntime.NewAdapter(), ResultSource: domain.EventSourceSimulator, ClaimSnapshot: snapshot,
+	}}
+	worker, err := New(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return worker
+}
+
+func setSimulatorConfig(t *testing.T, store *repository.PostgresStore, outcome domain.SimulatorOutcome, delay time.Duration) {
+	t.Helper()
+	if err := updateSimulatorConfig(store, outcome, delay); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func updateSimulatorConfig(store *repository.PostgresStore, outcome domain.SimulatorOutcome, delay time.Duration) error {
+	ctx := context.Background()
+	return store.TransactSimulator(ctx, func(tx repository.SimulatorTx) error {
+		current, err := tx.Simulator().GetForUpdate(ctx)
+		if err != nil {
+			return err
+		}
+		updated, err := tx.Simulator().Update(ctx, current.Version, repository.UpdateSimulatorRequest{Outcome: outcome, Delay: delay})
+		if err != nil {
+			return err
+		}
+		if !updated {
+			return errors.New("Simulator config was not updated")
+		}
+		return nil
+	})
+}
+
+func seedFairnessCommands(t *testing.T, store *repository.PostgresStore) {
+	t.Helper()
+	ctx := context.Background()
+	first, err := store.Commands().Get(ctx, workerCommandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondWWTIOT := first
+	secondWWTIOT.ID = "93000000-0000-4000-8000-000000000002"
+	secondWWTIOT.IdempotencyKey = "worker-key-2"
+	secondWWTIOT.RequestHash = bytes.Repeat([]byte{0x94}, 32)
+	secondWWTIOT.QueuedAt = first.QueuedAt.Add(time.Microsecond)
+	secondWWTIOT.CreatedAt = secondWWTIOT.QueuedAt
+	secondWWTIOT.UpdatedAt = secondWWTIOT.QueuedAt
+	simulatorCommand := first
+	simulatorCommand.ID = "93000000-0000-4000-8000-000000000003"
+	simulatorCommand.DeviceID = "92000000-0000-4000-8000-000000000003"
+	simulatorCommand.IdempotencyKey = "worker-key-3"
+	simulatorCommand.RequestHash = bytes.Repeat([]byte{0x95}, 32)
+	simulatorCommand.QueuedAt = first.QueuedAt.Add(2 * time.Microsecond)
+	simulatorCommand.CreatedAt = simulatorCommand.QueuedAt
+	simulatorCommand.UpdatedAt = simulatorCommand.QueuedAt
+	if err := store.TransactCommand(ctx, func(tx repository.CommandTx) error {
+		if err := tx.Devices().Create(ctx, domain.Device{
+			ID: simulatorCommand.DeviceID, ProjectID: workerProjectID, DeviceTypeID: first.DeviceTypeID,
+			Name: "Fair Simulator", ProviderCode: domain.ProviderCodeSimulator, ProviderDeviceID: simulatorCommand.DeviceID,
+			AccessType: domain.AccessTypeSimulator, TransportProtocol: domain.TransportProtocolInternal,
+			Adapter: domain.AdapterSimulator, ConnectionStatus: domain.ConnectionStatusUnknown,
+			LifecycleStatus: domain.LifecycleStatusActive, CreatedAt: first.CreatedAt, UpdatedAt: first.UpdatedAt,
+		}); err != nil {
+			return err
+		}
+		if err := tx.Commands().Create(ctx, secondWWTIOT); err != nil {
+			return err
+		}
+		return tx.Commands().Create(ctx, simulatorCommand)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForSimulatorLockWait(t *testing.T, db *sql.DB) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting bool
+		if err := db.QueryRow(`
+			SELECT EXISTS (
+				SELECT 1 FROM pg_stat_activity
+				WHERE datname = current_database()
+					AND pid <> pg_backend_pid()
+					AND wait_event_type = 'Lock'
+					AND query ILIKE '%simulator_config%'
+			)
+		`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("Simulator transaction did not reach the expected database row-lock wait")
+}
+
+func closeIfOpen(channel chan struct{}) {
+	select {
+	case <-channel:
+	default:
+		close(channel)
+	}
+}
+
+func makeWorkerDeviceSimulator(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+		UPDATE devices
+		SET provider_code = 'simulator', provider_device_id = id::text,
+			access_type = 'simulator', transport_protocol = 'internal', adapter = 'simulator'
+		WHERE id = $1
+	`, workerDeviceID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func runWorkerUntil(t *testing.T, worker *Worker, done func() bool) {

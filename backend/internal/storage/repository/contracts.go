@@ -48,6 +48,11 @@ type CommandStore interface {
 	TransactCommand(ctx context.Context, fn func(CommandTx) error) error
 }
 
+type SimulatorStore interface {
+	Simulator() SimulatorQueries
+	TransactSimulator(ctx context.Context, fn func(SimulatorTx) error) error
+}
+
 type DeviceTx interface {
 	Projects() ProjectRepository
 	DeviceTypes() DeviceTypeQueries
@@ -64,6 +69,12 @@ type CommandTx interface {
 	Commands() CommandRepository
 	Events() EventRepository
 	Webhooks() WebhookRepository
+	Audits() AuditRepository
+	Simulator() SimulatorRepository
+}
+
+type SimulatorTx interface {
+	Simulator() SimulatorRepository
 	Audits() AuditRepository
 }
 
@@ -356,5 +367,6 @@ type UpdateSimulatorRequest struct {
 
 type SimulatorRepository interface {
 	SimulatorQueries
+	GetForUpdate(ctx context.Context) (domain.SimulatorConfig, error)
 	Update(ctx context.Context, expectedVersion int64, request UpdateSimulatorRequest) (bool, error)
 }

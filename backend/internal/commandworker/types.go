@@ -25,10 +25,11 @@ type Store interface {
 }
 
 type AdapterRegistration struct {
-	ProviderCode string
-	AdapterCode  domain.Adapter
-	Adapter      provideradapter.Adapter
-	ResultSource domain.EventSource
+	ProviderCode  string
+	AdapterCode   domain.Adapter
+	Adapter       provideradapter.Adapter
+	ResultSource  domain.EventSource
+	ClaimSnapshot func(context.Context, repository.CommandTx) (map[string]any, error)
 }
 
 type Config struct {

@@ -95,6 +95,12 @@ func (s *PostgresStore) TransactCommand(ctx context.Context, fn func(CommandTx) 
 	})
 }
 
+func (s *PostgresStore) TransactSimulator(ctx context.Context, fn func(SimulatorTx) error) error {
+	return s.WithinTransaction(ctx, func(tx *PostgresTx) error {
+		return fn(tx)
+	})
+}
+
 type PostgresTx struct {
 	tx *sql.Tx
 }

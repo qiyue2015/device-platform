@@ -34,6 +34,8 @@ type Worker struct {
 	adapters      []AdapterRegistration
 	random        io.Reader
 	randomMu      sync.Mutex
+	adapterMu     sync.Mutex
+	nextAdapter   int
 }
 
 func New(store Store, config Config) (*Worker, error) {
@@ -84,7 +86,12 @@ func New(store Store, config Config) (*Worker, error) {
 }
 
 func (w *Worker) DispatchNext(ctx context.Context) (bool, error) {
-	for _, registration := range w.adapters {
+	w.adapterMu.Lock()
+	start := w.nextAdapter
+	w.nextAdapter = (w.nextAdapter + 1) % len(w.adapters)
+	w.adapterMu.Unlock()
+	for offset := range w.adapters {
+		registration := w.adapters[(start+offset)%len(w.adapters)]
 		command, attempt, claimed, err := w.claimNext(ctx, registration)
 		if err != nil {
 			return false, err
@@ -201,11 +208,21 @@ func (w *Worker) claimNext(ctx context.Context, registration AdapterRegistration
 		var attempt domain.CommandAttempt
 		var claimed bool
 		err = w.store.TransactCommand(ctx, func(tx repository.CommandTx) error {
+			requestSummary := map[string]any{"serialnum": serial}
+			if registration.ClaimSnapshot != nil {
+				snapshot, snapshotErr := registration.ClaimSnapshot(ctx, tx)
+				if snapshotErr != nil {
+					return snapshotErr
+				}
+				for key, value := range snapshot {
+					requestSummary[key] = value
+				}
+			}
 			var claimErr error
 			command, attempt, claimed, claimErr = tx.Commands().ClaimNext(ctx, repository.ClaimCommandRequest{
 				WorkerID: w.workerID, LeaseToken: leaseToken, LeaseDuration: w.leaseDuration,
 				ProviderCode: registration.ProviderCode, Adapter: registration.AdapterCode,
-				RequestKey: requestKey, RequestSummary: map[string]any{"serialnum": serial},
+				RequestKey: requestKey, RequestSummary: requestSummary,
 			})
 			return claimErr
 		})
@@ -238,16 +255,17 @@ func (w *Worker) dispatchClaimed(ctx context.Context, registration AdapterRegist
 	request := provideradapter.DispatchRequest{
 		ProviderDeviceID: device.ProviderDeviceID, Action: command.CommandType,
 		Payload: command.Payload, ProviderRequestKey: attempt.ProviderRequestKey,
+		AttemptRequestSummary: attempt.RequestSummary,
 	}
 	if !registration.Adapter.Configured() {
-		return w.failBeforeDispatch(ctx, command, attempt, "Provider is not configured")
+		return w.failBeforeDispatch(ctx, command, attempt, registration.ResultSource, "Provider is not configured")
 	}
 	prepared, err := registration.Adapter.Prepare(request)
 	if err != nil {
-		return w.failBeforeDispatch(ctx, command, attempt, err.Error())
+		return w.failBeforeDispatch(ctx, command, attempt, registration.ResultSource, err.Error())
 	}
 	dispatchLeaseDuration := max(w.leaseDuration, action.ProviderRequestTimeout+5*time.Second)
-	if err := w.commitDispatch(ctx, command, attempt, action.ResultObservationTimeout, dispatchLeaseDuration, prepared.RequestSummary()); err != nil {
+	if err := w.commitDispatch(ctx, command, attempt, registration.ResultSource, action.ResultObservationTimeout, dispatchLeaseDuration, prepared.RequestSummary()); err != nil {
 		return err
 	}
 	dispatchContext, cancel := context.WithTimeout(ctx, action.ProviderRequestTimeout)
@@ -256,7 +274,7 @@ func (w *Worker) dispatchClaimed(ctx context.Context, registration AdapterRegist
 	return w.persistResult(ctx, registration, command, attempt, result)
 }
 
-func (w *Worker) failBeforeDispatch(ctx context.Context, command domain.Command, attempt domain.CommandAttempt, detail string) error {
+func (w *Worker) failBeforeDispatch(ctx context.Context, command domain.Command, attempt domain.CommandAttempt, source domain.EventSource, detail string) error {
 	reasonCode := "provider_not_configured"
 	detail = truncate(detail, 4096)
 	return w.store.TransactCommand(ctx, func(tx repository.CommandTx) error {
@@ -285,12 +303,12 @@ func (w *Worker) failBeforeDispatch(ctx context.Context, command domain.Command,
 		if err != nil {
 			return err
 		}
-		return w.createStatusEvent(ctx, tx, updated, domain.CommandStatusQueued, domain.EventSourceSystem,
+		return w.createStatusEvent(ctx, tx, updated, domain.CommandStatusQueued, source,
 			"command.status_changed:"+command.ID+":"+string(updated.Status))
 	})
 }
 
-func (w *Worker) commitDispatch(ctx context.Context, command domain.Command, attempt domain.CommandAttempt, resultTimeout, dispatchLeaseDuration time.Duration, requestSummary map[string]any) error {
+func (w *Worker) commitDispatch(ctx context.Context, command domain.Command, attempt domain.CommandAttempt, source domain.EventSource, resultTimeout, dispatchLeaseDuration time.Duration, requestSummary map[string]any) error {
 	return w.store.TransactCommand(ctx, func(tx repository.CommandTx) error {
 		updated, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.MarkDispatchingRequest{
 			ResultObservationTimeout: resultTimeout, DispatchLeaseDuration: dispatchLeaseDuration,
@@ -306,7 +324,7 @@ func (w *Worker) commitDispatch(ctx context.Context, command domain.Command, att
 		if err != nil {
 			return err
 		}
-		return w.createStatusEvent(ctx, tx, sent, domain.CommandStatusQueued, domain.EventSourceSystem,
+		return w.createStatusEvent(ctx, tx, sent, domain.CommandStatusQueued, source,
 			"command.status_changed:"+command.ID+":"+string(sent.Status))
 	})
 }
