@@ -3,7 +3,7 @@ title: WWTIOT Provider 合同
 created: 2026-07-31
 updated: 2026-07-31
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.2
+freeze_revision: 2026-07-31.3
 ---
 
 # WWTIOT Provider 合同
@@ -31,13 +31,13 @@ freeze_revision: 2026-07-31.2
 
 ## Provider 元数据与配置
 
-| 项目                 | 冻结值                          |
-| -------------------- | ------------------------------- |
-| code                 | `wwtiot`                        |
-| name                 | `WWTIOT`                        |
-| `access_type`        | `cloud_api`                     |
-| `transport_protocol` | `http`                          |
-| adapter              | `wwtiot_cloud_api`              |
+| 项目                 | 冻结值                           |
+| -------------------- | -------------------------------- |
+| code                 | `wwtiot`                         |
+| name                 | `WWTIOT`                         |
+| `access_type`        | `cloud_api`                      |
+| `transport_protocol` | `http`                           |
+| adapter              | `wwtiot_cloud_api`               |
 | 调用方式             | 异步 worker 发起的单次 HTTP 下行 |
 
 Provider code/name 固定为 `wwtiot`/`WWTIOT`，Provider request timeout 固定来自 `smart-lock` revision 1 的 10 秒；部署变量不能覆盖这些合同值。部署只提供 `WWTIOT_API_URL`、`WWTIOT_USER_ID` 与 `WWTIOT_USER_KEY`，本文不记录真实值或 secret。URL 必须是无 userinfo、query 或 fragment 的 absolute HTTP/HTTPS URL，UserID trim 后为 `1..128` UTF-8 byte，UserKey 为 `1..512` byte 且不 trim。任一缺失或不合法时 Provider 为 `unconfigured`，dispatcher 不发请求。
@@ -58,10 +58,10 @@ V2 同步成功响应示例包含 `result=ok` 和 `info="cmd send ok"`。这直�
 
 ## V2 adapter action 映射
 
-| smart-lock action | adapter 请求映射                    | 与厂商资料的关系                 |
-| ----------------- | ----------------------------------- | -------------------------------- |
-| `unlock`          | `cmd=open`                          | 与 V2 一致，不采用 V1.1 映射。   |
-| `lock`            | `cmd=close`                         | 与 V2 一致。                     |
+| smart-lock action | adapter 请求映射                    | 与厂商资料的关系                  |
+| ----------------- | ----------------------------------- | --------------------------------- |
+| `unlock`          | `cmd=open`                          | 与 V2 一致，不采用 V1.1 映射。    |
+| `lock`            | `cmd=close`                         | 与 V2 一致。                      |
 | `query_status`    | `cmd=control`、`type=23`、`value=4` | 与 V2 一致；不允许 payload 覆盖。 |
 
 请求还包含 `userid`、`deviceid`、持久化的 `serialnum` 和 `sign`。adapter 按上述 V2 字段顺序无分隔拼接后执行 MD5；`serialnum` 的唯一性、防重放要求、有效范围和真实服务端校验行为仍为 Unknown。

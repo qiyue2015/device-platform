@@ -3,7 +3,7 @@ title: 领域模型与一致性合同
 created: 2026-07-31
 updated: 2026-07-31
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.2
+freeze_revision: 2026-07-31.3
 ---
 
 # 领域模型与一致性合同
@@ -85,7 +85,7 @@ Device Type 是代码审查并随发布交付的只读 capability profile。当�
 - `(command_id, attempt_no)` 唯一；Provider request key 在对应 Provider 范围内唯一。
 - `phase` 只能按 `claimed -> dispatching -> completed` 或 `claimed -> completed` 单调迁移。`claimed` 尚未承诺外部调用；`dispatching` 表示 worker 已在事务中承诺立即执行外部调用，Command 同时进入 `sent`；`completed` 表示本次 Attempt 的可观测结果已持久化。非 completed Attempt 的 outcome 为 `null`，completed Attempt 必须有稳定 outcome。
 - `confirmation_level` 只能是 `none`、`transport_sent`、`provider_accepted`、`device_acked`、`device_final`。
-- `evidence_status` 只能是 `none`、`verified` 或 `unverified`。在 Attempt 上，它评价该 Attempt `outcome` 所依赖证据的来源真实性和校验条件；在 Command 上，它保守继承支撑当前 status 与最高 confirmation 的证据，任一决定性证据为 `unverified` 时不得提升为 `verified`。它不改变 confirmation level 本身；`success` 必须同时具有 `device_final` 与 `verified`。因此 WWTIOT `provider_rejected` 可同时为 `confirmation_level=transport_sent`（本地已证明请求写出）与 `evidence_status=unverified`（决定 rejection 的响应正文尚不可验签），两者不矛盾。
+- `evidence_status` 只能是 `none`、`verified` 或 `unverified`。在 Attempt 上，它评价该 Attempt `outcome` 所依赖证据的来源真实性和校验条件；在 Command 上，它保守评价支撑当前 status 与最高 confirmation 的决定性证据。confirmation level 严格按 `none < transport_sent < provider_accepted < device_acked < device_final` 单调提升；`none` 层的 evidence 必须保持 `none`，`transport_sent|provider_accepted` 的 evidence 可以是 `unverified|verified`，`device_acked|device_final` 必须是 `verified`。confirmation level 不变时只允许 `unverified -> verified`，`verified` 不得回退；confirmation level 提升到 `transport_sent|provider_accepted` 时，Command evidence 改为评价支撑新层级的决定性证据，可以因新证据未验签从较低层的 `verified` 变为新层的 `unverified`，不视为同层回退。evidence 不改变 confirmation level 本身；`success` 必须同时具有 `device_final` 与 `verified`。因此 WWTIOT `provider_rejected` 可同时为 `confirmation_level=transport_sent`（本地已证明请求写出）与 `evidence_status=unverified`（决定 rejection 的响应正文尚不可验签），两者不矛盾。
 - 当前稳定 `outcome` 为 `not_dispatched`、`invalid_request`、`provider_accepted`、`provider_rejected`、`transport_error_before_send`、`transport_error_after_send`、`invalid_response`、`device_acked`、`device_succeeded` 和 `device_failed`。`not_dispatched` 只用于 claimed 阶段被取消或超过派发期限，confirmation/evidence 均为 `none`。三个设备结果 outcome 只有在对应 Provider 合同具有可信证据来源时才能产生；当前 WWTIOT 和 simulator 均不能产生它们。Command 结果观察期限到达由 deadline scanner 写状态与 Event，不伪造一次新的 Provider Attempt 或覆盖既有 Attempt outcome。
 - confirmation level 单调提升，不能被后来的较低层事实覆盖。
 
@@ -100,7 +100,7 @@ Device Type 是代码审查并随发布交付的只读 capability profile。当�
 
 Event 是不可变的规范化技术事实，至少保存 `event_id`、`event_type`、`project_id`、可选 Device/Command 关联、发生时间、source 和 payload。
 
-- 当前 Event envelope 的 `schema_version` 固定为整数 `1`。稳定 `event_type` 只有 `device.created`、`device.lifecycle_changed`、`device.connection_changed`、`device.state_updated`、`command.created` 和 `command.status_changed`；新增类型或改变 payload 语义必须先修订 API 合同并提升相应 schema version。
+- 当前 Event envelope 的 `schema_version` 固定为整数 `1`。稳定 `event_type` 只有 `device.created`、`device.lifecycle_changed`、`device.connection_changed`、`device.state_updated`、`command.created`、`command.status_changed` 和 `command.evidence_updated`；新增类型必须先修订 API 合同并定义其初始 schema version，已有类型的破坏性 payload 变化必须提升相应 schema version。`command.status_changed` 只表达 `from != to` 的 Command 状态迁移；Command 状态不变、仅 confirmation/evidence 单调提升时使用 `command.evidence_updated`，不制造同状态的 status-changed Event。
 - 会改变领域状态的事务同时写入相关 Event 与待投递 Outbox/Delivery；不得在提交后用 best-effort hook 补写。
 - Event payload 只含业务应用可消费的规范化技术事实，不泄露 Provider secret 或原始敏感消息。
 - 同一领域事实使用稳定 deduplication key，重复 callback 或 worker 重放不能创建重复最终效果。

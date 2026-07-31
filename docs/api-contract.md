@@ -3,7 +3,7 @@ title: API 与生命周期合同
 created: 2026-05-16
 updated: 2026-07-31
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.2
+freeze_revision: 2026-07-31.3
 ---
 
 # API 与生命周期合同
@@ -71,7 +71,9 @@ POST /setup/test-redis
 POST /setup/install
 ```
 
-`GET /setup/status` 只返回 `needs_setup`、`installed` 和 `step="system"`，不返回路径、连接串或 secret。其余三个端点只在未安装时可用；安装完成后统一返回 `409 setup_completed`。服务端以进程锁加持久完成标记串行化 install，两个并发请求至多一个成功。
+`GET /setup/status` 只返回 `needs_setup`、`installed` 和 `step="system"`，不返回路径、连接串或 secret。其余三个端点只在未安装时可用；安装完成后统一返回 `409 setup_completed`。install 固定按进程内锁、专用跨进程文件锁、目标 PostgreSQL 的 session-level advisory lock 顺序获取所有权；跨进程锁文件必须与持久完成标记使用不同文件，不能因完成标记的原子替换改变被锁 inode。获文件锁后重新检查完成标记，获数据库锁后再检查 users 表。文件锁从完成标记复查一直持有到持久副作用结束、运行时发布和响应决策完成；数据库锁从 migration 前一直持有到管理员补偿或完成标记写入并发布运行时。锁等待必须响应 request context；获取失败、等待中止或标记写入前确认锁所有权失败使用 `500 install_lock_failed`。
+
+数据库另以独立于 email 的约束强制 `users` 全表最多一行且该行必须 `is_admin=true`；空表检查与管理员写入位于同一短数据库事务。即使误配置的多主机没有共享文件锁，只要指向同一数据库，数据库锁与约束也不得允许创建第二个用户。同一运行配置目标或同一数据库上的两个并发安装请求至多一个成功。
 
 `test-db` 与 `test-redis` 分别只接受严格 object `{"url":"..."}`，连接 timeout 为 5 秒。Database URL 只接受 `postgres`/`postgresql`，Redis URL 必须能由目标 Redis client 解析。成功只返回 `reachable=true`；响应、日志和审计都不得回显含凭据 URL。
 
@@ -88,11 +90,27 @@ server.addr
 server.log_level
 ```
 
-所有字段必需；拒绝未知字段。email trim 后转小写并按 email address 校验，最大 254 字符；display name trim 后长度 `2..80`；password UTF-8 byte length `8..128` 且必须与 confirm 相同；server address 是 `:port` 或 `host:port`，log level 只能是 `debug|info|warn|error`。安装只允许空 users 表，创建唯一管理员，生成至少 32 byte 的 JWT secret 和 32 byte 的 Webhook secret encryption key，并以原子替换、权限 `0600` 的运行配置保存；响应只返回 `installed=true`。
+所有字段必需；拒绝未知字段。email trim 后转小写并按 email address 校验，最大 254 字符；display name trim 后长度 `2..80`；password UTF-8 byte length `8..128` 且必须与 confirm 相同；server address 是 `:port` 或 `host:port`，log level 只能是 `debug|info|warn|error`。安装只允许空 users 表，创建唯一管理员，生成至少 32 byte 的 JWT secret 和 32 byte 的 Webhook secret encryption key，并以原子替换、权限 `0600` 的运行配置保存；响应只返回 `installed=true`。成功处理安装的进程可在原监听地址内热切换数据库、认证、领域服务和 worker；`server.addr` 与 `server.log_level` 只在下次进程启动时生效，安装响应不表示当前 listener 已重绑定或 logger 已重建。
 
-数据库 migration 必须可重复执行。完成标记最后写入；在此之前任一步失败时，不写完成标记，回滚本次管理员和运行配置变更，已提交 migration 可由下一次 install 安全重入。安装请求中的连接串、密码和生成的 secret 不进入普通日志、Event 或 Audit。
+数据库 migration 必须可重复执行。所有会返回 error 的数据库连接验证、认证、领域服务和 worker 构造必须在完成标记前结束，并组成一个可一次发布的完整运行时快照。安装完成的唯一持久权威是完成标记；运行配置中的 `DEVICE_PLATFORM_INSTALLED` 值不能单独证明安装完成。
 
-Setup 失败码固定为：参数/schema 不合法 `400 invalid_install_request`；数据库或 Redis 连接失败分别为 `400 database_unavailable`、`400 redis_unavailable`；users 表不为空或管理员创建冲突为 `409 admin_creation_failed`；migration、运行配置、完成标记或随机源失败分别为 `500 migration_failed`、`500 config_write_failed`、`500 install_lock_failed`、`500 secret_generation_failed`。安装目标不可写为 `500 install_target_not_writable`。响应 message 必须脱敏，不包含连接串、SQL、文件内容或 secret。
+在首次替换运行配置或提交管理员之前，install 必须先原子写入权限 `0600` 的持久 recovery journal，同时持久化它引用的本次请求唯一、权限 `0600` 的原配置备份。journal 只记录随机 `install_id`、固定阶段 `prepared|admin_pending|admin_reverted|config_reverted`、本次预生成的 `admin_id`、原配置是否存在、唯一备份路径及完整性摘要，不记录连接串、密码、secret 或原配置正文；journal、备份、运行配置和完成标记必须位于所有安装进程共享的同一持久目标。每次原子写入或阶段变更都必须在进入下一步前 fsync 文件及父目录。
+
+journal 落盘后的副作用顺序固定为：以唯一临时文件原子替换并持久化运行配置、将 journal 原子推进并持久化为 `admin_pending`、在短事务内检查空 users 表并插入该 `admin_id`、原子写入并持久化完成标记、清理 journal/备份、无错误地发布完整运行时快照。marker 后的清理失败按下文 fail-stop，不得先发布运行时或承载业务流量。
+
+完成标记写入前的正常失败或进程重启，都必须在文件锁内按 journal 幂等恢复。`prepared` 表示管理员事务尚不可能开始，可以直接恢复原配置。`admin_pending` 表示当前运行配置已经持久化目标 Database URL；恢复器必须先由该配置连接目标数据库、获取同一 advisory lock、仅删除与 journal `admin_id` 精确匹配的管理员，然后在仍保留当前目标配置时把 journal 原子推进并持久化为 `admin_reverted`。`prepared|admin_reverted` 恢复或删除本次运行配置并验证持久结果后，把 journal 原子推进并持久化为 `config_reverted`；从 `admin_reverted` 起不得再次要求目标 Database URL。`config_reverted` 只清理 journal、备份和本次临时文件，不再访问数据库或恢复配置。恢复未完成前不得开始新的安装副作用；下次进程启动和下次 install 都必须先重试同一恢复。恢复失败时，请求返回 `500 install_recovery_failed`，进程保持 unready 且不得提供业务 API。已提交 migration 不回滚，由下一次 install 安全重入。
+
+完成标记一旦存在，任何残留 journal 只代表待清理工件，绝不能再删除管理员或恢复旧配置；进程必须从已持久配置构造运行时并在 ready 前清理 journal/备份。标记写入后、运行时发布前崩溃时，该进程不得继续承担流量，并必须从已持久配置重启，不伪造一次新安装。完成标记是最后一个改变安装完成语义的持久副作用；其后的恢复工件清理不改变完成事实。
+
+原子写入、备份恢复和完成标记各使用本次请求唯一的临时文件，失败清理不得覆盖或删除其他安装请求的文件。安装请求中的连接串、密码和生成的 secret 不进入普通日志、Event 或 Audit。
+
+完成标记写入后发生的 recovery 工件清理、文件描述符关闭或锁释放故障不能把已经持久完成的安装响应成可重试的 `500`，也不能回滚完成标记；进程必须记录脱敏 fatal 诊断、保持 unready 并退出，由新进程从持久配置完成清理和恢复。正常释放按数据库锁、文件锁、进程内锁的逆序完成。
+
+多进程部署在首次安装前必须共享同一运行配置与完成标记目标，并只将安装入口暴露给受控管理网络。安装成功时，只有处理该请求的进程已热切换到安装后运行时；安装前已启动的其他进程的 `GET /setup/status` 继续返回该进程尚未发布运行时的 `installed=false`/`needs_setup=true`，而其他 setup POST 因共享完成标记返回 `409 setup_completed`。这是只允许于部署排程期的重启过渡态；该进程必须保持 unready、退出流量并从已生成配置重启，不得继续承担业务 API。
+
+`GET /healthz` 只证明进程存活并返回 `200`。`GET /readyz` 以本进程是否已发布完整运行时快照为权威：普通首次安装前返回 `503 setup_required`；journal 恢复或完成后清理尚未结束时返回 `503 setup_recovery_required`；发现共享完成标记但本进程仍未发布运行时时返回 `503 setup_restart_required`；只有完整快照发布且 recovery 工件已清理后返回 `200`。ready 响应不承诺实时探测所有外部依赖，但不得仅因磁盘已有完成标记或配置文件就返回 `200`。
+
+Setup 失败码固定为：参数/schema 不合法 `400 invalid_install_request`；数据库或 Redis 连接失败分别为 `400 database_unavailable`、`400 redis_unavailable`；users 表不为空或管理员创建冲突为 `409 admin_creation_failed`；migration、运行配置、锁/完成标记、恢复或随机源失败分别为 `500 migration_failed`、`500 config_write_failed`、`500 install_lock_failed`、`500 install_recovery_failed`、`500 secret_generation_failed`。安装目标不可写为 `500 install_target_not_writable`。响应 message 必须脱敏，不包含连接串、SQL、文件内容或 secret。
 
 ## 单管理员认证
 
@@ -170,16 +188,16 @@ POST   /v1/open/device-commands/{command_id}/cancel
 
 各列表的稳定排序固定为：
 
-| List resource             | 排序                                      |
-| ------------------------- | ----------------------------------------- |
-| Project                   | `created_at DESC, id DESC`                |
-| Device Type               | `code ASC`                                |
-| Provider                  | `code ASC`                                |
-| Device                    | `created_at DESC, id DESC`                |
-| Command                   | `created_at DESC, id DESC`                |
-| Event                     | `occurred_at DESC, event_id DESC`         |
-| Webhook Delivery          | `created_at DESC, id DESC`                |
-| Audit                     | `occurred_at DESC, id DESC`               |
+| List resource    | 排序                              |
+| ---------------- | --------------------------------- |
+| Project          | `created_at DESC, id DESC`        |
+| Device Type      | `code ASC`                        |
+| Provider         | `code ASC`                        |
+| Device           | `created_at DESC, id DESC`        |
+| Command          | `created_at DESC, id DESC`        |
+| Event            | `occurred_at DESC, event_id DESC` |
+| Webhook Delivery | `created_at DESC, id DESC`        |
+| Audit            | `occurred_at DESC, id DESC`       |
 
 Admin 与 Open API 的同类资源使用相同排序。Device Type 与 Provider registry 也接受通用 `page`、`page_size`，除此之外不接受过滤或排序 query；调用方不能改变排序字段或方向。
 
@@ -278,14 +296,17 @@ device_id|null, command_id|null, occurred_at, source, payload
 
 当前稳定 Event 类型与 v1 payload 为：
 
-| `event_type`                | 必需关联        | `payload` v1 必需字段                                                |
-| --------------------------- | --------------- | -------------------------------------------------------------------- |
-| `device.created`            | Device          | `device_type_code`、`provider_code`、`lifecycle_status`              |
-| `device.lifecycle_changed`  | Device          | `from`、`to`、`reason_code`                                          |
-| `device.connection_changed` | Device          | `from`、`to`、`evidence_status`                                      |
-| `device.state_updated`      | Device          | `state`、`observed_at`、`evidence_status`                            |
-| `command.created`           | Device、Command | `command_type`、`delivery_policy`、`status`                          |
-| `command.status_changed`    | Device、Command | `from`、`to`、`reason_code`、`confirmation_level`、`evidence_status` |
+| `event_type`                | 必需关联        | `payload` v1 必需字段                                                      |
+| --------------------------- | --------------- | -------------------------------------------------------------------------- |
+| `device.created`            | Device          | `device_type_code`、`provider_code`、`lifecycle_status`                    |
+| `device.lifecycle_changed`  | Device          | `from`、`to`、`reason_code`                                                |
+| `device.connection_changed` | Device          | `from`、`to`、`evidence_status`                                            |
+| `device.state_updated`      | Device          | `state`、`observed_at`、`evidence_status`                                  |
+| `command.created`           | Device、Command | `command_type`、`delivery_policy`、`status`                                |
+| `command.status_changed`    | Device、Command | `from`、`to`、`reason_code`、`confirmation_level`、`evidence_status`       |
+| `command.evidence_updated`  | Device、Command | `status`、`attempt_id`、`outcome`、`confirmation_level`、`evidence_status` |
+
+`command.status_changed` 要求 `from != to`，只表达 Command 状态迁移。`command.evidence_updated` 要求 `status` 仍为当前 Command 状态，且关联 Attempt 已完成并实际改变 Command 的 confirmation level 或 evidence status；它与该聚合更新、Event 及初始 Delivery 在同一事务内按稳定 deduplication key 写入。confirmation level 严格按 `none < transport_sent < provider_accepted < device_acked < device_final` 单调提升。`none` 层的 evidence 必须保持 `none`；`transport_sent|provider_accepted` 的 evidence 可以是 `unverified|verified`；`device_acked|device_final` 必须是 `verified`。confirmation level 不变时只允许 `unverified -> verified`，`verified` 不得回退；confirmation level 提升到 `transport_sent|provider_accepted` 时，evidence 改为保守评价支撑新层级的决定性证据，因新证据未验签可以从较低层的 `verified` 变为新层的 `unverified`，这不是同层证据回退。当前该 Event 用于 Provider acceptance 使 Command 保持 `sent` 时的证据更新，不得用它暗示 Device ACK 或 final result。
 
 `source` 只能是 `admin`、`open_api`、`provider_callback`、`simulator` 或 `system`。不适用的 `reason_code` 使用 `null`，不能用空字符串代替。Event payload 可以在同一 schema version 内增加调用方必须忽略的可选字段，但不能删除、改名或改变上述字段语义；破坏性变化必须提升 schema version。
 
@@ -293,7 +314,7 @@ Webhook Delivery 详情返回 `id`、`event_id`、`project_id`、target snapshot
 
 Audit 读取固定返回 `id`、`actor_type`、`actor_id`、`project_id`、`action`、`result`、`resource_type`、`resource_id`、`ip_address`、`request_id`、脱敏 `metadata` 和 `occurred_at`。`actor_type` 只能是 `admin`、`project`、`provider` 或 `system`；`result` 只能是 `success` 或 `failure`。不适用的关联字段使用 `null`。
 
-当前稳定 Audit action 为 `setup.completed`、`auth.login`、`auth.refresh`、`auth.logout`、`project.created`、`project.updated`、`project.api_key_rotated`、`project.webhook_secret_rotated`、`project.webhook_secret_decryption_failed`、`device.created`、`device.updated`、`device.lifecycle_changed`、`command.created`、`command.cancelled`、`provider.callback_rejected`、`webhook.delivery_replayed` 和 `simulator.updated`。`project.webhook_secret_decryption_failed` 固定使用 `actor_type=system`、`result=failure`，关联 Project，metadata 只含 `webhook_secret_version`、`encryption_key_version` 与固定 `error_code=secret_decryption_failed`；不得保存异常原文、ciphertext、nonce 或 key。`provider.callback_rejected` 固定使用 `actor_type=provider`、`actor_id=provider_code`、`result=failure`，metadata 只含 `provider_code` 与 decoder/validator 稳定 `error_code`，不能保存 callback body 或 sign；无法映射时 Project/Device 关联为 `null`。当前公开 WWTIOT callback 固定 503 且不读取 body，因此在该入口重新冻结并启用前不产生此审计。worker 的普通状态迁移只写 Attempt/Event，不重复写 Audit；新增人工或安全操作必须先增加稳定 action。
+当前稳定 Audit action 为 `auth.login`、`auth.refresh`、`auth.logout`、`project.created`、`project.updated`、`project.api_key_rotated`、`project.webhook_secret_rotated`、`project.webhook_secret_decryption_failed`、`device.created`、`device.updated`、`device.lifecycle_changed`、`command.created`、`command.cancelled`、`provider.callback_rejected`、`webhook.delivery_replayed` 和 `simulator.updated`。首次安装以完成标记作为唯一完成事实，不写无法与文件标记原子提交的 `setup.completed` Audit。`project.webhook_secret_decryption_failed` 固定使用 `actor_type=system`、`result=failure`，关联 Project，metadata 只含 `webhook_secret_version`、`encryption_key_version` 与固定 `error_code=secret_decryption_failed`；不得保存异常原文、ciphertext、nonce 或 key。`provider.callback_rejected` 固定使用 `actor_type=provider`、`actor_id=provider_code`、`result=failure`，metadata 只含 `provider_code` 与 decoder/validator 稳定 `error_code`，不能保存 callback body 或 sign；无法映射时 Project/Device 关联为 `null`。当前公开 WWTIOT callback 固定 503 且不读取 body，因此在该入口重新冻结并启用前不产生此审计。worker 的普通状态迁移只写 Attempt/Event，不重复写 Audit；新增人工或安全操作必须先增加稳定 action。
 
 ## 四层 API 责任
 
@@ -479,17 +500,17 @@ Command Attempt 与 Webhook Delivery Attempt 是两类独立技术记录，不�
 
 ## 稳定错误码
 
-| HTTP | `error_code`                                                                                                                                                                                                                                            |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 400  | `invalid_request`、`invalid_install_request`、`database_unavailable`、`redis_unavailable`                                                                                                                                                               |
-| 401  | `invalid_credentials`、`unauthorized`                                                                                                                                                                                                                   |
-| 403  | `forbidden`                                                                                                                                                                                                                                             |
-| 404  | `not_found`                                                                                                                                                                                                                                             |
-| 405  | `method_not_allowed`                                                                                                                                                                                                                                    |
+| HTTP | `error_code`                                                                                                                                                                                                                                                                     |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400  | `invalid_request`、`invalid_install_request`、`database_unavailable`、`redis_unavailable`                                                                                                                                                                                        |
+| 401  | `invalid_credentials`、`unauthorized`                                                                                                                                                                                                                                            |
+| 403  | `forbidden`                                                                                                                                                                                                                                                                      |
+| 404  | `not_found`                                                                                                                                                                                                                                                                      |
+| 405  | `method_not_allowed`                                                                                                                                                                                                                                                             |
 | 409  | `setup_completed`、`admin_creation_failed`、`idempotency_key_conflict`、`invalid_state_transition`、`provider_device_conflict`、`device_disabled`、`device_deleted`、`provider_not_configured`、`command_not_cancellable`、`webhook_delivery_not_dead`、`webhook_not_configured` |
-| 422  | `unsupported_capability`、`invalid_capability_payload`                                                                                                                                                                                                  |
-| 429  | `rate_limited`                                                                                                                                                                                                                                          |
-| 503  | `auth_dependency_unavailable`、`provider_callback_unverified`                                                                                                                                                                                           |
-| 500  | `internal_error`、`migration_failed`、`config_write_failed`、`install_lock_failed`、`secret_generation_failed`、`install_target_not_writable`                                                                                                           |
+| 422  | `unsupported_capability`、`invalid_capability_payload`                                                                                                                                                                                                                           |
+| 429  | `rate_limited`                                                                                                                                                                                                                                                                   |
+| 503  | `setup_required`、`setup_recovery_required`、`setup_restart_required`、`auth_dependency_unavailable`、`provider_callback_unverified`                                                                                                                                             |
+| 500  | `internal_error`、`migration_failed`、`config_write_failed`、`install_lock_failed`、`install_recovery_failed`、`secret_generation_failed`、`install_target_not_writable`                                                                                                         |
 
 安装的外部依赖、migration、配置写入和 secret 生成失败分别使用前文定义的稳定 setup error code；未分类服务端错误只返回 `internal_error` 和 request ID，不泄露内部细节。HTTP status 表示 API 处理结果；异步 Provider/设备结果只通过 Command status、reason code、Attempt 和 Event 表达，不能把 `provider_rejected` 或 `provider_response_invalid` 混作创建请求的同步 API error，也不能用 HTTP 2xx 暗示设备成功。
