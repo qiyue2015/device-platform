@@ -3,7 +3,7 @@ title: 当前实现状态
 snapshot_date: 2026-07-31
 status: implementation-snapshot
 contract_freeze_revision: 2026-07-31.2
-verified_against_code_revision: implementation-unit-2026-07-31-admin-console
+verified_against_code_revision: implementation-unit-2026-07-31-admin-console-boundary
 ---
 
 # 当前实现状态
@@ -72,6 +72,7 @@ verified_against_code_revision: implementation-unit-2026-07-31-admin-console
 - dispatcher 禁止 redirect 和环境代理，连接时校验 DNS 返回的每个地址以防 rebinding；默认拒绝非公开、loopback、link-local、multicast 与云 metadata 地址，只有部署 `WEBHOOK_EGRESS_ALLOWLIST` 可显式开放所需内部网段，metadata 固定地址不能由宽网段放行。
 - `/v1/events` 与 `/v1/audit-logs` 在已安装持久运行时和未安装兼容路径都严格只读；旧内存 service 的写方法仍是未接入路由的代码残留。
 - 前端 API 类型与页面已使用后端冻结字段和 `{items}` 分页 envelope；所有资源表格只请求当前服务端页并使用 `meta.total`，Dashboard 也只读取有界第一页，不再隐式拉取全量。Project/Device 引用选择器按 100 条服务端页触底续载，不会静默截断第 101 条后的资源。Audit 展示 `actor_type`、`actor_id`、`ip_address`、`metadata`、资源与 `occurred_at`；Command 详情展示扁平 aggregate、Attempt/Event、confirmation/evidence 与终止原因；Webhook 展示 `target_url`、Attempt 详情并只允许对 `dead` Delivery replay。
+- Admin9 模板的用户、角色、菜单、字典和系统日志源码仍保留为未接入残留，但对应路由模块与用户中心导航未注册；当前可达后台只包含冻结目标内的单管理员技术控制台页面。
 - Project 创建、更新和凭据轮换保留一次性明文披露；轮换入口在请求期间全局互斥，凭据弹窗关闭时立即清除前端引用并卸载内容。Device 创建只提交允许字段，Simulator identity 由平台派生，名称/lifecycle 更新受后端状态机约束；Command action 来自 Device Type profile，创建 body 使用 `project_id`，只有 `queued` 可取消。
 - 管理后台提供只读 Provider/Device Type 注册与 profile 诊断，以及可按 Project、Device、Command 和稳定类型筛选的独立 Event 列表/详情；Command 与 Webhook Attempt 仍在各自详情诊断，Audit 保持只读。页面没有将 Provider `integration_status`、Simulator 的 `provider_accepted/verified` 或 WWTIOT HTTP acceptance 展示为 Device ACK/final/success。
 

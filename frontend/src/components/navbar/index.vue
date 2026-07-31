@@ -51,12 +51,6 @@
           </a-avatar>
           <template #content>
             <a-doption>
-              <a-space @click="openUserCenter">
-                <icon-user />
-                <span>{{ $t('userInfo.menu.userCenter') }}</span>
-              </a-space>
-            </a-doption>
-            <a-doption>
               <a-space @click="handleLogout">
                 <icon-export />
                 <span>{{ $t('userInfo.menu.logout') }}</span>
@@ -71,7 +65,6 @@
 
 <script lang="ts" setup>
   import { computed, inject } from 'vue';
-  import { useRouter } from 'vue-router';
   import { useDark, useToggle, useFullscreen } from '@vueuse/core';
   import { useAppStore, useUserStore } from '@/store';
   import useUser from '@/hooks/user';
@@ -79,7 +72,6 @@
 
   const appStore = useAppStore();
   const userStore = useUserStore();
-  const router = useRouter();
   const { logout } = useUser();
   const { isFullscreen, toggle: toggleFullScreen } = useFullscreen();
   const avatarInitial = computed(() =>
@@ -110,9 +102,6 @@
     logout();
   };
   const toggleDrawerMenu = inject('toggleDrawerMenu') as () => void;
-  const openUserCenter = () => {
-    router.push({ name: 'UserInfo' });
-  };
 </script>
 
 <style scoped lang="less">
