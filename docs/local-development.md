@@ -94,7 +94,17 @@ make migrate-up
 make migrate-down
 ```
 
-`make test-int` 用于带 `integration` tag 且具备外部条件的测试。migration 会修改本地数据库，只在明确使用本地开发库时运行。
+`make test-int` 用于带 `integration` tag 且具备外部条件的测试。需要 PostgreSQL 的用例只读取 `MIGRATION_TEST_DATABASE_URL`，并拒绝连接数据库名不是 `device_platform_test` 的 URL；需要真实多进程启动的用例还读取 `MIGRATION_TEST_REDIS_URL`。未设置时对应测试会明确跳过，不能把跳过结果记录为 PostgreSQL/Redis integration 已通过。
+
+只对已经确认的本地测试服务运行，例如：
+
+```bash
+MIGRATION_TEST_DATABASE_URL='postgres://user:password@127.0.0.1:5432/device_platform_test?sslmode=disable' \
+MIGRATION_TEST_REDIS_URL='redis://127.0.0.1:6379/0' \
+make test-int
+```
+
+PostgreSQL integration 在 `device_platform_test` 内为每个测试创建随机 schema，并在结束时删除；不要把 URL 指向 `postgres` 管理库、开发业务库或任何生产数据库。`MIGRATION_TEST_REDIS_URL` 只用于连接和多进程运行时依赖检查，不授权清理共享 Redis 数据。`make migrate-up` / `make migrate-down` 会直接修改 `DATABASE_URL` 指向的数据库，只能在已明确识别的本地开发库执行。
 
 从 `frontend/`：
 

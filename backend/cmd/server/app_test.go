@@ -339,6 +339,12 @@ func unsetEnvForTest(t *testing.T, keys ...string) {
 	}
 }
 
+func useFreshSetupConfigForTest(t *testing.T) {
+	t.Helper()
+	unsetEnvForTest(t, "DATABASE_URL", "REDIS_URL", "JWT_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY", "DEVICE_PLATFORM_INSTALLED")
+	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
+}
+
 func TestLoadConfigRequiresRuntimeFieldsAfterInstall(t *testing.T) {
 	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
 	t.Setenv("DEVICE_PLATFORM_INSTALLED", "true")
@@ -372,6 +378,7 @@ func TestLoadConfigRejectsMalformedWebhookRuntimeSettings(t *testing.T) {
 		{name: "egress allowlist", key: "WEBHOOK_EGRESS_ALLOWLIST", value: "not-a-prefix"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			useFreshSetupConfigForTest(t)
 			unsetEnvForTest(t, keys...)
 			t.Setenv(test.key, test.value)
 			if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), test.key) {
@@ -382,6 +389,7 @@ func TestLoadConfigRejectsMalformedWebhookRuntimeSettings(t *testing.T) {
 }
 
 func TestLoadConfigAcceptsLowerWebhookAttemptLimitAndExtendedSchedule(t *testing.T) {
+	useFreshSetupConfigForTest(t)
 	unsetEnvForTest(t,
 		"WEBHOOK_WORKER_INTERVAL", "WEBHOOK_REQUEST_TIMEOUT", "WEBHOOK_LEASE_DURATION",
 		"WEBHOOK_MAX_ATTEMPTS", "WEBHOOK_RETRY_SCHEDULE", "WEBHOOK_EGRESS_ALLOWLIST",
