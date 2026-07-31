@@ -102,7 +102,7 @@ pnpm preview
 ## 后端接口约定（简述）
 
 - 所有请求通过 Axios 拦截器统一注入 `Bearer Token`
-- MVP-1 新增业务接口统一使用 `/v1/...`；模板遗留的 `/api/...` 路径不作为设备平台新接口约定
+- 设备平台业务接口统一使用 `/v1/...`；模板遗留的 `/api/...` 路径不作为设备平台新接口约定
 - 分页参数自动转换：`current -> page`、`pageSize -> page_size`
 - 统一响应体包含：`code`、`message`、`data`
 

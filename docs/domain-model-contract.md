@@ -3,7 +3,7 @@ title: 领域模型与一致性合同
 created: 2026-07-31
 updated: 2026-07-31
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.3
+freeze_revision: 2026-07-31.4
 ---
 
 # 领域模型与一致性合同
@@ -24,6 +24,7 @@ freeze_revision: 2026-07-31.3
 Project 1 --- n Device n --- 1 DeviceType
 Project 1 --- n Command n --- 1 Device
 Command 1 --- n CommandAttempt
+Command 1 --- n CommandResult
 Device 1 --- n DeviceState
 Device 1 --- n RawMessage
 Project 1 --- n Event
@@ -38,7 +39,7 @@ Provider 1 --- n Device                 (by provider_code)
 
 - API Key 明文只在创建或轮换成功的单次响应中出现；列表、详情、日志、Event、Audit 和数据库均不得保存或返回明文。
 - API Key 轮换替换旧 hash，旧 key 立即失效，并写入技术审计。
-- `webhook_url` 与 `webhook_secret` 属于 Project aggregate 的唯一 Webhook 配置，不建立由另一服务独立维护的端点状态。持久化可以使用版本化子表，但 API 与领域写入只有一个 Project 配置入口。
+- 当前目标中每个 Project 同时只能有一个启用的 Webhook endpoint；`webhook_url` 与 `webhook_secret` 属于 Project aggregate 的唯一 Webhook 配置，不建立 endpoint 集合或由另一服务独立维护的端点状态。持久化可以使用版本化子表保存历史 snapshot，但 API 与领域写入只有一个 Project 配置入口。
 - Webhook secret 与 API Key 分离，明文只在首次生成或显式轮换的单次响应中出现；数据库使用部署级外部密钥以 AES-256-GCM 保存每个版本的 ciphertext、nonce 和 key version，普通日志与读取 API 不得返回明文、密文或 nonce。移除 endpoint 不得暴露旧 secret；解密失败必须让相关 Delivery 失败关闭并产生安全审计，不能使用 fallback secret。
 - API Key 使用密码学安全随机源生成至少 256 bit secret，并以 SHA-256 digest 持久化和查找；数据库不保存可恢复明文。
 - `ip_whitelist` 为空表示允许任意来源，但仍记录认证结果；非空时必须按认证层确认的客户端 IP 执行。
@@ -75,7 +76,7 @@ Device Type 是代码审查并随发布交付的只读 capability profile。当�
 
 - Command 的 `project_id` 必须与关联 Device 的 `project_id` 相同；该约束必须由同一事务中的锁定校验或数据库等价约束保证。
 - `(project_id, idempotency_key)` 唯一且 key 不为空；相同 key 和相同 canonical request hash 返回原 Command，不重复产生投递或 Event。
-- Command 状态只表达平台拥有证据的最高生命周期事实。Provider acceptance、Device ACK 和 Device final result 不得合并。
+- Command 的 `status` 只表达生命周期位置，不表达单次投递结果或证据等级。`status`、`CommandAttempt.outcome` 和 `confirmation_level` 是三个正交维度：Provider acceptance、Device ACK 和 Device final result 不得合并，也不得把证据不足编码成含义混杂的 Command `unknown` 状态。
 - `reason_code` 是稳定机器码，`reason_detail` 是脱敏诊断文本；调用方不得依赖自由文本作分支。
 
 ### CommandAttempt
@@ -86,11 +87,21 @@ Device Type 是代码审查并随发布交付的只读 capability profile。当�
 - `phase` 只能按 `claimed -> dispatching -> completed` 或 `claimed -> completed` 单调迁移。`claimed` 尚未承诺外部调用；`dispatching` 表示 worker 已在事务中承诺立即执行外部调用，Command 同时进入 `sent`；`completed` 表示本次 Attempt 的可观测结果已持久化。非 completed Attempt 的 outcome 为 `null`，completed Attempt 必须有稳定 outcome。
 - `confirmation_level` 只能是 `none`、`transport_sent`、`provider_accepted`、`device_acked`、`device_final`。
 - `evidence_status` 只能是 `none`、`verified` 或 `unverified`。在 Attempt 上，它评价该 Attempt `outcome` 所依赖证据的来源真实性和校验条件；在 Command 上，它保守评价支撑当前 status 与最高 confirmation 的决定性证据。confirmation level 严格按 `none < transport_sent < provider_accepted < device_acked < device_final` 单调提升；`none` 层的 evidence 必须保持 `none`，`transport_sent|provider_accepted` 的 evidence 可以是 `unverified|verified`，`device_acked|device_final` 必须是 `verified`。confirmation level 不变时只允许 `unverified -> verified`，`verified` 不得回退；confirmation level 提升到 `transport_sent|provider_accepted` 时，Command evidence 改为评价支撑新层级的决定性证据，可以因新证据未验签从较低层的 `verified` 变为新层的 `unverified`，不视为同层回退。evidence 不改变 confirmation level 本身；`success` 必须同时具有 `device_final` 与 `verified`。因此 WWTIOT `provider_rejected` 可同时为 `confirmation_level=transport_sent`（本地已证明请求写出）与 `evidence_status=unverified`（决定 rejection 的响应正文尚不可验签），两者不矛盾。
-- 当前稳定 `outcome` 为 `not_dispatched`、`invalid_request`、`provider_accepted`、`provider_rejected`、`transport_error_before_send`、`transport_error_after_send`、`invalid_response`、`device_acked`、`device_succeeded` 和 `device_failed`。`not_dispatched` 只用于 claimed 阶段被取消或超过派发期限，confirmation/evidence 均为 `none`。三个设备结果 outcome 只有在对应 Provider 合同具有可信证据来源时才能产生；当前 WWTIOT 和 simulator 均不能产生它们。Command 结果观察期限到达由 deadline scanner 写状态与 Event，不伪造一次新的 Provider Attempt 或覆盖既有 Attempt outcome。
+- 当前稳定 Attempt `outcome` 只包括 `not_dispatched`、`invalid_request`、`provider_accepted`、`provider_rejected`、`transport_error_before_send` 和 `indeterminate`。它只回答这一次下行投递观察到了什么：请求可能已发出但没有可判定响应、响应结构/echo 无法形成可信结论，或 dispatching 崩溃无法确定外部结果时统一为 `indeterminate`，具体差异由 Attempt 的稳定 `reason_code=provider_delivery_unknown|provider_response_invalid` 保留。`not_dispatched` 只用于 claimed 阶段被取消、超过派发期限或 `online_only` preflight 失败，confirmation/evidence 均为 `none`。Device ACK/final result 不得覆盖已完成 Attempt 或进入 Attempt outcome。
+- Command 结果观察期限到达由 deadline scanner 把 Command 写为终态 `timeout` 并产生 Event；它不伪造新的 Provider Attempt，也不覆盖既有 Attempt outcome。若最后一次 Attempt 已是 `provider_accepted`，该 Attempt 保持原值；Command 的超时表示在观察窗口内未取得可信 final result，最终执行结果仍为 indeterminate。
 - confirmation level 单调提升，不能被后来的较低层事实覆盖。
+
+### CommandResult
+
+CommandResult 是设备 ACK、设备 final result 或其他可关联结果证据的不可变记录，至少保存 `result_id`、`command_id`、可选 `attempt_id`、source、稳定 outcome、confirmation level、evidence status、Provider message deduplication key、`reported_at|null`、`observed_at`、`late` 和脱敏 payload。Result outcome 只包括 `device_acked`、`device_succeeded` 和 `device_failed`。它不替代 CommandAttempt：Attempt 描述一次下行投递，Result 描述之后到达的设备结果证据。
+
+- Device ACK 只有在 `confirmation_level=device_acked` 且 `evidence_status=verified` 时才允许 `sent -> acked`；可信 final success 可以直接执行 `sent -> success`，不要求伪造中间 ACK。
+- `success` 只接受 `device_succeeded/device_final/verified`；可信 final failure 进入 `failed`。Provider acceptance 不能创建这两种终局结果。
+- `timeout` 是终态。终态后到达的可信结果以 `late=true` 追加 CommandResult 和 Event，并可单调提升 Command 的 confirmation/evidence 聚合字段，但不得改变原 `status`、`reason_code`、`finished_at` 或覆盖既有 Attempt/Result。重复结果按稳定 deduplication key 返回既有记录，不重复产生 Event。
 
 ### DeviceState 与 RawMessage
 
+- DeviceState 的最小 envelope 为 `state_id`、`schema_version=1`、`project_id`、`device_id`、`device_type_code`、`provider_code`、`reported_at|null`、`observed_at`、`evidence_status` 和类型化 `state` object。具体锁态字段由 smart-lock 合同定义；未知字段不能提升为通用 Device 字段。
 - 每次可信上行创建不可变 `RawMessage`，保存 Provider、方向、接收时间和受控原文；secret、认证签名和不必要的敏感字段必须脱敏或分离保护。
 - 验证通过并完成 Device 映射后，才可从 RawMessage 产生规范化 `DeviceState` 与 Event。
 - `Device.current_state` 是最新 DeviceState 的派生读取，不建立第二套可独立写入的 JSON 状态。
@@ -100,7 +111,7 @@ Device Type 是代码审查并随发布交付的只读 capability profile。当�
 
 Event 是不可变的规范化技术事实，至少保存 `event_id`、`event_type`、`project_id`、可选 Device/Command 关联、发生时间、source 和 payload。
 
-- 当前 Event envelope 的 `schema_version` 固定为整数 `1`。稳定 `event_type` 只有 `device.created`、`device.lifecycle_changed`、`device.connection_changed`、`device.state_updated`、`command.created`、`command.status_changed` 和 `command.evidence_updated`；新增类型必须先修订 API 合同并定义其初始 schema version，已有类型的破坏性 payload 变化必须提升相应 schema version。`command.status_changed` 只表达 `from != to` 的 Command 状态迁移；Command 状态不变、仅 confirmation/evidence 单调提升时使用 `command.evidence_updated`，不制造同状态的 status-changed Event。
+- 当前 Event envelope 的 `schema_version` 固定为整数 `1`，最小字段为 `event_id`、`schema_version`、`event_type`、`project_id`、`device_id|null`、`command_id|null`、`occurred_at`、`source` 和 `payload`。稳定 `event_type` 只有 `device.created`、`device.lifecycle_changed`、`device.connection_changed`、`device.state_updated`、`command.created`、`command.status_changed`、`command.evidence_updated` 和 `command.result_recorded`；新增类型必须先修订 API 合同并定义其初始 schema version，已有类型的破坏性 payload 变化必须提升相应 schema version。`command.status_changed` 只表达 `from != to` 的 Command 状态迁移；Command 状态不变、仅 Attempt confirmation/evidence 单调提升时使用 `command.evidence_updated`，每个可信 CommandResult 使用 `command.result_recorded`，不制造同状态的 status-changed Event。
 - 会改变领域状态的事务同时写入相关 Event 与待投递 Outbox/Delivery；不得在提交后用 best-effort hook 补写。
 - Event payload 只含业务应用可消费的规范化技术事实，不泄露 Provider secret 或原始敏感消息。
 - 同一领域事实使用稳定 deduplication key，重复 callback 或 worker 重放不能创建重复最终效果。
@@ -125,27 +136,27 @@ AuditLog 记录管理员、Open API 机器身份、Provider callback 或 system 
 2. 创建 Device、lifecycle 变更、Device Type 校验及对应 Audit/Event/Outbox；仅名称变更没有稳定领域 Event，只与 `device.updated` Audit 在同一事务完成。
 3. 创建 Command：锁定并校验 Project/Device、写 Command 与幂等约束、初始 Event/Outbox 和 Audit。
 4. 领取 Command：仅对无有效 lease 的 `queued` Command 条件创建 `phase=claimed` Attempt 和 lease；Command 仍为 `queued`，有有效 lease 时取消与 deadline scanner 都不得越过该所有权。
-5. 承诺派发：短事务校验 lease/Attempt 仍有效，将 Attempt 改为 `dispatching`、Command 改为 `sent`，设置 `sent_at` 与 result deadline 并写状态 Event/Outbox；事务提交后立即执行外部调用。
-6. 处理 Provider 响应或可信设备结果：条件更新 Attempt 和 Command，写 Event/Outbox 与所需 Audit。
-7. 处理可信 callback：保存 RawMessage、更新 DeviceState、写 Event/Outbox；只有存在已确认且无歧义的命令关联规则时才更新 Command。
+5. 承诺派发：短事务校验 lease/Attempt 仍有效，并重新执行 profile preflight。`online_only` Device 已非 `online` 时，将 Attempt 完成为 `not_dispatched/device_not_online`、Command 改为 `failed` 并写 Event/Outbox；通过时才将 Attempt 改为 `dispatching`、Command 改为 `sent`，设置 `sent_at` 与 result deadline 并写状态 Event/Outbox，事务提交后立即执行外部调用。
+6. 处理 Provider 响应：条件完成 Attempt、更新 Command 的证据聚合，写 Event/Outbox 与所需 Audit；`indeterminate` 不把 Command 写入额外的混合生命周期状态。
+7. 处理可信 callback 或设备结果：保存 RawMessage、按去重键追加 CommandResult、更新 DeviceState 和 Command 的证据聚合、写 Event/Outbox；只有存在已确认且无歧义的命令关联规则时才关联 Command，迟到结果不得改写终态。
 8. Event 事务已经原子创建初始 Webhook Delivery；独立 Webhook 事务只负责领取/完成 DeliveryAttempt、进入 retry/dead，以及创建 manual replay，不能用于提交后补建初始 Delivery。
 
-外部 HTTP 调用不得包在长数据库事务中。`claimed` lease 过期且从未进入 `dispatching` 时，可以由 worker 重新领取同一 Attempt，因为合同保证尚未承诺外部调用。`dispatching` 一旦提交，进程在调用前后或结果落库前崩溃都无法证明未发送；恢复器将 Attempt 完成为 `transport_error_after_send`，confirmation 为 `transport_sent`、evidence 为 `unverified`，Command 转 `unknown`。不可安全重放的 action 不自动重发。
+外部 HTTP 调用不得包在长数据库事务中。`claimed` lease 过期且从未进入 `dispatching` 时，可以由 worker 重新领取同一 Attempt，因为合同保证尚未承诺外部调用。`dispatching` 一旦提交，进程在调用前后或结果落库前崩溃都无法证明未发送；恢复器将 Attempt 完成为 `indeterminate`、reason `provider_delivery_unknown`、confirmation `transport_sent`、evidence `unverified`，Command 保持 `sent` 并由原 result deadline 终止为 `timeout`。不可安全重放的 action 不自动重发。
 
 ## Worker 所有权与恢复
 
-| Worker                    | 领取对象                                            | 崩溃恢复                                                                                      | 重试边界                                      |
-| ------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| Command dispatcher        | 无有效 lease 的 `queued` Command                    | `claimed` 可安全重新领取；`dispatching` 过期转 `unknown`，不自动重放                          | 仅 profile 与 Provider 合同共同明确允许时重试 |
-| Command deadline scanner  | 无有效 lease 的到期 `queued`，或到期 `sent`/`acked` | queued 的 claimed Attempt 完成为 `not_dispatched`；其余保留既有 outcome，Command 转 `timeout` | 不发设备请求                                  |
-| Provider callback handler | 签名通过的 RawMessage                               | 依靠 Provider message dedupe key 或受控内容 hash 去重                                         | callback 可安全重复处理，不重复最终效果       |
-| Webhook dispatcher        | 到期 `pending`/`failed` Delivery                    | lease 到期可重新领取；每次 HTTP 调用保留独立 Attempt                                          | 有界重试，耗尽为 `dead`                       |
+| Worker                    | 领取对象                                            | 崩溃恢复                                                                                                                   | 重试边界                                      |
+| ------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| Command dispatcher        | 无有效 lease 的 `queued` Command                    | `claimed` 可安全重新领取；`dispatching` 过期把 Attempt 记为 `indeterminate`，Command 保持 `sent` 到原 deadline，不自动重放 | 仅 profile 与 Provider 合同共同明确允许时重试 |
+| Command deadline scanner  | 无有效 lease 的到期 `queued`，或到期 `sent`/`acked` | queued 的 claimed Attempt 完成为 `not_dispatched`；其余保留既有 outcome，Command 转 `timeout`                              | 不发设备请求                                  |
+| Provider callback handler | 签名通过的 RawMessage                               | 依靠 Provider message dedupe key 或受控内容 hash 去重                                                                      | callback 可安全重复处理，不重复最终效果       |
+| Webhook dispatcher        | 到期 `pending`/`failed` Delivery                    | lease 到期可重新领取；每次 HTTP 调用保留独立 Attempt                                                                       | 有界重试，耗尽为 `dead`                       |
 
 多实例领取使用数据库条件更新、行锁或 `FOR UPDATE SKIP LOCKED` 等等价机制。Redis 不能成为唯一事实来源。
 
 ## 删除与保留
 
-当前目标采用逻辑删除或禁用关键资源，不级联物理删除已有 Command、Attempt、Event、Delivery 或 Audit。具体保留期限属于运行政策 Unknown；在政策确认前不得自动清理审计链。
+当前目标采用逻辑删除或禁用关键资源，不级联物理删除已有 Command、Attempt、Result、Event、Delivery 或 Audit。具体保留期限属于运行政策 Unknown；在政策确认前不得自动清理审计链。
 
 ## Unknown
 

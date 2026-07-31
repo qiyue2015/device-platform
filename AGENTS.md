@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository is split into a Go backend and a Vue 3 admin frontend. `backend/` contains the IoT device platform service; its entrypoint is `backend/cmd/server/main.go`, and Make targets live in `backend/Makefile`. `frontend/` contains the Admin9 Pro web app. UI code is under `frontend/src/`, grouped into `api/`, `components/`, `layout/`, `router/`, `store/`, `utils/`, and `views/`. Vite config is in `frontend/config/`, tooling scripts in `frontend/scripts/`, static assets in `frontend/src/assets/`, and API/MVP contracts in `docs/`.
+This repository is split into a Go backend and a Vue 3 admin frontend. `backend/` contains the IoT device platform service; its entrypoint is `backend/cmd/server/main.go`, and Make targets live in `backend/Makefile`. `frontend/` contains the Admin9 Pro web app. UI code is under `frontend/src/`, grouped into `api/`, `components/`, `layout/`, `router/`, `store/`, `utils/`, and `views/`. Vite config is in `frontend/config/`, tooling scripts in `frontend/scripts/`, static assets in `frontend/src/assets/`, and platform boundary, target, current state, and API contracts in `docs/`.
 
 ## Admin9 Frontend Skill Requirement
 
@@ -26,7 +26,7 @@ Backend tests should use Go’s standard testing package and be named `TestXxx` 
 
 ## Commit & Pull Request Guidelines
 
-Follow the configured frontend commitlint convention: Conventional Commits such as `feat: add device list` or `fix: handle expired token`. Local Codex/OMX commits must also use inline `git commit -m ...` paragraphs with a narrative Lore body, Lore trailers, and `Co-authored-by: OmX <omx@oh-my-codex.dev>`.
+Follow the configured frontend commitlint convention: Conventional Commits such as `feat: add device list` or `fix: handle expired token`.
 
 PRs should include the purpose, affected backend/frontend areas, verification commands, linked issues when available, and screenshots or screen recordings for visible UI changes. Keep changes scoped and update `docs/` when API contracts or behavior change.
 

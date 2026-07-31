@@ -3,7 +3,7 @@ title: Device Platform 文档
 created: 2026-05-16
 updated: 2026-07-31
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.3
+freeze_revision: 2026-07-31.4
 ---
 
 # Device Platform 文档
@@ -31,9 +31,11 @@ Device Type 合同和 Provider 合同都从属于 Platform Boundary、Platform T
 
 ## 冻结规则
 
-文档冻结只表示实现合同已经无阻塞歧义，不表示代码已实现或真实设备已验收。冻结范围包括上述四份主合同、`smart-lock` Device Type 合同和 WWTIOT Provider 合同；Current State 保持带日期的可变事实快照。
+文档采用分层冻结。Platform Boundary 的 `.3` 边界已经冻结且本次保持不变；Platform Target、Domain Model、API、`smart-lock` 和 WWTIOT 的 `.4` 作为 Platform Core 实施合同冻结。合同冻结只表示实施语义无阻塞歧义，不表示代码已经满足 `.4`，也不表示真实设备或共享单车业务已验收。Current State 保持带日期的可变事实快照。
 
-冻结前必须完成链接、术语、状态机、字段、责任、事务边界、恢复策略、厂商证据和 Unknown 反向复核。通过后将合同 front matter 的 `status` 统一改为 `frozen-for-implementation`，并记录同一 `freeze_revision`。冻结后任何语义变更必须先修订合同、说明原因并重新执行冻结复审，不能由实现静默改变。
+“Platform Core 技术实现完成”和“当前目标真实业务验收通过”是两个独立门槛。WWTIOT callback、final result 和实机行为可以在冻结时保持 Unknown：它们不阻塞持久化、Outbox 和较低确认等级的诚实实现，但阻塞真实业务验收及“当前目标已完成”的声明。
+
+冻结前必须完成链接、术语、状态机、字段、责任、事务边界、恢复策略、厂商证据和 Unknown 反向复核。通过后将本次共同变更的合同 `status` 设为 `frozen-for-implementation` 并记录同一 `freeze_revision`；未发生语义变化的上级合同可以保留其已冻结 revision。冻结后任何语义变更必须先修订合同、说明原因并重新执行冻结复审，不能由实现静默改变。
 
 ## 维护规则
 

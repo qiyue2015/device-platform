@@ -3,7 +3,7 @@ title: 当前平台目标合同
 created: 2026-07-31
 updated: 2026-07-31
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.3
+freeze_revision: 2026-07-31.4
 ---
 
 # 当前平台目标合同
@@ -33,14 +33,14 @@ freeze_revision: 2026-07-31.3
 - 厂商 HTTP 请求被接受、厂商完成下发、设备收到命令、设备最终执行成功是不同事实。
 - `success` 必须有可信的设备最终结果依据；Provider acceptance 不得表达为设备执行成功。
 - 必须先通过厂商合同与受控设备测试确认 WWTIOT 实际可观测到的最高 confirmation level，并在 API、Event 和后台中如实展示该层级。
-- 若 WWTIOT 不提供可信 Device final result，Provider acceptance 只进入 Attempt 的 `confirmation_level=provider_accepted`，Command 保持 `sent`，到观察期限后进入 `timeout`；请求是否送达无法判断时进入 `unknown`。不得自行推断 `acked` 或 `success`。
+- 若 WWTIOT 不提供可信 Device final result，Provider acceptance 只使 Attempt 成为 `outcome=provider_accepted`、`confirmation_level=provider_accepted`，Command 保持 `sent`，到观察期限后进入终态 `timeout`。请求可能送达但结果无法判断时，Attempt 使用 `outcome=indeterminate` 并记录稳定原因，Command 仍保持 `sent` 直到同一观察期限到达；`unknown` 不是 Command 状态。不得自行推断 `acked` 或 `success`。
 - 超时、厂商拒绝、网络失败、设备无回执和设备执行失败必须保留可诊断、可恢复的不同技术事实。
 
 Core 不得用 Device Type 或 Provider 专用表、方法、API 路径或具体 action 分支实现设备语义。当前目标只要求支撑真实接入的最小 capability profile，不要求动态规则引擎或通用低代码配置。
 
 ### 可恢复的一致状态
 
-- Project、Device、Command、Command Attempt、Device State、Event、Webhook Delivery 和 Audit 必须持久化。
+- Project、Device、Command、Command Attempt、Command Result、Device State、Event、Webhook Delivery 和 Audit 必须持久化。
 - 状态迁移、事件产生和对外投递记录必须保持一致，进程重启后可以恢复处理。
 - 幂等约束、条件状态迁移、重复回执和重复投递不能产生重复的最终效果。
 - 后台和 Open API 读取的状态必须来自同一套实际运行模型，不能由多套平行 DTO 或内存状态各自解释。
@@ -51,19 +51,33 @@ Core 不得用 Device Type 或 Provider 专用表、方法、API 路径或具体
 
 ### 管理后台
 
-后台是单管理员技术控制台，用于管理和诊断 Project、Device、Provider、Command、Attempt、Event、Webhook 和 Audit。它不是共享单车运营后台，不建设组织、员工、业务订单或复杂人类权限功能。
+后台是单管理员技术控制台，用于管理和诊断 Project、Device、Provider、Command、Attempt、Result、Event、Webhook 和 Audit。它不是共享单车运营后台，不建设组织、员工、业务订单或复杂人类权限功能。
 
 ## 当前不进入完成定义
 
 - 设备直连、地图、通用位置、电子围栏、OTA、固件管理、规则引擎、批量操作、告警和长期遥测保留策略不在当前目标中，也不作为本轮实现缺口跟踪。只有产品所有者基于真实需求修订目标合同后才进入实施。
 - 自行车、景区、用户、订单、计费、停车和还车业务始终不进入平台完成定义。
 
-## 达到目标的验收原则
+## 两个独立完成门槛
 
-只有同时满足以下条件，才可声明当前目标达到：
+### 技术实现完成
+
+满足以下条件时，可以声明 **Platform Core 技术实现完成**：
+
+1. Project 机器认证、隔离、物理动作强制幂等、持久 Command/Attempt/Result、状态条件迁移、Outbox、Webhook 和 Audit 按冻结合同运行并经过自动化验证。
+2. `Command.status` 只表达生命周期，`Attempt.outcome` 只表达单次派发结果，`confirmation_level` 只表达证据层级；三者在 API、Event、数据库和后台中没有混用。
+3. Provider acceptance 只能使 Command 保持 `sent`；没有可信 Device ACK 或 final result 时，系统按合同如实终止为 `timeout`，而不是伪造 `acked`、`success` 或含义混杂的 `unknown` 状态。
+4. 进程重启、重复请求、重复 callback、迟到结果和并发处理不会覆盖历史或产生重复最终效果；迟到证据只追加 Result/Event。
+5. 模拟器通过同一持久主链验证 Platform Core 已冻结的较低确认等级和失败条件，不把组件测试或模拟结果写成真实设备证据。
+
+WWTIOT callback、final result 和真实设备行为保持 Unknown 时，不阻塞持久化、Outbox、Webhook、审计及截至 `provider_accepted`/`timeout` 的诚实状态链路达到技术实现完成；这些 Unknown 会限制可实现的最高 confirmation level，并阻塞下述真实业务验收。
+
+### 真实业务验收通过
+
+只有同时满足以下条件，才可声明 **当前共享单车智能锁目标已通过真实业务验收**：
 
 1. 受控环境中的共享单车应用能用 Project 机器身份完成设备查询和命令调用，且隔离、鉴权和幂等可验证。
-2. 使用至少一台受控真实 WWTIOT 智能锁验证从平台请求到厂商实际可观测最高结果层级的端到端链路；Provider acceptance、Device ACK、Device final result 和 Unknown 必须在状态、事件与 API 中被准确区分。只有存在可信 final evidence 时才可进入 `success`。
+2. 使用至少一台受控真实 WWTIOT 智能锁完成 [smart-lock 验收矩阵](./device-types/smart-lock.md#真实设备验收矩阵)，验证从平台请求到厂商实际可观测最高结果层级的端到端链路；Provider acceptance、Device ACK、Device final result 和证据不足必须在状态、事件与 API 中被准确区分。只有存在可信 final evidence 时才可进入 `success`。
 3. 核心对象及处理进度持久化，服务重启后可恢复，重复请求、重复回执和并发处理不会产生重复最终效果。
 4. 模拟器通过同一 Gateway/Provider 边界复现真实 WWTIOT 链路中经证据确认的结果层级与失败条件，不建立平行命令域，也不预设尚未确认的模式清单。
 5. Event、Webhook Delivery 和 Audit 与命令事实一致；签名、重试、dead 状态和受控重发可验证。
@@ -73,7 +87,7 @@ Core 不得用 Device Type 或 Provider 专用表、方法、API 路径或具体
 
 领域对象、事务边界、worker 所有权与崩溃恢复以[领域模型与一致性合同](./domain-model-contract.md)为准；接口路径、DTO、状态和错误语义以 [API 合同](./api-contract.md)为准。两者均不得降低本文的真实结果门槛。
 
-WWTIOT 当前可观测层级是否足以支撑共享单车正式业务，必须由产品所有者在厂商合同和受控设备证据到齐后作出验收决定。本文不预先假定厂商一定提供 final result，也不预先判定较低 confirmation level 可以满足正式业务。
+技术实现完成与真实业务验收通过是两个独立判定，不得互相代替。WWTIOT 当前可观测层级是否足以支撑共享单车正式业务，必须由产品所有者在厂商合同和受控设备证据到齐后作出验收决定。本文不预先假定厂商一定提供 final result，也不预先判定较低 confirmation level 可以满足正式业务。
 
 ## 未达到目标的判定
 

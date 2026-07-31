@@ -34,6 +34,8 @@ setup 会生成独立的 32 byte Webhook secret encryption key，并以无 paddi
 
 持久 Webhook dispatcher 默认每 2 秒扫描，单次 HTTP timeout 为 10 秒、lease 为 15 秒，最多执行 5 次 HTTP Attempt，失败间隔为 `1s,5s,30s,2m`。部署可用 `WEBHOOK_MAX_ATTEMPTS` 降低次数，并同步用 `WEBHOOK_RETRY_SCHEDULE` 提供少一次且不短于对应默认值的间隔；timeout、lease 或 schedule 非法时启动失败关闭。`WEBHOOK_EGRESS_ALLOWLIST` 默认留空，只允许解析为公开地址的目标；即使 Project 允许配置本机 HTTP URL，连接 loopback 或内网目标仍需在部署配置中显式加入受控 IP/CIDR，例如仅本地测试时使用 `127.0.0.1/32`。不要用宽网段替代目标清单，云 metadata 固定地址始终拒绝。
 
+当前代码仍使用 `.3` Webhook 签名 wire：`sha256(HMAC(secret, timestamp + "." + raw_body))`，且没有 secret-version header。冻结的 `.4` 合同已改为 `v1.timestamp.secret_version.raw_body`、`v1=` 签名、`X-Device-Platform-Secret-Version` 和 300 秒验签窗口；在代码和自动化测试完成对齐前，不得把本地 Webhook 检查记录为 `.4` 技术实现通过。
+
 仅对从未写入过加密 Webhook secret 的旧本地环境，可执行以下一次性升级；命令不会把 key 输出到终端。若数据库已经存在 `project_webhook_secrets`，必须恢复原部署 key，生成新 key 会使已有版本无法解密。
 
 ```bash
@@ -156,9 +158,11 @@ make check
 
 这些检查证明本地持久化、模拟器主链和 Webhook dispatcher 的代码行为，不证明目标部署网络、某个外部 Webhook endpoint、真实 WWTIOT 服务或智能锁执行结果。
 
-## 目标验收路径
+## 分层验收路径
 
-目标最终需要验证：
+Platform Core 技术实现验收先验证持久化、正交 Command/Attempt/confirmation 语义、Outbox/Webhook/Audit 和诚实的 `provider_accepted -> sent -> timeout` 链路。它可以使用 simulator、伪 Provider 和本地 PostgreSQL 复现，但这些证据只证明技术实现，不证明共享单车正式业务可用。
+
+真实业务验收最终需要验证：
 
 ```text
 Shared-bicycle Project

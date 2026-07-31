@@ -72,7 +72,7 @@ Do not put normal logged-in APIs under `/v1/admin/` — that namespace is strict
 - Both locale files (`zh-CN`, `en-US`) must be updated together
 - Backend Go: `gofmt`, idiomatic package names, `_test.go` next to source
 - Frontend: PascalCase for component files, TypeScript strict
-- API contracts and MVP scope documented in `docs/` — update when behavior changes
+- Platform boundary, current target, implementation state, and API contracts are documented in `docs/` — update the appropriate layer when behavior or decisions change
 
 ## Environment Setup
 

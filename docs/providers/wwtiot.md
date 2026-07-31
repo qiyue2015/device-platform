@@ -3,7 +3,7 @@ title: WWTIOT Provider 合同
 created: 2026-07-31
 updated: 2026-07-31
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.3
+freeze_revision: 2026-07-31.4
 ---
 
 # WWTIOT Provider 合同
@@ -40,7 +40,7 @@ freeze_revision: 2026-07-31.3
 | adapter              | `wwtiot_cloud_api`               |
 | 调用方式             | 异步 worker 发起的单次 HTTP 下行 |
 
-Provider code/name 固定为 `wwtiot`/`WWTIOT`，Provider request timeout 固定来自 `smart-lock` revision 1 的 10 秒；部署变量不能覆盖这些合同值。部署只提供 `WWTIOT_API_URL`、`WWTIOT_USER_ID` 与 `WWTIOT_USER_KEY`，本文不记录真实值或 secret。URL 必须是无 userinfo、query 或 fragment 的 absolute HTTP/HTTPS URL，UserID trim 后为 `1..128` UTF-8 byte，UserKey 为 `1..512` byte 且不 trim。任一缺失或不合法时 Provider 为 `unconfigured`，dispatcher 不发请求。
+Provider code/name 固定为 `wwtiot`/`WWTIOT`，Provider request timeout 固定来自 `smart-lock` revision 2 的 10 秒；部署变量不能覆盖这些合同值。部署只提供 `WWTIOT_API_URL`、`WWTIOT_USER_ID` 与 `WWTIOT_USER_KEY`，本文不记录真实值或 secret。URL 必须是无 userinfo、query 或 fragment 的 absolute HTTP/HTTPS URL，UserID trim 后为 `1..128` UTF-8 byte，UserKey 为 `1..512` byte 且不 trim。任一缺失或不合法时 Provider 为 `unconfigured`，dispatcher 不发请求。
 
 默认 API URL 为厂商资料给出的 `http://gps.wwtiot.com/api/`。明文 HTTP 的生产可接受性与厂商是否支持 HTTPS 为 Unknown；部署可以通过 `WWTIOT_API_URL` 选择已确认的 absolute HTTP/HTTPS endpoint，但不能据此推断 endpoint 身份已验证。
 
@@ -80,27 +80,27 @@ V2 同步成功响应示例包含 `result=ok` 和 `info="cmd send ok"`。这直�
 - adapter 只接受 `smart-lock` profile 的 `unlock`、`lock` 与 `query_status`，并严格生成上表 V2 字段；API payload 不能覆盖 `cmd`、`type`、`value`、`userid`、`deviceid`、`serialnum` 或 `sign`。
 - `serialnum` 在 Attempt 创建时生成并持久化为 Provider request key，同一次 Attempt 重读相同值。当前生成正十进制且不超过 9 位，并以数据库唯一约束处理碰撞；该范围是平台保守选择，不是厂商限制，厂商防重放语义仍为 Unknown。
 - UserID、UserKey 与完整 sign 不进入普通日志、API、Event 或 Audit。Attempt 只保留允许诊断的脱敏摘要。
-- 物理 action 使用 `dispatch_once`。在厂商幂等与防重放合同未确认前，网络 timeout、连接中断、无效响应和崩溃恢复均不得自动重发。
-- adapter 使用 profile 的 10 秒 request timeout，禁止自动 redirect，响应最多读取 64 KiB；Attempt 只保留最多 4 KiB 的字段 allowlist 摘要。超过上限、非 JSON object、重复 JSON key 或尾随 JSON 均为 `invalid_response`。
+- 物理 action 服从 smart-lock revision 2 的 `online_only` 并禁止自动重试；`query_status` 使用单次 `dispatch_once` 且同样不自动重试。此策略是平台当前采用的保守产品决策，不是 WWTIOT 资料、现有代码或真实设备证据证明的厂商事实。在厂商幂等与防重放合同未确认前，网络 timeout、连接中断、无效响应和崩溃恢复均不得自动重发。
+- adapter 使用 profile 的 10 秒 request timeout，禁止自动 redirect，响应最多读取 64 KiB；Attempt 只保留最多 4 KiB 的字段 allowlist 摘要。超过上限、非 JSON object、重复 JSON key 或尾随 JSON 均为 `outcome=indeterminate`、reason `provider_response_invalid`。
 
 ### 同步响应分类
 
-| 观测                                                       | Attempt outcome               | confirmation level  | evidence status | Command 结果                                                  |
-| ---------------------------------------------------------- | ----------------------------- | ------------------- | --------------- | ------------------------------------------------------------- |
-| Command 创建后的配置漂移导致请求构造前发现 Provider 不可用 | `invalid_request`             | `none`              | `none`          | `failed`，`provider_not_configured`；正常创建前会同步拦截     |
-| 明确未发出请求的本地连接错误                               | `transport_error_before_send` | `none`              | `none`          | `failed`；只有实现能证明未发送时适用                          |
-| 请求可能已发出但没有完整响应                               | `transport_error_after_send`  | `transport_sent`    | `verified`      | `unknown`，不自动重发                                         |
-| 非 2xx                                                     | `invalid_response`            | `transport_sent`    | `verified`      | `unknown`；厂商未定义 HTTP error 的终局语义，不猜测为明确拒绝 |
-| 2xx 但 body 不是 JSON object，或缺少字符串 `result`        | `invalid_response`            | `transport_sent`    | `verified`      | `unknown`                                                     |
-| 2xx 且 `result != ok`                                      | `provider_rejected`           | `transport_sent`    | `unverified`    | `failed`，保留厂商 `info`                                     |
-| 2xx、`result=ok`，且必需 echo 与请求一致                   | `provider_accepted`           | `provider_accepted` | `unverified`    | 保持 `sent`，不能进入 `acked`/`success`                       |
-| 2xx、`result=ok`，但关键 echo 缺失或不一致                 | `invalid_response`            | `transport_sent`    | `verified`      | `unknown`                                                     |
+| 观测                                                       | Attempt outcome               | confirmation level  | evidence status | Command 结果                                                              |
+| ---------------------------------------------------------- | ----------------------------- | ------------------- | --------------- | ------------------------------------------------------------------------- |
+| Command 创建后的配置漂移导致请求构造前发现 Provider 不可用 | `invalid_request`             | `none`              | `none`          | `failed`，`provider_not_configured`；正常创建前会同步拦截                 |
+| 明确未发出请求的本地连接错误                               | `transport_error_before_send` | `none`              | `none`          | `failed`；只有实现能证明未发送时适用                                      |
+| 请求可能已发出但没有完整响应                               | `indeterminate`               | `transport_sent`    | `verified`      | 保持 `sent`，Attempt reason `provider_delivery_unknown`；到期 `timeout`   |
+| 非 2xx                                                     | `indeterminate`               | `transport_sent`    | `verified`      | 保持 `sent`，Attempt reason `provider_response_invalid`；不猜测为明确拒绝 |
+| 2xx 但 body 不是 JSON object，或缺少字符串 `result`        | `indeterminate`               | `transport_sent`    | `verified`      | 保持 `sent`，Attempt reason `provider_response_invalid`；到期 `timeout`   |
+| 2xx 且 `result != ok`                                      | `provider_rejected`           | `transport_sent`    | `unverified`    | `failed`，保留厂商 `info`                                                 |
+| 2xx、`result=ok`，且必需 echo 与请求一致                   | `provider_accepted`           | `provider_accepted` | `unverified`    | 保持 `sent`，不能进入 `acked`/`success`                                   |
+| 2xx、`result=ok`，但关键 echo 缺失或不一致                 | `indeterminate`               | `transport_sent`    | `verified`      | 保持 `sent`，Attempt reason `provider_response_invalid`；到期 `timeout`   |
 
 V2 同步响应包含 `sign`，但现有资料没有无歧义写明响应签名的字段顺序；代码不得猜测验证顺序。当前明文 HTTP 下响应真实性存在风险，因此仅凭结构正确的响应只能记录 `evidence_status=unverified`。厂商确认 HTTPS 或响应签名规则并经受控验证后，才能将真实 WWTIOT acceptance evidence 标为 `verified`。
 
-结构正确的成功响应要求 `result`、`userid`、`deviceid`、`cmd`、`serialnum` 和非空 `sign`；`result` 必须严格等于小写 `ok`，前三个 echo 必须是与请求完全一致的 string。`serialnum` 接受 JSON integer 或十进制 integer string 后比较；`query_status` 还要求以同样规则匹配 `type=23`、`value=4`。`info` 和其他扩展字段不参与成功判断，只能进入 4 KiB allowlist 摘要；重复 key 或关键字段类型不符仍是 `invalid_response`。
+结构正确的成功响应要求 `result`、`userid`、`deviceid`、`cmd`、`serialnum` 和非空 `sign`；`result` 必须严格等于小写 `ok`，前三个 echo 必须是与请求完全一致的 string。`serialnum` 接受 JSON integer 或十进制 integer string 后比较；`query_status` 还要求以同样规则匹配 `type=23`、`value=4`。`info` 和其他扩展字段不参与成功判断，只能进入 4 KiB allowlist 摘要；重复 key 或关键字段类型不符使用 `outcome=indeterminate`、reason `provider_response_invalid`。
 
-transport 是否已发送必须由 HTTP transport 的 `WroteRequest`（或可证明等价信号）记录；DNS/dial 等明确未写请求的错误使用 `confirmation_level=none`，一旦已写或无法证明未写就使用 `transport_sent` 并进入 `unknown`。底层网络错误原文可能包含敏感 Provider endpoint，不得进入 Attempt、Command、Event、日志或 API；adapter 只返回稳定的发送前/发送后诊断。
+transport 是否已发送必须由 HTTP transport 的 `WroteRequest`（或可证明等价信号）记录；DNS/dial 等明确未写请求的错误使用 `confirmation_level=none`，一旦已写或无法证明未写就使用 `transport_sent` 与 `outcome=indeterminate`。Command 不进入 `unknown`，而是保持 `sent` 到观察期限后终止为 `timeout`。底层网络错误原文可能包含敏感 Provider endpoint，不得进入 Attempt、Command、Event、日志或 API；adapter 只返回稳定的发送前/发送后诊断。
 
 `evidence_status` 评价本次 outcome 所依赖的证据。由本地 `WroteRequest` 单独证明的 transport/invalid-response 分类为 `verified`，明确未发送且 confirmation 为 `none` 时为 `none`；依赖当前无法验签 HTTP body 的 `provider_accepted` 和 `provider_rejected` 均为 `unverified`。Provider rejection 可以保守地令 Command 失败，但不得把未签名响应提升为更高 confirmation level。
 
@@ -112,10 +112,11 @@ transport 是否已发送必须由 HTTP transport 的 `WroteRequest`（或可证
 - decoder/validator 稳定错误码为 `callback_payload_too_large`、`callback_invalid_json`、`callback_missing_field`、`callback_invalid_field`、`callback_user_mismatch`、`callback_device_not_found` 和 `callback_device_ambiguous`。这些错误当前只用于组件契约测试与安全诊断，不改变公开 callback 的固定 503 响应。
 - 当前资料不能无歧义证明 callback sign 字段顺序、防重放规则或命令关联。公开入口在这些条件确认前必须失败关闭：不得更新 DeviceState，不得产生可投递 Event，更不得推进 Command。
 - 条件确认后，签名通过的 callback 可以更新 [smart-lock DeviceState](../device-types/smart-lock.md#devicestate-规范化)。只有另有可信且无歧义的命令关联证据时，才可提升 Command confirmation level。
+- 已终止 Command 的迟到 callback 或 final result 只能按通用合同追加不可变 CommandResult 与 `command.result_recorded` Event，并标记 `late=true`；不得把 `timeout` 覆盖为 `acked`、`success` 或 `failed`。
 
 ### simulator 对齐
 
-simulator 通过同一 Provider interface 返回 `provider_accepted`、`provider_rejected`、`transport_error_before_send`、`transport_error_after_send`、`invalid_response` 与 `0..60000` ms 可控 delay，并使用与业务 Command 相同的持久状态机。精确 API 和状态映射以 [API 合同的 Simulator 配置](../api-contract.md#simulator-配置)为准。它不提供 `device_acked`、`device_succeeded` 或其他 Device final 模式。
+simulator 接受 `provider_accepted`、`provider_rejected`、`transport_error_before_send`、`transport_error_after_send`、`invalid_response` 五种配置模式和 `0..60000` ms 可控 delay，并通过同一 Provider interface 使用与业务 Command 相同的持久状态机；后两种配置模式统一持久化为 Attempt `outcome=indeterminate`，只以稳定 reason 区分。精确 API 和状态映射以 [API 合同的 Simulator 配置](../api-contract.md#simulator-配置)为准。它不提供 `device_acked`、`device_succeeded` 或其他 Device final 模式。
 
 ## 已验证与 Unknown
 
@@ -126,6 +127,8 @@ Current State 只有在自动化检查证明三项 action 的精确请求/签名
 ### 真实设备验收事实
 
 当前仓库没有可复核的真实 WWTIOT 设备端到端验收记录。厂商资料已获得、签名代码可生成请求、本地伪 Provider 测试通过，都不能证明指定设备已收到或执行命令。因此真实设备收到、拒绝、执行、延迟回调以及最终状态的事实均为 **Unknown**。
+
+这些 Unknown 不阻塞 Platform Core 对持久化、Outbox、Webhook、Audit、`provider_accepted` 和终态 `timeout` 的诚实技术实现，也不允许实现擅自提升 confirmation level。它们阻塞公开可信 callback/final result 的启用、[smart-lock 真实设备验收矩阵](../device-types/smart-lock.md#真实设备验收矩阵)的完成，以及“共享单车正式业务可用”或“当前真实目标已业务验收”的声明。
 
 ### Unknown
 

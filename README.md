@@ -2,7 +2,7 @@
 
 Device Platform 是由一名管理员维护的 IoT 设备接入与控制平台。当前唯一目标是依据共享单车智能锁的真实接入和使用，形成可实际运行、可持久化、状态可信的核心链路；通用性来自已确认的平台边界和统一 Gateway/Provider 接入方式，不来自对未来业务的预建。
 
-当前代码已经包含后台、Project/Device/Command API、WWTIOT 下行适配、模拟器组件和 Webhook/Audit 界面，但业务数据仍以内存为主，模拟器与业务 Command 断链，WWTIOT HTTP 接受也被直接记为设备执行成功。因此当前实现尚未达到目标闭环。
+当前代码已经包含持久化 Project/Device/Command、统一 simulator/WWTIOT dispatcher、Event/Webhook/Audit 和管理后台，并能把 WWTIOT HTTP acceptance 保持在 `provider_accepted`。最新 `.4` 实施合同进一步移除了混合用途的 Command `unknown`、冻结了 `online_only` 物理动作策略、追加式 Result/Event 和新版 Webhook wire；这些改动尚未进入业务代码。真实 WWTIOT callback、final result 与设备行为仍无验收证据，因此当前只能区分“已有 `.3` 实现事实”“待实现 `.4` 合同”和“待真实业务验收”，不能声明当前真实目标已经完成。
 
 ## 仓库结构
 
@@ -21,7 +21,7 @@ Device Platform 是由一名管理员维护的 IoT 设备接入与控制平台�
 2. [Platform Target Contract](./docs/platform-target-contract.md)：当前真实目标与完成定义。
 3. [Domain Model Contract](./docs/domain-model-contract.md)：对象、关系、不变量、事务边界和恢复责任。
 4. [API Contract](./docs/api-contract.md)：接口、认证和生命周期语义。
-5. [Current State](./docs/current-state.md)：`2026-07-31` 的实现事实与缺口。
+5. [Current State](./docs/current-state.md)：`2026-07-31` 的实现事实、`.4` 漂移与真实验收缺口。
 6. [Local Development](./docs/local-development.md)：启动、检查和当前可验证范围。
 
 历史交付过程由 Git 保存，不作为当前权威文档。下级文档、schema、模板菜单和当前代码不能反向扩大产品边界。
