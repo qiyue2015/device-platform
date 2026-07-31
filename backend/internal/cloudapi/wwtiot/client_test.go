@@ -79,6 +79,47 @@ func TestDispatchBuildsExactV2Requests(t *testing.T) {
 	}
 }
 
+func TestPrepareIsPureAndDispatchesThePreparedRequest(t *testing.T) {
+	var calls atomic.Int32
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode prepared request: %v", err)
+			return
+		}
+		response := cloneObject(received)
+		response["result"] = "ok"
+		response["sign"] = "response-sign"
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+	client := testClient(server.URL)
+	prepared, err := client.Prepare(dispatchRequest("unlock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("Prepare performed %d HTTP calls", calls.Load())
+	}
+	summary := prepared.RequestSummary()
+	if summary["cmd"] != "open" || summary["deviceid"] != "768901037824" || summary["serialnum"] != int64(123456789) {
+		t.Fatalf("prepared summary=%+v", summary)
+	}
+	encodedSummary, _ := json.Marshal(summary)
+	for _, secret := range []string{"test-user", "secret-key", "sign"} {
+		if strings.Contains(string(encodedSummary), secret) {
+			t.Fatalf("Prepare summary leaked %q: %s", secret, encodedSummary)
+		}
+	}
+	summary["cmd"] = "tampered"
+	result := prepared.Dispatch(context.Background())
+	assertResult(t, result, domain.AttemptOutcomeProviderAccepted, domain.ConfirmationProviderAccepted, domain.EvidenceUnverified)
+	if calls.Load() != 1 || received["cmd"] != "open" {
+		t.Fatalf("prepared request drifted: calls=%d body=%+v", calls.Load(), received)
+	}
+}
+
 func TestDispatchRejectsInvalidRequestsWithoutHTTP(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))

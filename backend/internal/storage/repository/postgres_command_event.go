@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/qiyue2015/device-platform/internal/domain"
 )
 
@@ -150,6 +151,7 @@ func (r *postgresCommandRepository) ClaimNext(ctx context.Context, request Claim
 				AND NOT EXISTS (
 					SELECT 1 FROM device_command_attempts a
 					WHERE a.command_id = c.id AND a.phase <> 'completed'
+						AND (a.phase <> 'claimed' OR a.lease_expires_at > now())
 				)
 			ORDER BY c.queued_at, c.id
 			FOR UPDATE OF c SKIP LOCKED
@@ -161,6 +163,38 @@ func (r *postgresCommandRepository) ClaimNext(ctx context.Context, request Claim
 	}
 	if err != nil {
 		return domain.Command{}, domain.CommandAttempt{}, false, err
+	}
+	var existingAttemptID, existingToken sql.NullString
+	err = r.exec.QueryRowContext(ctx, `
+		SELECT id::text, lease_token::text
+		FROM device_command_attempts
+		WHERE command_id = $1 AND phase <> 'completed'
+		FOR UPDATE
+	`, command.ID).Scan(&existingAttemptID, &existingToken)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return domain.Command{}, domain.CommandAttempt{}, false, err
+	}
+	if err == nil {
+		if !existingAttemptID.Valid || !existingToken.Valid || existingToken.String == request.LeaseToken {
+			return domain.Command{}, domain.CommandAttempt{}, false, nil
+		}
+		result, updateErr := r.exec.ExecContext(ctx, `
+			UPDATE device_command_attempts
+			SET lease_owner = $3, lease_token = $4,
+				lease_expires_at = LEAST(
+					now() + $5 * interval '1 microsecond',
+					(SELECT dispatch_deadline_at FROM device_commands WHERE id = $6)
+				)
+			WHERE id = $1 AND lease_token = $2 AND phase = 'claimed'
+				AND lease_expires_at <= now()
+		`, existingAttemptID.String, existingToken.String, request.WorkerID, request.LeaseToken,
+			request.LeaseDuration.Microseconds(), command.ID)
+		updated, updateErr := exactlyOneRow(result, updateErr)
+		if updateErr != nil || !updated {
+			return domain.Command{}, domain.CommandAttempt{}, false, updateErr
+		}
+		attempt, getErr := r.getAttempt(ctx, existingAttemptID.String)
+		return command, attempt, getErr == nil, getErr
 	}
 	var attemptNo int
 	if err := r.exec.QueryRowContext(ctx, `
@@ -202,6 +236,10 @@ func (r *postgresCommandRepository) ClaimNext(ctx context.Context, request Claim
 		command.DispatchDeadlineAt,
 	)
 	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" && pqErr.Constraint == "uq_command_attempts_provider_request_key" {
+			return domain.Command{}, domain.CommandAttempt{}, false, ErrProviderRequestKeyConflict
+		}
 		return domain.Command{}, domain.CommandAttempt{}, false, err
 	}
 	attempt, err := r.getAttempt(ctx, attemptID)
@@ -253,9 +291,13 @@ func (r *postgresCommandRepository) ReclaimAttempt(ctx context.Context, attemptI
 	return attempt, err == nil, err
 }
 
-func (r *postgresCommandRepository) MarkDispatching(ctx context.Context, commandID, attemptID, leaseToken string, resultObservationTimeout time.Duration) (bool, error) {
-	if resultObservationTimeout < time.Microsecond {
+func (r *postgresCommandRepository) MarkDispatching(ctx context.Context, commandID, attemptID, leaseToken string, request MarkDispatchingRequest) (bool, error) {
+	if request.ResultObservationTimeout < time.Microsecond || request.DispatchLeaseDuration < time.Microsecond {
 		return false, nil
+	}
+	requestSummary, err := marshalObject(request.RequestSummary)
+	if err != nil {
+		return false, fmt.Errorf("encode Attempt request summary: %w", err)
 	}
 	locked, err := r.lockCommandAttempt(ctx, commandID, attemptID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -268,9 +310,12 @@ func (r *postgresCommandRepository) MarkDispatching(ctx context.Context, command
 		return false, nil
 	}
 	if _, err := r.exec.ExecContext(ctx, `
-		UPDATE device_command_attempts SET phase = 'dispatching', dispatching_at = now()
+		UPDATE device_command_attempts
+		SET phase = 'dispatching', request_summary = $2,
+			lease_expires_at = now() + $3 * interval '1 microsecond',
+			dispatching_at = now()
 		WHERE id = $1
-	`, attemptID); err != nil {
+	`, attemptID, requestSummary, request.DispatchLeaseDuration.Microseconds()); err != nil {
 		return false, err
 	}
 	result, err := r.exec.ExecContext(ctx, `
@@ -279,7 +324,7 @@ func (r *postgresCommandRepository) MarkDispatching(ctx context.Context, command
 			result_deadline_at = now() + $2 * interval '1 microsecond',
 			updated_at = now()
 		WHERE id = $1
-	`, commandID, resultObservationTimeout.Microseconds())
+	`, commandID, request.ResultObservationTimeout.Microseconds())
 	return exactlyOneRow(result, err)
 }
 
@@ -352,6 +397,39 @@ func (r *postgresCommandRepository) RecoverExpiredDispatching(ctx context.Contex
 	return exactlyOneRow(result, err)
 }
 
+func (r *postgresCommandRepository) RecoverNextExpiredDispatching(ctx context.Context) (domain.Command, domain.CommandAttempt, bool, error) {
+	var commandID, attemptID, leaseToken string
+	err := r.exec.QueryRowContext(ctx, `
+		SELECT c.id::text, a.id::text, a.lease_token::text
+		FROM device_commands c
+		JOIN device_command_attempts a ON a.command_id = c.id
+		WHERE c.status = 'sent' AND a.phase = 'dispatching'
+			AND a.lease_expires_at <= now()
+		ORDER BY a.lease_expires_at, a.id
+		FOR UPDATE OF c, a SKIP LOCKED
+		LIMIT 1
+	`).Scan(&commandID, &attemptID, &leaseToken)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Command{}, domain.CommandAttempt{}, false, nil
+	}
+	if err != nil {
+		return domain.Command{}, domain.CommandAttempt{}, false, err
+	}
+	updated, err := r.RecoverExpiredDispatching(ctx, commandID, attemptID, leaseToken)
+	if err != nil || !updated {
+		return domain.Command{}, domain.CommandAttempt{}, false, err
+	}
+	command, err := r.Get(ctx, commandID)
+	if err != nil {
+		return domain.Command{}, domain.CommandAttempt{}, false, err
+	}
+	attempt, err := r.getAttempt(ctx, attemptID)
+	if err != nil {
+		return domain.Command{}, domain.CommandAttempt{}, false, err
+	}
+	return command, attempt, true, nil
+}
+
 func (r *postgresCommandRepository) CancelQueued(ctx context.Context, commandID string, reasonDetail *string) (bool, error) {
 	return r.finishQueued(ctx, commandID, domain.CommandStatusCancelled, "cancelled_by_request", reasonDetail, false)
 }
@@ -396,6 +474,64 @@ func (r *postgresCommandRepository) ExpireResultObservation(ctx context.Context,
 		WHERE id = $1 AND status = $2 AND result_deadline_at <= now()
 	`, commandID, status)
 	return exactlyOneRow(result, err)
+}
+
+func (r *postgresCommandRepository) ExpireNextQueued(ctx context.Context) (domain.Command, bool, error) {
+	var commandID string
+	err := r.exec.QueryRowContext(ctx, `
+		SELECT c.id::text
+		FROM device_commands c
+		WHERE c.status = 'queued' AND c.dispatch_deadline_at <= now()
+			AND NOT EXISTS (
+				SELECT 1 FROM device_command_attempts a
+				WHERE a.command_id = c.id AND a.phase <> 'completed'
+					AND (a.phase <> 'claimed' OR a.lease_expires_at > now())
+			)
+		ORDER BY c.dispatch_deadline_at, c.id
+		FOR UPDATE OF c SKIP LOCKED
+		LIMIT 1
+	`).Scan(&commandID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Command{}, false, nil
+	}
+	if err != nil {
+		return domain.Command{}, false, err
+	}
+	updated, err := r.ExpireQueued(ctx, commandID)
+	if err != nil || !updated {
+		return domain.Command{}, false, err
+	}
+	command, err := r.Get(ctx, commandID)
+	return command, err == nil, err
+}
+
+func (r *postgresCommandRepository) ExpireNextResultObservation(ctx context.Context) (domain.Command, domain.CommandStatus, bool, error) {
+	var commandID string
+	var previousStatus domain.CommandStatus
+	err := r.exec.QueryRowContext(ctx, `
+		SELECT c.id::text, c.status
+		FROM device_commands c
+		WHERE c.status IN ('sent', 'acked') AND c.result_deadline_at <= now()
+			AND NOT EXISTS (
+				SELECT 1 FROM device_command_attempts a
+				WHERE a.command_id = c.id AND a.phase <> 'completed'
+			)
+		ORDER BY c.result_deadline_at, c.id
+		FOR UPDATE OF c SKIP LOCKED
+		LIMIT 1
+	`).Scan(&commandID, &previousStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Command{}, "", false, nil
+	}
+	if err != nil {
+		return domain.Command{}, "", false, err
+	}
+	updated, err := r.ExpireResultObservation(ctx, commandID)
+	if err != nil || !updated {
+		return domain.Command{}, "", false, err
+	}
+	command, err := r.Get(ctx, commandID)
+	return command, previousStatus, err == nil, err
 }
 
 func (r *postgresCommandRepository) UpdateEvidenceFromAttempt(ctx context.Context, commandID, attemptID, expectedLeaseToken string, expectedStatus domain.CommandStatus) (bool, error) {

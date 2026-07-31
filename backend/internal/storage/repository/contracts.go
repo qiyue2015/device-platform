@@ -12,11 +12,12 @@ import (
 )
 
 var (
-	ErrInvalidRepositoryRequest = errors.New("invalid repository request")
-	ErrWebhookEventNotFound     = errors.New("webhook event not found")
-	ErrWebhookDeliveryNotFound  = errors.New("webhook delivery not found")
-	ErrWebhookDeliveryNotDead   = errors.New("webhook delivery not dead")
-	ErrWebhookNotConfigured     = errors.New("webhook not configured")
+	ErrInvalidRepositoryRequest   = errors.New("invalid repository request")
+	ErrProviderRequestKeyConflict = errors.New("provider request key conflict")
+	ErrWebhookEventNotFound       = errors.New("webhook event not found")
+	ErrWebhookDeliveryNotFound    = errors.New("webhook delivery not found")
+	ErrWebhookDeliveryNotDead     = errors.New("webhook delivery not dead")
+	ErrWebhookNotConfigured       = errors.New("webhook not configured")
 )
 
 type Store interface {
@@ -201,6 +202,12 @@ type CompleteCommandAttemptRequest struct {
 	ErrorDetail       *string
 }
 
+type MarkDispatchingRequest struct {
+	ResultObservationTimeout time.Duration
+	DispatchLeaseDuration    time.Duration
+	RequestSummary           map[string]any
+}
+
 type CommandStatusTransition struct {
 	From              domain.CommandStatus
 	To                domain.CommandStatus
@@ -244,9 +251,10 @@ type CommandRepository interface {
 	// claimed Attempt. The token fences every later write by that worker.
 	ClaimNext(ctx context.Context, request ClaimCommandRequest) (domain.Command, domain.CommandAttempt, bool, error)
 	ReclaimAttempt(ctx context.Context, attemptID, expiredToken string, request ReclaimAttemptRequest) (domain.CommandAttempt, bool, error)
-	MarkDispatching(ctx context.Context, commandID, attemptID, leaseToken string, resultObservationTimeout time.Duration) (bool, error)
+	MarkDispatching(ctx context.Context, commandID, attemptID, leaseToken string, request MarkDispatchingRequest) (bool, error)
 	CompleteAttempt(ctx context.Context, commandID, attemptID, expectedLeaseToken string, request CompleteCommandAttemptRequest) (bool, error)
 	RecoverExpiredDispatching(ctx context.Context, commandID, attemptID, expiredLeaseToken string) (bool, error)
+	RecoverNextExpiredDispatching(ctx context.Context) (domain.Command, domain.CommandAttempt, bool, error)
 
 	// CancelQueued and ExpireQueued atomically refuse a queued Command while an
 	// unexpired claimed Attempt owns it. Both operations complete an expired
@@ -255,6 +263,8 @@ type CommandRepository interface {
 	CancelQueued(ctx context.Context, commandID string, reasonDetail *string) (bool, error)
 	ExpireQueued(ctx context.Context, commandID string) (bool, error)
 	ExpireResultObservation(ctx context.Context, commandID string) (bool, error)
+	ExpireNextQueued(ctx context.Context) (domain.Command, bool, error)
+	ExpireNextResultObservation(ctx context.Context) (domain.Command, domain.CommandStatus, bool, error)
 	UpdateEvidenceFromAttempt(ctx context.Context, commandID, attemptID, expectedLeaseToken string, expectedStatus domain.CommandStatus) (bool, error)
 	TransitionFromAttempt(ctx context.Context, commandID, attemptID, expectedLeaseToken string, transition CommandStatusTransition) (bool, error)
 	UpdateProviderAcceptanceFromVerifiedMessage(ctx context.Context, commandID string, request VerifiedEvidenceUpdateRequest) (bool, error)

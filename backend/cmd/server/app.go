@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/qiyue2015/device-platform/internal/commandservice"
+	"github.com/qiyue2015/device-platform/internal/commandworker"
 	"github.com/qiyue2015/device-platform/internal/devicecore"
 	"github.com/qiyue2015/device-platform/internal/deviceservice"
 	"github.com/qiyue2015/device-platform/internal/domain"
@@ -38,9 +39,17 @@ type app struct {
 	cloudProviders cloudProviderRegistry
 	gateway        *gateway.Service
 	webhooks       *webhookaudit.Service
+	workerMu       sync.Mutex
+	commandCancel  context.CancelFunc
+	commandDone    chan struct{}
+	backgroundStop context.CancelFunc
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request) error
+
+type commandWorkerRunner interface {
+	Run(context.Context, commandworker.ErrorReporter)
+}
 
 func newApp(cfg config, logger *slog.Logger) (*app, error) {
 	cfg.Installed = cfg.isInstalled()
@@ -87,9 +96,20 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 	gatewayService := gateway.NewService(simulatorGateway, gateway.ServiceConfig{})
 	webhookService := webhookaudit.NewService(http.DefaultClient)
 	cloudProviders := newCloudProviderRegistry(cfg)
-	startWebhookWorker(context.Background(), webhookService)
 	application := newAppWithServices(cfg, logger, db, auth, service, gatewayService, webhookService, cloudProviders, projects, devices)
 	application.commands = commands
+	backgroundContext, backgroundStop := context.WithCancel(context.Background())
+	application.backgroundStop = backgroundStop
+	startWebhookWorker(backgroundContext, webhookService)
+	if db != nil {
+		worker, err := newPersistentCommandWorker(repository.NewPostgresStore(db), cloudProviders)
+		if err != nil {
+			backgroundStop()
+			_ = db.Close()
+			return nil, fmt.Errorf("initialize Command worker: %w", err)
+		}
+		application.replaceCommandWorker(worker)
+	}
 	return application, nil
 }
 
@@ -217,6 +237,62 @@ func (a *app) replaceRuntime(cfg config, db *sql.DB, auth authenticator, project
 	a.devices = devices
 	a.commands = commands
 	return previousDB
+}
+
+func newPersistentCommandWorker(store commandworker.Store, providers cloudProviderRegistry) (*commandworker.Worker, error) {
+	client, ok := providers.WWTIOTClient(domain.ProviderCodeWWTIOT)
+	if !ok {
+		return nil, fmt.Errorf("WWTIOT adapter is not registered")
+	}
+	return commandworker.New(store, commandworker.Config{Adapters: []commandworker.AdapterRegistration{
+		{
+			ProviderCode: domain.ProviderCodeWWTIOT, AdapterCode: domain.AdapterWWTIOTCloudAPI,
+			Adapter: client, ResultSource: domain.EventSourceSystem,
+		},
+	}})
+}
+
+func (a *app) replaceCommandWorker(worker commandWorkerRunner) {
+	a.workerMu.Lock()
+	defer a.workerMu.Unlock()
+	previousCancel, previousDone := a.commandCancel, a.commandDone
+	a.commandCancel, a.commandDone = nil, nil
+	if previousCancel != nil {
+		previousCancel()
+	}
+	if previousDone != nil {
+		<-previousDone
+	}
+	if worker == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	a.commandCancel, a.commandDone = cancel, done
+	go func() {
+		defer close(done)
+		worker.Run(ctx, func(err error) {
+			a.logger.Error("persistent Command worker failed", slog.String("error", err.Error()))
+		})
+	}()
+}
+
+func (a *app) close() error {
+	if a.backgroundStop != nil {
+		a.backgroundStop()
+	}
+	a.replaceCommandWorker(nil)
+	if a.gateway != nil {
+		a.gateway.Stop()
+	}
+	a.runtimeMu.Lock()
+	db := a.db
+	a.db = nil
+	a.runtimeMu.Unlock()
+	if db != nil {
+		return db.Close()
+	}
+	return nil
 }
 
 func (a *app) projectService() httpapi.ProjectService {

@@ -271,8 +271,16 @@ func (a *app) handleSetupInstall(w http.ResponseWriter, r *http.Request) error {
 		_ = db.Close()
 		return err
 	}
+	worker, err := newPersistentCommandWorker(store, a.cloudProviders)
+	if err != nil {
+		_ = db.Close()
+		return err
+	}
 	if previousDB := a.replaceRuntime(cfg, db, newDBAuthenticator(db, result.JWTSecret), projects, devices, commands); previousDB != nil && previousDB != db {
+		a.replaceCommandWorker(worker)
 		_ = previousDB.Close()
+	} else {
+		a.replaceCommandWorker(worker)
 	}
 	writeOK(w, map[string]bool{"installed": true})
 	return nil

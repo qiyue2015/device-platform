@@ -20,6 +20,7 @@ import (
 
 	"github.com/qiyue2015/device-platform/internal/domain"
 	"github.com/qiyue2015/device-platform/internal/httpjson"
+	"github.com/qiyue2015/device-platform/internal/provideradapter"
 )
 
 const (
@@ -45,22 +46,9 @@ func (cfg Config) Configured() bool {
 	return ok
 }
 
-type DispatchRequest struct {
-	ProviderDeviceID   string
-	Action             domain.ActionIdentifier
-	Payload            map[string]any
-	ProviderRequestKey string
-}
+type DispatchRequest = provideradapter.DispatchRequest
 
-type DispatchResult struct {
-	Outcome           domain.AttemptOutcome
-	ConfirmationLevel domain.ConfirmationLevel
-	EvidenceStatus    domain.EvidenceStatus
-	HTTPStatus        int
-	RequestSummary    map[string]any
-	ResponseSummary   map[string]any
-	ErrorDetail       string
-}
+type DispatchResult = provideradapter.DispatchResult
 
 type Client struct {
 	apiURL     string
@@ -68,6 +56,15 @@ type Client struct {
 	userKey    string
 	configured bool
 	httpClient *http.Client
+}
+
+var _ provideradapter.Adapter = (*Client)(nil)
+
+type preparedDispatch struct {
+	client  *Client
+	body    map[string]any
+	payload []byte
+	summary map[string]any
 }
 
 func NewClient(cfg Config, httpClient *http.Client) *Client {
@@ -90,20 +87,36 @@ func (c *Client) Configured() bool {
 	return c != nil && c.configured
 }
 
-func (c *Client) Dispatch(ctx context.Context, request DispatchRequest) DispatchResult {
+func (c *Client) Prepare(request DispatchRequest) (provideradapter.PreparedDispatch, error) {
 	if !c.Configured() {
-		return invalidRequestResult("WWTIOT Provider is not configured")
+		return nil, fmt.Errorf("WWTIOT Provider is not configured")
 	}
 	body, summary, err := c.buildRequest(request)
 	if err != nil {
-		return invalidRequestResult(err.Error())
+		return nil, err
 	}
-	result := DispatchResult{RequestSummary: summary}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return invalidRequestResult("encode WWTIOT request")
+		return nil, fmt.Errorf("encode WWTIOT request")
 	}
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL, bytes.NewReader(payload))
+	return &preparedDispatch{client: c, body: body, payload: payload, summary: summary}, nil
+}
+
+func (c *Client) Dispatch(ctx context.Context, request DispatchRequest) DispatchResult {
+	prepared, err := c.Prepare(request)
+	if err != nil {
+		return invalidRequestResult(err.Error())
+	}
+	return prepared.Dispatch(ctx)
+}
+
+func (p *preparedDispatch) RequestSummary() map[string]any {
+	return allowlistSummary(p.summary, []string{"cmd", "deviceid", "serialnum", "type", "value"})
+}
+
+func (p *preparedDispatch) Dispatch(ctx context.Context) DispatchResult {
+	result := DispatchResult{RequestSummary: p.RequestSummary()}
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, p.client.apiURL, bytes.NewReader(p.payload))
 	if err != nil {
 		return invalidRequestResult("create WWTIOT request")
 	}
@@ -112,7 +125,7 @@ func (c *Client) Dispatch(ctx context.Context, request DispatchRequest) Dispatch
 	var wroteRequest atomic.Bool
 	trace := &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { wroteRequest.Store(true) }}
 	httpRequest = httpRequest.WithContext(httptrace.WithClientTrace(httpRequest.Context(), trace))
-	response, err := c.httpClient.Do(httpRequest)
+	response, err := p.client.httpClient.Do(httpRequest)
 	if err != nil {
 		if wroteRequest.Load() {
 			return transportAfterSend(result, err)
@@ -148,7 +161,7 @@ func (c *Client) Dispatch(ctx context.Context, request DispatchRequest) Dispatch
 		result.ErrorDetail = summaryText(decoded["info"])
 		return result
 	}
-	if !c.matchesSuccessEcho(decoded, body) {
+	if !p.client.matchesSuccessEcho(decoded, p.body) {
 		return invalidResponse(result, decoded, "WWTIOT success response echo is invalid")
 	}
 	result.Outcome = domain.AttemptOutcomeProviderAccepted

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiyue2015/device-platform/internal/commandworker"
 	"github.com/qiyue2015/device-platform/internal/devicecore"
 	"github.com/qiyue2015/device-platform/internal/httpjson"
 	"github.com/qiyue2015/device-platform/internal/webhookaudit"
@@ -28,6 +29,17 @@ type errorAuthenticator struct {
 
 type readTrap struct {
 	reads int
+}
+
+type lifecycleCommandWorker struct {
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (w *lifecycleCommandWorker) Run(ctx context.Context, _ commandworker.ErrorReporter) {
+	close(w.started)
+	<-ctx.Done()
+	close(w.stopped)
 }
 
 func (r *readTrap) Read([]byte) (int, error) {
@@ -76,6 +88,29 @@ func TestAppRuntimeStateCanSwitchConcurrently(t *testing.T) {
 	readers.Wait()
 	if application.authenticationService() == nil {
 		t.Fatal("authentication service was not installed")
+	}
+}
+
+func TestAppCommandWorkerReplacementStopsPreviousWorker(t *testing.T) {
+	application := &app{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	first := &lifecycleCommandWorker{started: make(chan struct{}), stopped: make(chan struct{})}
+	second := &lifecycleCommandWorker{started: make(chan struct{}), stopped: make(chan struct{})}
+
+	application.replaceCommandWorker(first)
+	<-first.started
+	application.replaceCommandWorker(second)
+	select {
+	case <-first.stopped:
+	default:
+		t.Fatal("replacement returned before the previous Command worker stopped")
+	}
+	<-second.started
+
+	application.replaceCommandWorker(nil)
+	select {
+	case <-second.stopped:
+	default:
+		t.Fatal("shutdown returned before the current Command worker stopped")
 	}
 }
 

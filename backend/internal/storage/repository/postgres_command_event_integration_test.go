@@ -77,11 +77,11 @@ func TestPostgresCommandLifecycleAndEvidence(t *testing.T) {
 		sentAt := now.Add(-2 * time.Minute)
 		resultDeadline := sentAt.Add(time.Minute)
 		if err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
-			updated, err := tx.Commands().MarkDispatching(ctx, command.ID, claimedAttempt.ID, "00000000-0000-4000-8000-000000000099", time.Minute)
+			updated, err := tx.Commands().MarkDispatching(ctx, command.ID, claimedAttempt.ID, "00000000-0000-4000-8000-000000000099", repository.MarkDispatchingRequest{ResultObservationTimeout: time.Minute, DispatchLeaseDuration: time.Minute})
 			if err != nil || updated {
 				return fmt.Errorf("stale lease dispatched=%v: %w", updated, err)
 			}
-			updated, err = tx.Commands().MarkDispatching(ctx, command.ID, claimedAttempt.ID, claimedAttempt.LeaseToken, time.Minute)
+			updated, err = tx.Commands().MarkDispatching(ctx, command.ID, claimedAttempt.ID, claimedAttempt.LeaseToken, repository.MarkDispatchingRequest{ResultObservationTimeout: time.Minute, DispatchLeaseDuration: time.Minute})
 			if err != nil || !updated {
 				return fmt.Errorf("valid lease dispatched=%v: %w", updated, err)
 			}
@@ -281,7 +281,7 @@ func TestPostgresCommandLeaseRecoveryCancelAndExpiry(t *testing.T) {
 			if err != nil || updated {
 				return fmt.Errorf("same-token reclaim updated=%v: %w", updated, err)
 			}
-			dispatched, err := tx.Commands().MarkDispatching(ctx, reclaimCommand.ID, reclaimAttempt.ID, reclaimAttempt.LeaseToken, time.Minute)
+			dispatched, err := tx.Commands().MarkDispatching(ctx, reclaimCommand.ID, reclaimAttempt.ID, reclaimAttempt.LeaseToken, repository.MarkDispatchingRequest{ResultObservationTimeout: time.Minute, DispatchLeaseDuration: time.Minute})
 			if err != nil || dispatched {
 				return fmt.Errorf("expired token after rejected reclaim dispatched=%v: %w", dispatched, err)
 			}
@@ -309,7 +309,7 @@ func TestPostgresCommandLeaseRecoveryCancelAndExpiry(t *testing.T) {
 			if err != nil || !updated {
 				return fmt.Errorf("reclaim updated=%v: %w", updated, err)
 			}
-			stale, err := tx.Commands().MarkDispatching(ctx, reclaimCommand.ID, reclaimAttempt.ID, reclaimAttempt.LeaseToken, time.Minute)
+			stale, err := tx.Commands().MarkDispatching(ctx, reclaimCommand.ID, reclaimAttempt.ID, reclaimAttempt.LeaseToken, repository.MarkDispatchingRequest{ResultObservationTimeout: time.Minute, DispatchLeaseDuration: time.Minute})
 			if err != nil || stale {
 				return fmt.Errorf("expired token dispatched=%v: %w", stale, err)
 			}
@@ -324,7 +324,7 @@ func TestPostgresCommandLeaseRecoveryCancelAndExpiry(t *testing.T) {
 			t.Fatalf("reclaimed lease exceeds dispatch deadline: lease=%s deadline=%s", reclaimed.LeaseExpiresAt, reclaimCommand.DispatchDeadlineAt)
 		}
 		if err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
-			dispatched, err := tx.Commands().MarkDispatching(ctx, reclaimCommand.ID, reclaimed.ID, reclaimed.LeaseToken, time.Minute)
+			dispatched, err := tx.Commands().MarkDispatching(ctx, reclaimCommand.ID, reclaimed.ID, reclaimed.LeaseToken, repository.MarkDispatchingRequest{ResultObservationTimeout: time.Minute, DispatchLeaseDuration: time.Minute})
 			if err != nil || !dispatched {
 				return fmt.Errorf("reclaimed dispatch=%v: %w", dispatched, err)
 			}
@@ -454,7 +454,7 @@ func TestPostgresCommandExpiredDeadlineCannotReclaimOrDispatch(t *testing.T) {
 			if err != nil || reclaimed {
 				return fmt.Errorf("expired Command reclaimed=%v: %w", reclaimed, err)
 			}
-			dispatched, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, time.Minute)
+			dispatched, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.MarkDispatchingRequest{ResultObservationTimeout: time.Minute, DispatchLeaseDuration: time.Minute})
 			if err != nil || dispatched {
 				return fmt.Errorf("expired Command dispatched=%v: %w", dispatched, err)
 			}
@@ -493,7 +493,7 @@ func TestPostgresCommandExpiredDispatchingRecoveryFencesWorker(t *testing.T) {
 		})
 		sentAt := now.Add(-2 * time.Minute)
 		if err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
-			dispatched, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, time.Minute)
+			dispatched, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.MarkDispatchingRequest{ResultObservationTimeout: time.Minute, DispatchLeaseDuration: time.Minute})
 			if err != nil || !dispatched {
 				return fmt.Errorf("dispatch updated=%v: %w", dispatched, err)
 			}
@@ -730,7 +730,7 @@ func TestPostgresCommandRejectsCrossedAttemptTransition(t *testing.T) {
 			ProviderCode:  domain.ProviderCodeWWTIOT, Adapter: domain.AdapterWWTIOTCloudAPI, RequestKey: "404",
 		})
 		if err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
-			dispatched, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, time.Minute)
+			dispatched, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.MarkDispatchingRequest{ResultObservationTimeout: time.Minute, DispatchLeaseDuration: time.Minute})
 			if err != nil || !dispatched {
 				return fmt.Errorf("dispatch updated=%v: %w", dispatched, err)
 			}
@@ -791,7 +791,7 @@ func TestPostgresCommandCompletionRejectsProviderContractDrift(t *testing.T) {
 			ProviderCode:  domain.ProviderCodeWWTIOT, Adapter: domain.AdapterWWTIOTCloudAPI, RequestKey: "406",
 		})
 		if err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
-			dispatched, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, time.Minute)
+			dispatched, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.MarkDispatchingRequest{ResultObservationTimeout: time.Minute, DispatchLeaseDuration: time.Minute})
 			if err != nil || !dispatched {
 				return fmt.Errorf("dispatch updated=%v: %w", dispatched, err)
 			}
@@ -948,7 +948,7 @@ func TestPostgresCommandRejectsInvalidDurationsWithoutWrites(t *testing.T) {
 		})
 		for _, duration := range []time.Duration{-time.Second, 0, time.Nanosecond} {
 			if err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
-				dispatched, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, duration)
+				dispatched, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.MarkDispatchingRequest{ResultObservationTimeout: duration, DispatchLeaseDuration: duration})
 				if err != nil || dispatched {
 					return fmt.Errorf("dispatch duration %s updated=%v: %w", duration, dispatched, err)
 				}
@@ -1181,7 +1181,7 @@ func createCompletedProviderAcceptance(
 		evidenceStatus = domain.EvidenceVerified
 	}
 	if err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
-		dispatched, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, time.Minute)
+		dispatched, err := tx.Commands().MarkDispatching(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.MarkDispatchingRequest{ResultObservationTimeout: time.Minute, DispatchLeaseDuration: time.Minute})
 		if err != nil || !dispatched {
 			return fmt.Errorf("dispatch Provider acceptance updated=%v: %w", dispatched, err)
 		}
