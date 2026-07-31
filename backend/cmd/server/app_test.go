@@ -198,6 +198,26 @@ func TestSetupStatusUsesPublishedRuntimeState(t *testing.T) {
 	}
 }
 
+func TestUninstalledAppDoesNotPublishLegacyRuntimeServices(t *testing.T) {
+	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
+	application, err := newApp(config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer application.close()
+
+	if application.deviceService != nil || application.commandRouter != nil || application.projectService() != nil ||
+		application.gateway != nil || application.webhooks != nil {
+		t.Fatal("uninstalled production app published legacy in-memory services")
+	}
+
+	response := doRequest(t, application.routes(), http.MethodGet, "/v1/open/projects", "", nil)
+	envelope := assertEnvelope(t, response, http.StatusServiceUnavailable, false)
+	if envelope.ErrorCode != "setup_required" {
+		t.Fatalf("error_code = %q, want setup_required", envelope.ErrorCode)
+	}
+}
+
 func TestLoadConfigLoadsEnvFilesWithoutOverridingProcessEnv(t *testing.T) {
 	unsetEnvForTest(t, "DATABASE_URL", "REDIS_URL", "JWT_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY", "LOG_LEVEL", "READ_HEADER_TIMEOUT", "DEVICE_PLATFORM_INSTALLED")
 	t.Setenv("SERVER_ADDR", ":9090")

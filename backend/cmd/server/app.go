@@ -48,7 +48,6 @@ type app struct {
 	commandDone    chan struct{}
 	webhookCancel  context.CancelFunc
 	webhookDone    chan struct{}
-	backgroundStop context.CancelFunc
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request) error
@@ -98,19 +97,8 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 			return nil, fmt.Errorf("initialize Command service: %w", err)
 		}
 	}
-	var service *devicecore.Service
-	var gatewayService *gateway.Service
-	var webhookService *webhookaudit.Service
-	if !cfg.Installed {
-		service = devicecore.NewService()
-		gatewayService = gateway.NewService(gateway.NewSimulatorGateway(gateway.ModeConfig{}), gateway.ServiceConfig{})
-		webhookService = webhookaudit.NewService(http.DefaultClient)
-	}
-	if projects == nil && service != nil {
-		projects = httpapi.NewMemoryProjectService(service)
-	}
 	cloudProviders := newCloudProviderRegistry(cfg)
-	application := newAppWithServices(cfg, logger, db, auth, service, gatewayService, webhookService, cloudProviders, projects, devices)
+	application := newAppWithServices(cfg, logger, db, auth, nil, nil, nil, cloudProviders, projects, devices)
 	application.commands = commands
 	if db != nil {
 		store := repository.NewPostgresStore(db)
@@ -126,10 +114,6 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 		}
 		application.replaceCommandWorker(worker)
 		application.replaceWebhookWorker(webhookWorker)
-	} else {
-		backgroundContext, backgroundStop := context.WithCancel(context.Background())
-		application.backgroundStop = backgroundStop
-		startWebhookWorker(backgroundContext, webhookService)
 	}
 	return application, nil
 }
@@ -211,6 +195,10 @@ func (a *app) routes() http.Handler {
 	legacyOpenRouter := httpapi.NewOpenRouterWithResourceServices(a.commandRouter, projectBridge, nil, routerHooks)
 	resourceOpenRouter := httpapi.NewOpenRouterWithDomainServices(a.commandRouter, projectBridge, deviceBridge, commandBridge, routerHooks)
 	openRouter := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !a.runtimeInstalled() {
+			handleError(w, a.logger, newAPIError(http.StatusServiceUnavailable, "setup_required", "system setup is required"))
+			return
+		}
 		if a.deviceResourceService() == nil {
 			legacyOpenRouter.ServeHTTP(w, r)
 			return
@@ -391,15 +379,7 @@ func (a *app) replaceWebhookWorker(worker webhookWorkerRunner) {
 	}()
 }
 
-func (a *app) stopMemoryWebhookWorker() {
-	if a.backgroundStop != nil {
-		a.backgroundStop()
-		a.backgroundStop = nil
-	}
-}
-
 func (a *app) close() error {
-	a.stopMemoryWebhookWorker()
 	a.replaceCommandWorker(nil)
 	a.replaceWebhookWorker(nil)
 	if a.gateway != nil {
@@ -533,21 +513,6 @@ func validateRuntimeDependencies(ctx context.Context, db *sql.DB, redisURL strin
 		return fmt.Errorf("redis unavailable after installation: %w", err)
 	}
 	return nil
-}
-
-func startWebhookWorker(ctx context.Context, service *webhookaudit.Service) {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	go func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				service.RetryDue(ctx)
-			}
-		}
-	}()
 }
 
 func (a *app) handle(fn handlerFunc) http.HandlerFunc {

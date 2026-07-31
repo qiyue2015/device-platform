@@ -3,7 +3,7 @@ title: 当前实现状态
 snapshot_date: 2026-07-31
 status: implementation-snapshot
 contract_freeze_revision: 2026-07-31.2
-verified_against_code_revision: implementation-unit-2026-07-31-admin-console-boundary
+verified_against_code_revision: implementation-unit-2026-07-31-runtime-boundary
 ---
 
 # 当前实现状态
@@ -44,7 +44,7 @@ verified_against_code_revision: implementation-unit-2026-07-31-admin-console-bou
 ### 持久化与模型
 
 - PostgreSQL 当前承载 migration、管理员认证、Project、Device、Command aggregate、Simulator 配置、Event、Webhook Delivery/Attempt、Audit，以及 Command/Webhook worker 进度。已安装运行时的 HTTP、dispatcher、scanner、重试与 lease 恢复均读取持久事实；公开 callback 按冻结合同保持 503，因此 RawMessage 仍未进入运行时主链。
-- `internal/domain`、`internal/api/v1` 和 `internal/devicecore` 三套模型仍并存；已安装运行时的 Project/Device/Command HTTP 已使用冻结 DTO 与持久领域服务，旧 `devicecore` Command 路径不再作为已安装运行时事实，但尚未移除。
+- `internal/domain`、`internal/api/v1` 和 `internal/devicecore` 三套模型仍并存；已安装运行时的 Project/Device/Command HTTP 已使用冻结 DTO 与持久领域服务。未安装生产构造器不再创建旧 `devicecore`、simulator 或 Webhook 内存服务，Open 业务 API 在 setup 完成前固定返回 `503 setup_required`；旧路径只保留为隔离测试兼容，不是生产运行模型。
 - Project API key 只以 SHA-256 digest 持久化，明文只在创建或轮换成功响应出现；Webhook secret 使用独立部署密钥进行 AES-256-GCM 版本化加密。已安装运行时缺少或错误配置 `WEBHOOK_SECRET_ENCRYPTION_KEY` 时会失败关闭。
 - Device HTTP 已执行非 deleted Provider identity 全局唯一、deleted 后释放、稳定 lifecycle、可信 `current_state` 派生读取和 Project scope；创建 Event、初始 Delivery 与 Audit 的任一写入失败都会整体回滚。
 - Provider registry 固定按 `code ASC` 暴露 `simulator` 与 `wwtiot`，返回三层 `integration_status` 且不暴露配置或 secret。当前合同下 WWTIOT 最多为 `configured_unverified`，不能仅凭配置提升为 `verified`。
@@ -55,11 +55,11 @@ verified_against_code_revision: implementation-unit-2026-07-31-admin-console-bou
 ### 命令与 Provider
 
 - WWTIOT client 是由持久 dispatcher 调用的单次下行 adapter；`Prepare` 在外部 I/O 前冻结脱敏 request summary 和确切请求 body，事务提交 `sent` 后才执行 HTTP。它严格限制请求、响应大小、JSON object、`result`、必需 echo、redirect 和超时，并按 `WroteRequest` 区分发送前后 transport failure。当前没有自动重试，也没有接入可信上行结果。
-- `devicecore` 仍硬编码具体 action 及其策略，但已安装运行时的 Command HTTP 已改用持久 Device Type profile；旧路径尚未清理，这是实现残留，不是第二套产品合同。
+- `devicecore` 测试兼容路径仍硬编码具体 action 及其策略；生产构造器和已安装 Command HTTP 不再使用该路径，而由持久 Device Type profile 提供 action 与策略。测试兼容代码不是第二套产品合同或生产运行模型。
 - `devicecore` 仍包含 `created`、`offline`、`online_only`、`queue_until_expire`、`replace_latest` 和离线恢复/补偿分支；当前冻结 profile 只使用 `queued` 起始状态与 `dispatch_once`，旧分支不得被当作当前产品合同。
 - Provider HTTP acceptance 组件只产生 `provider_accepted/unverified`，不会生成 Device ACK/final；旧 HTTP Command 创建也不再同步调用 Provider。
 - 已安装运行时的 simulator 配置与 Command 已统一进入 PostgreSQL 主链。新领取 Attempt 在领取事务内锁定并保存当时的 outcome、delay 与 config version；PATCH 也锁定同一配置行，因此提交顺序决定后续 claim 使用的版本，已领取或重新领取的同一 Attempt 保留原 snapshot 和 request key。
-- 未安装内存模式仍保留 `gateway` simulator 配置路由；`devicecore` 中 `success`、`failure`、`timeout`、`offline_then_online` 等独立 engine/mode 也是尚未清理的代码残留。它们不是已安装运行时事实或第二套产品合同，已安装 `/v1/simulator/gateway` 固定为 `404`。
+- 生产未安装状态不再启动内存 gateway 或旧 Webhook worker，只开放 setup/health 与明确失败关闭的业务入口。`devicecore` 中 `success`、`failure`、`timeout`、`offline_then_online` 等独立 engine/mode 仅由隔离测试兼容路径使用；它们不是生产事实或第二套产品合同，已安装 `/v1/simulator/gateway` 固定为 `404`。
 - 冻结 Command 主链已有持久 dispatcher、deadline scanner 和 dispatching crash recovery 调用方。claim/preflight、`sent` 事务提交、外部 I/O 与结果事务分离；过期 claimed Attempt 只续领同一 Attempt/request key，过期 dispatching Attempt 不重放并保守转 `unknown`。
 - 持久 Command 创建已与 Device、Provider registry 和发布 profile 统一，且 disabled/deleted Device、Provider 配置、payload 与 Project scope 均在落库前校验；本地集成测试能证明 `queued` 到 Provider 结果分类的代码主链，但不能证明真实 WWTIOT 服务或设备执行。
 
