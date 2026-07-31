@@ -106,6 +106,25 @@ make test-int
 
 PostgreSQL integration 在 `device_platform_test` 内为每个测试创建随机 schema，并在结束时删除；不要把 URL 指向 `postgres` 管理库、开发业务库或任何生产数据库。`MIGRATION_TEST_REDIS_URL` 只用于连接和多进程运行时依赖检查，不授权清理共享 Redis 数据。`make migrate-up` / `make migrate-down` 会直接修改 `DATABASE_URL` 指向的数据库，只能在已明确识别的本地开发库执行。
 
+### Command evidence Event 升级预检
+
+`007_command_evidence_event` 要求 `command.status_changed` 只表示 `from != to` 的真实状态迁移。旧 worker 曾可能为 Provider acceptance 写入同状态 Event；该旧记录没有足够信息可靠恢复冻结合同要求的 Attempt 关联，也可能已经生成不可变的 Webhook Delivery raw body，因此 migration 不会自动删除、改名或改写历史。
+
+在任何已有数据的数据库执行 migration 前，先只读检查：
+
+```sql
+SELECT count(*) AS invalid_status_event_count
+FROM device_events
+WHERE event_type = 'command.status_changed'
+  AND (
+    payload->>'from' IS NULL
+    OR payload->>'to' IS NULL
+    OR payload->>'from' = payload->>'to'
+  );
+```
+
+结果为 `0` 才能继续。结果大于 `0` 时，`007` 会原子失败、不记录 migration version，也不会改变 Event 或 Delivery。对于明确可丢弃的本地开发/测试数据库，应在保留必要诊断证据后从空数据库重建；对于任何非一次性或可能具有权威历史的数据，必须停止升级、保留备份，并在逐条核对 Command、Attempt、Event 与 Delivery 后另行冻结显式数据迁移方案，禁止原地手工修补或把旧记录静默解释为 `command.evidence_updated`。仓库本身不能证明外部数据库是否存在这类历史。
+
 从 `frontend/`：
 
 ```bash

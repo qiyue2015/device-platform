@@ -89,6 +89,97 @@ func TestMigrationFailsClosedWithoutRecordingVersion(t *testing.T) {
 	})
 }
 
+func TestCommandEvidenceMigrationPreservesInvalidLegacyEventOnFailure(t *testing.T) {
+	baseURL := requireMigrationTestDatabase(t)
+	withIsolatedSchema(t, baseURL, func(db *sql.DB) {
+		ctx := context.Background()
+		if err := ApplyMigrations(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+		if err := RollbackLastMigration(ctx, db); err != nil {
+			t.Fatalf("rollback 007 before legacy seed: %v", err)
+		}
+
+		const projectID = "10000000-0000-0000-0000-000000000071"
+		const deviceID = "20000000-0000-0000-0000-000000000071"
+		const commandID = "30000000-0000-0000-0000-000000000071"
+		const eventID = "60000000-0000-0000-0000-000000000071"
+		const payload = `{"from":"sent","to":"sent","reason_code":null,"confirmation_level":"provider_accepted","evidence_status":"unverified"}`
+		if _, err := db.Exec(`
+			INSERT INTO projects (id, name, api_key_hash)
+			VALUES ($1, 'legacy evidence project', $2)
+		`, projectID, make([]byte, 32)); err != nil {
+			t.Fatalf("seed legacy Project: %v", err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO devices (
+				id, project_id, device_type_id, name, provider_code, provider_device_id,
+				access_type, transport_protocol, adapter
+			) VALUES (
+				$2, $1, '00000000-0000-0000-0000-000000000001', 'legacy evidence device',
+				'wwtiot', 'LEGACY-EVIDENCE-071', 'cloud_api', 'http', 'wwtiot_cloud_api'
+			)
+		`, projectID, deviceID); err != nil {
+			t.Fatalf("seed legacy Device: %v", err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO device_commands (
+				id, project_id, device_id, device_type_id, command_type, payload, status,
+				delivery_policy, idempotency_key, request_hash, device_type_revision,
+				confirmation_level, evidence_status, queued_at, dispatch_deadline_at,
+				sent_at, result_deadline_at
+			) VALUES (
+				$3, $1, $2, '00000000-0000-0000-0000-000000000001', 'unlock', '{}', 'sent',
+				'dispatch_once', 'legacy-evidence-071', $4, 1, 'provider_accepted', 'unverified',
+				now() - interval '2 seconds', now() + interval '28 seconds',
+				now() - interval '1 second', now() + interval '59 seconds'
+			)
+		`, projectID, deviceID, commandID, make([]byte, 32)); err != nil {
+			t.Fatalf("seed legacy Command: %v", err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO device_events (
+				id, project_id, device_id, command_id, event_type, source, payload,
+				occurred_at, deduplication_key
+			) VALUES (
+				$4, $1, $2, $3, 'command.status_changed', 'system', $5,
+				now(), 'legacy-same-state-status-event-071'
+			)
+		`, projectID, deviceID, commandID, eventID, payload); err != nil {
+			t.Fatalf("seed legacy same-state Event: %v", err)
+		}
+
+		err := ApplyMigrations(ctx, db)
+		if err == nil || !strings.Contains(err.Error(), "cannot enforce status Event transitions") {
+			t.Fatalf("expected fail-closed 007 migration, got %v", err)
+		}
+		assertMigrationNotApplied(t, db, "007_command_evidence_event")
+
+		var eventType, deduplicationKey string
+		var payloadUnchanged bool
+		if err := db.QueryRow(`
+			SELECT event_type, payload = $2::jsonb, deduplication_key
+			FROM device_events WHERE id = $1
+		`, eventID, payload).Scan(&eventType, &payloadUnchanged, &deduplicationKey); err != nil {
+			t.Fatal(err)
+		}
+		if eventType != "command.status_changed" || !payloadUnchanged || deduplicationKey != "legacy-same-state-status-event-071" {
+			t.Fatalf("failed migration changed legacy Event: type=%q payload_unchanged=%t key=%q", eventType, payloadUnchanged, deduplicationKey)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO device_events (
+				id, project_id, device_id, command_id, event_type, source, payload,
+				occurred_at, deduplication_key
+			) VALUES (
+				'60000000-0000-0000-0000-000000000072', $1, $2, $3,
+				'command.status_changed', 'system', $4, now(), 'legacy-same-state-status-event-072'
+			)
+		`, projectID, deviceID, commandID, payload); err != nil {
+			t.Fatalf("failed migration must leave pre-007 constraints intact: %v", err)
+		}
+	})
+}
+
 func TestMigrationRejectsUnverifiableLegacyData(t *testing.T) {
 	baseURL := requireMigrationTestDatabase(t)
 	tests := []struct {
@@ -799,7 +890,7 @@ func assertFrozenSchemaBehavior(t *testing.T, db *sql.DB) {
 			now() - interval '2 seconds', now() - interval '1 second', now()
 		);
 		UPDATE device_commands
-		SET status = 'sent', sent_at = now() - interval '1 second', result_deadline_at = now() + interval '1 minute',
+		SET status = 'sent', sent_at = queued_at, result_deadline_at = queued_at + interval '1 minute',
 			confirmation_level = 'provider_accepted', evidence_status = 'unverified'
 		WHERE id = '30000000-0000-0000-0000-000000000001';
 	`); err != nil {
