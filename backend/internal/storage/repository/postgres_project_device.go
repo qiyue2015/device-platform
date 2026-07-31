@@ -39,6 +39,18 @@ func (s *PostgresStore) Devices() DeviceQueries {
 	return &postgresDeviceRepository{exec: s.db}
 }
 
+func (s *PostgresStore) Commands() CommandQueries {
+	return &postgresCommandRepository{exec: s.db}
+}
+
+func (s *PostgresStore) Events() EventQueries {
+	return &postgresEventRepository{exec: s.db}
+}
+
+func (s *PostgresStore) Audits() AuditQueries {
+	return &postgresAuditRepository{exec: s.db}
+}
+
 // WithinTransaction exposes only repositories already implemented on
 // PostgresTx. It will satisfy the complete Store contract once the remaining
 // persistence domains are added.
@@ -71,6 +83,22 @@ func (tx *PostgresTx) DeviceTypes() DeviceTypeQueries {
 
 func (tx *PostgresTx) Devices() DeviceRepository {
 	return &postgresDeviceRepository{exec: tx.tx}
+}
+
+func (tx *PostgresTx) Commands() CommandRepository {
+	return &postgresCommandRepository{exec: tx.tx}
+}
+
+func (tx *PostgresTx) Messages() RawMessageRepository {
+	return &postgresRawMessageRepository{exec: tx.tx}
+}
+
+func (tx *PostgresTx) Events() EventRepository {
+	return &postgresEventRepository{exec: tx.tx}
+}
+
+func (tx *PostgresTx) Audits() AuditRepository {
+	return &postgresAuditRepository{exec: tx.tx}
 }
 
 type postgresProjectRepository struct {

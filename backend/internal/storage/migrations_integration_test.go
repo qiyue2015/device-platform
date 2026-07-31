@@ -26,7 +26,7 @@ func TestFrozenContractMigrationOnPostgres(t *testing.T) {
 			t.Fatalf("repeat migrations: %v", err)
 		}
 		var count int
-		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 2 {
+		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 3 {
 			t.Fatalf("migration count = %d, err = %v", count, err)
 		}
 		var profileHash string
@@ -211,6 +211,7 @@ func TestMigrationRollbackAndReapply(t *testing.T) {
 		if err := ApplyMigrations(ctx, db); err != nil {
 			t.Fatal(err)
 		}
+		rollbackTransportTimingMigration(t, ctx, db)
 		if err := RollbackLastMigration(ctx, db); err != nil {
 			t.Fatalf("rollback 002: %v", err)
 		}
@@ -231,6 +232,56 @@ func TestMigrationRollbackAndReapply(t *testing.T) {
 	})
 }
 
+func TestTransportFailureTimingRollbackRejectsIncompatibleData(t *testing.T) {
+	baseURL := requireMigrationTestDatabase(t)
+	withIsolatedSchema(t, baseURL, func(db *sql.DB) {
+		ctx := context.Background()
+		if err := ApplyMigrations(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO projects (id, name, api_key_hash)
+			VALUES ('10000000-0000-0000-0000-000000000001', 'rollback guard', decode(repeat('11', 32), 'hex'));
+			INSERT INTO devices (
+				id, project_id, device_type_id, name, provider_code, provider_device_id,
+				access_type, transport_protocol, adapter
+			) VALUES (
+				'20000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001',
+				'00000000-0000-0000-0000-000000000001', 'rollback lock', 'wwtiot', 'ROLLBACK-LOCK-1',
+				'cloud_api', 'http', 'wwtiot_cloud_api'
+			);
+			INSERT INTO device_commands (
+				id, project_id, device_id, device_type_id, command_type, payload,
+				device_type_revision, delivery_policy, status, reason_code,
+				confirmation_level, evidence_status, idempotency_key, request_hash,
+				queued_at, dispatch_deadline_at, sent_at, result_deadline_at, finished_at
+			) VALUES (
+				'30000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001',
+				'20000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001',
+				'unlock', '{}', 1, 'dispatch_once', 'failed', 'provider_transport_error',
+				'none', 'none', 'rollback-guard-1', decode(repeat('22', 32), 'hex'),
+				now() - interval '2 seconds', now() + interval '28 seconds', now() - interval '1 second',
+				now() + interval '59 seconds', now()
+			)
+		`); err != nil {
+			t.Fatal(err)
+		}
+
+		err := RollbackLastMigration(ctx, db)
+		if err == nil || !strings.Contains(err.Error(), "cannot rollback transport failure timing while dispatched provider_transport_error Commands exist") {
+			t.Fatalf("expected fail-closed 003 rollback, got %v", err)
+		}
+		var applied bool
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '003_command_transport_failure_timing')`).Scan(&applied); err != nil || !applied {
+			t.Fatalf("003 must remain applied after refused rollback: applied=%v err=%v", applied, err)
+		}
+		var sentAt time.Time
+		if err := db.QueryRow(`SELECT sent_at FROM device_commands WHERE id = '30000000-0000-0000-0000-000000000001'`).Scan(&sentAt); err != nil {
+			t.Fatalf("refused rollback must preserve Command data: %v", err)
+		}
+	})
+}
+
 func TestMigrationRollbackPreservesHyphenatedLegacyDeviceTypeCode(t *testing.T) {
 	baseURL := requireMigrationTestDatabase(t)
 	withIsolatedSchema(t, baseURL, func(db *sql.DB) {
@@ -244,6 +295,7 @@ func TestMigrationRollbackPreservesHyphenatedLegacyDeviceTypeCode(t *testing.T) 
 		if err := ApplyMigrations(context.Background(), db); err != nil {
 			t.Fatal(err)
 		}
+		rollbackTransportTimingMigration(t, context.Background(), db)
 		if err := RollbackLastMigration(context.Background(), db); err != nil {
 			t.Fatal(err)
 		}
@@ -271,6 +323,7 @@ func TestMigrationRollbackRestoresReversibleLegacyDevice(t *testing.T) {
 		if err := ApplyMigrations(context.Background(), db); err != nil {
 			t.Fatal(err)
 		}
+		rollbackTransportTimingMigration(t, context.Background(), db)
 		if err := RollbackLastMigration(context.Background(), db); err != nil {
 			t.Fatal(err)
 		}
@@ -339,6 +392,7 @@ func TestMigrationDownRejectsSecurityAndRuntimeState(t *testing.T) {
 				if _, err := db.Exec(test.seed); err != nil {
 					t.Fatalf("seed protected state: %v", err)
 				}
+				rollbackTransportTimingMigration(t, context.Background(), db)
 				err := RollbackLastMigration(context.Background(), db)
 				if err == nil || !strings.Contains(err.Error(), "cannot discard frozen lifecycle data") {
 					t.Fatalf("expected fail-closed rollback, got %v", err)
@@ -349,6 +403,20 @@ func TestMigrationDownRejectsSecurityAndRuntimeState(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func rollbackTransportTimingMigration(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	if err := RollbackLastMigration(ctx, db); err != nil {
+		t.Fatalf("rollback 003: %v", err)
+	}
+	var applied bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '003_command_transport_failure_timing')`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Fatal("003 must be removed before testing 002 rollback")
 	}
 }
 

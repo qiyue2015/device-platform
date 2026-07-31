@@ -28,7 +28,7 @@ func TestStoreExposesOnlyReadRepositoriesOutsideTransaction(t *testing.T) {
 
 func TestCommandRepositoryContractFencesOwnershipAndAttemptIdentity(t *testing.T) {
 	reclaimType := reflect.TypeOf(ReclaimAttemptRequest{})
-	wantReclaimFields := []string{"WorkerID", "LeaseToken", "LeaseUntil"}
+	wantReclaimFields := []string{"WorkerID", "LeaseToken", "LeaseDuration"}
 	if reclaimType.NumField() != len(wantReclaimFields) {
 		t.Fatalf("ReclaimAttemptRequest fields = %d", reclaimType.NumField())
 	}
@@ -39,11 +39,28 @@ func TestCommandRepositoryContractFencesOwnershipAndAttemptIdentity(t *testing.T
 	}
 
 	claimType := reflect.TypeOf(ClaimCommandRequest{})
+	if _, ok := claimType.FieldByName("LeaseDuration"); !ok {
+		t.Fatal("ClaimCommandRequest must express a database-clock lease duration")
+	}
+	if _, ok := claimType.FieldByName("LeaseUntil"); ok {
+		t.Fatal("ClaimCommandRequest must not accept an absolute caller-clock lease")
+	}
+	if _, ok := claimType.FieldByName("ClaimedAt"); ok {
+		t.Fatal("ClaimCommandRequest must not accept a caller-clock claim time")
+	}
 	if _, ok := claimType.FieldByName("RequestSummary"); !ok {
 		t.Fatal("ClaimCommandRequest must persist the adapter request summary with the Attempt")
 	}
 	repositoryType := reflect.TypeOf((*CommandRepository)(nil)).Elem()
-	for _, method := range []string{"CancelQueued", "ExpireQueued", "TransitionFromAttempt", "TransitionFromVerifiedEvidence"} {
+	for _, method := range []string{
+		"CancelQueued",
+		"ExpireQueued",
+		"ExpireResultObservation",
+		"RecoverExpiredDispatching",
+		"UpdateEvidenceFromAttempt",
+		"TransitionFromAttempt",
+		"UpdateProviderAcceptanceFromVerifiedMessage",
+	} {
 		if _, ok := repositoryType.MethodByName(method); !ok {
 			t.Fatalf("CommandRepository.%s is missing", method)
 		}
@@ -52,29 +69,29 @@ func TestCommandRepositoryContractFencesOwnershipAndAttemptIdentity(t *testing.T
 		t.Fatal("unfenced generic TransitionStatus must not be exposed")
 	}
 
-	verifiedType := reflect.TypeOf(VerifiedEvidenceTransitionRequest{})
+	verifiedType := reflect.TypeOf(VerifiedEvidenceUpdateRequest{})
 	wantVerifiedFields := []string{
 		"AttemptID",
 		"RawMessageID",
 		"RawMessageDeduplicationKey",
 		"AttemptOutcome",
 		"ResponseSummary",
-		"Transition",
+		"ExpectedStatus",
 	}
 	if verifiedType.NumField() != len(wantVerifiedFields) {
-		t.Fatalf("VerifiedEvidenceTransitionRequest fields = %d", verifiedType.NumField())
+		t.Fatalf("VerifiedEvidenceUpdateRequest fields = %d", verifiedType.NumField())
 	}
 	for index, name := range wantVerifiedFields {
 		if verifiedType.Field(index).Name != name {
-			t.Fatalf("VerifiedEvidenceTransitionRequest field %d = %s", index, verifiedType.Field(index).Name)
+			t.Fatalf("VerifiedEvidenceUpdateRequest field %d = %s", index, verifiedType.Field(index).Name)
 		}
 	}
-	transitionMethod, ok := repositoryType.MethodByName("TransitionFromVerifiedEvidence")
+	transitionMethod, ok := repositoryType.MethodByName("UpdateProviderAcceptanceFromVerifiedMessage")
 	if !ok {
-		t.Fatal("CommandRepository.TransitionFromVerifiedEvidence is missing")
+		t.Fatal("CommandRepository.UpdateProviderAcceptanceFromVerifiedMessage is missing")
 	}
-	wantVerifiedType := reflect.TypeOf(VerifiedEvidenceTransitionRequest{})
+	wantVerifiedType := reflect.TypeOf(VerifiedEvidenceUpdateRequest{})
 	if transitionMethod.Type.NumIn() != 3 || transitionMethod.Type.In(2) != wantVerifiedType {
-		t.Fatalf("TransitionFromVerifiedEvidence must require typed evidence identity, got %v", transitionMethod.Type)
+		t.Fatalf("UpdateProviderAcceptanceFromVerifiedMessage must require typed evidence identity, got %v", transitionMethod.Type)
 	}
 }

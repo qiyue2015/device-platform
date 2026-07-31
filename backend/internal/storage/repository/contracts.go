@@ -108,8 +108,7 @@ type DeviceRepository interface {
 type ClaimCommandRequest struct {
 	WorkerID       string
 	LeaseToken     string
-	LeaseUntil     time.Time
-	ClaimedAt      time.Time
+	LeaseDuration  time.Duration
 	ProviderCode   string
 	Adapter        domain.Adapter
 	RequestKey     string
@@ -117,9 +116,9 @@ type ClaimCommandRequest struct {
 }
 
 type ReclaimAttemptRequest struct {
-	WorkerID   string
-	LeaseToken string
-	LeaseUntil time.Time
+	WorkerID      string
+	LeaseToken    string
+	LeaseDuration time.Duration
 }
 
 type CompleteCommandAttemptRequest struct {
@@ -129,7 +128,6 @@ type CompleteCommandAttemptRequest struct {
 	ResponseSummary   map[string]any
 	ErrorCode         *string
 	ErrorDetail       *string
-	CompletedAt       time.Time
 }
 
 type CommandStatusTransition struct {
@@ -139,16 +137,15 @@ type CommandStatusTransition struct {
 	ReasonDetail      *string
 	ConfirmationLevel domain.ConfirmationLevel
 	EvidenceStatus    domain.EvidenceStatus
-	FinishedAt        *time.Time
 }
 
-type VerifiedEvidenceTransitionRequest struct {
+type VerifiedEvidenceUpdateRequest struct {
 	AttemptID                  string
 	RawMessageID               string
 	RawMessageDeduplicationKey string
 	AttemptOutcome             domain.AttemptOutcome
 	ResponseSummary            map[string]any
-	Transition                 CommandStatusTransition
+	ExpectedStatus             domain.CommandStatus
 }
 
 type CommandQueries interface {
@@ -166,17 +163,20 @@ type CommandRepository interface {
 	// claimed Attempt. The token fences every later write by that worker.
 	ClaimNext(ctx context.Context, request ClaimCommandRequest) (domain.Command, domain.CommandAttempt, bool, error)
 	ReclaimAttempt(ctx context.Context, attemptID, expiredToken string, request ReclaimAttemptRequest) (domain.CommandAttempt, bool, error)
-	MarkDispatching(ctx context.Context, commandID, attemptID, leaseToken string, sentAt, resultDeadline time.Time) (bool, error)
+	MarkDispatching(ctx context.Context, commandID, attemptID, leaseToken string, resultObservationTimeout time.Duration) (bool, error)
 	CompleteAttempt(ctx context.Context, commandID, attemptID, expectedLeaseToken string, request CompleteCommandAttemptRequest) (bool, error)
+	RecoverExpiredDispatching(ctx context.Context, commandID, attemptID, expiredLeaseToken string) (bool, error)
 
 	// CancelQueued and ExpireQueued atomically refuse a queued Command while an
 	// unexpired claimed Attempt owns it. Both operations complete an expired
 	// claimed Attempt as not_dispatched in the same transaction before changing
 	// the Command status.
-	CancelQueued(ctx context.Context, commandID string, now time.Time, reasonDetail *string) (bool, error)
-	ExpireQueued(ctx context.Context, commandID string, now time.Time) (bool, error)
+	CancelQueued(ctx context.Context, commandID string, reasonDetail *string) (bool, error)
+	ExpireQueued(ctx context.Context, commandID string) (bool, error)
+	ExpireResultObservation(ctx context.Context, commandID string) (bool, error)
+	UpdateEvidenceFromAttempt(ctx context.Context, commandID, attemptID, expectedLeaseToken string, expectedStatus domain.CommandStatus) (bool, error)
 	TransitionFromAttempt(ctx context.Context, commandID, attemptID, expectedLeaseToken string, transition CommandStatusTransition) (bool, error)
-	TransitionFromVerifiedEvidence(ctx context.Context, commandID string, request VerifiedEvidenceTransitionRequest) (bool, error)
+	UpdateProviderAcceptanceFromVerifiedMessage(ctx context.Context, commandID string, request VerifiedEvidenceUpdateRequest) (bool, error)
 }
 
 type RawMessageRepository interface {

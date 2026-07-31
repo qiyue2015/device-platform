@@ -24,7 +24,7 @@ verified_against_code_revision: document-commit
 | --------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 安装与单管理员认证                | 已实现           | 安装使用 PostgreSQL migration；JWT 固定 issuer/audience/jti/session generation，每次受保护请求回查数据库，logout 原子失效旧 token，login 持久限流且 login/refresh/logout 写安全审计；`backend/cmd/server/auth.go`。 |
 | Project、Device、Command HTTP API | 部分实现         | 路由与内存领域服务已接入；业务对象保存在 `map`，见 `backend/cmd/server/app.go:47`、`backend/internal/devicecore/service.go:39`。                                                                                |
-| 业务数据持久化                    | 部分实现         | Project、Device、Device Type 已有 PostgreSQL Repository 与真实数据库集成测试，但尚未注入 HTTP 运行时；其余领域 Repository 仍待实现；`backend/internal/storage/repository/postgres_project_device.go`。        |
+| 业务数据持久化                    | 部分实现         | Project、Device Type、Device、Command、CommandAttempt、RawMessage、Event 与 Audit 已有 PostgreSQL Repository 和真实数据库集成测试，但尚未注入 HTTP/worker 运行时；Webhook 与 simulator Repository 仍待实现。 |
 | Project 机器 API                  | 部分实现         | `/v1/open/*` 校验 `X-API-Key`，但运行时保存并遍历明文 key，Project 对象持续返回明文，已配置的 IP whitelist 未在认证中执行；`backend/internal/devicecore/types.go:5`、`backend/internal/httpapi/router.go:311`。 |
 | Project 数据隔离                  | 部分实现         | 对齐后的 schema 以复合外键保证 Command、Device、Event、Delivery 的 Project 归属一致；当前 HTTP 主链仍使用内存服务和 Project 上下文，尚未接入这些持久约束。                                                       |
 | WWTIOT 下行                       | 部分实现         | 当前适配器事实与 action 映射见 [WWTIOT Provider 合同](./providers/wwtiot.md)；运行时入口为 `backend/internal/cloudapi/wwtiot/client.go:76`。                                                                    |
@@ -32,7 +32,7 @@ verified_against_code_revision: document-commit
 | Capability 分层                   | 部分实现         | 运行时把具体 action 作为全局 `command_type` 校验，并在核心服务中硬编码默认策略；`backend/internal/devicecore/service.go:627`。Provider 映射位于 adapter，但最小 Device Type Capability profile 尚未接入运行时。 |
 | 设备最终执行语义                  | 未实现           | WWTIOT 2xx 且 `result=ok` 后立即 `sent -> acked -> success`，没有设备回执或状态同步；`backend/cmd/server/command_dispatch.go:89`。                                                                              |
 | 模拟器核心链路                    | 部分实现         | 独立 simulator engine 有状态机，但主应用只注册配置路由；`backend/cmd/server/app.go:109`、`backend/internal/gateway/http.go:21`。正常业务 Command 不进入该 engine。                                              |
-| Event、Webhook、Audit             | 部分实现         | 认证安全审计已写 PostgreSQL；领域 Event、Webhook 与其他 Audit 仍由独立内存服务维护，见 `backend/internal/webhookaudit/service.go:31`。没有持久 Outbox、多实例领取锁或重启恢复保证。                              |
+| Event、Webhook、Audit             | 部分实现         | 认证安全审计已写 PostgreSQL，Event/Audit Repository 已实现但未接入领域 HTTP 主链；领域 Event、Webhook 与其他 Audit 仍由独立内存服务维护。Webhook 尚无持久 Outbox、多实例领取锁或重启恢复保证。                    |
 | Webhook 配置                      | 部分实现         | Project CRUD 的 `webhook_url` 与 `/v1/projects/webhook-endpoints` 属于两套状态；`backend/internal/devicecore/service.go:65`、`backend/internal/webhookaudit/service.go:65`。                                    |
 | 命令超时与离线恢复                | 部分实现         | 领域方法和独立 simulator 逻辑存在；业务 Command 没有周期扫描执行器，状态可能长期悬挂。                                                                                                                          |
 | 管理后台                          | 部分实现         | 已有 Project、Device、Command、Webhook、Audit 和 simulator 页面/API 调用；部分字段、动作与后端不一致。                                                                                                          |
@@ -42,13 +42,13 @@ verified_against_code_revision: document-commit
 
 ### 持久化与模型
 
-- PostgreSQL 当前承载 migration 与管理员认证，但 Project、Device、Command、Attempt、Event、Webhook 和 Audit 运行态仍在进程内存，重启会丢失业务状态。
+- PostgreSQL 当前承载 migration 与管理员认证，并已有 Project、Device Type、Device、Command、Attempt、RawMessage、Event 和 Audit Repository；HTTP/worker 运行态尚未注入这些 Repository，相关业务状态仍由进程内存服务维护并会在重启后丢失。
 - `internal/domain`、`internal/api/v1` 和 `internal/devicecore` 三套模型并存；实际 HTTP 主链使用 `devicecore`，其余模型不能证明运行时行为。
 - schema 定义 `projects.api_key_hash`，运行时对象却保存并返回明文 `api_key`。
-- schema 只按 Project 限制 Provider device identity；WWTIOT callback 不含 Project，当前约束无法保证无歧义映射。
+- 对齐后的 schema 对未删除 Device 强制全局唯一 Provider identity，PostgreSQL Repository 也按该 identity 查找；当前 HTTP 主链仍使用未注入该约束的内存服务。
 - Provider registry 的 WWTIOT code/name/timeout 可被环境变量改变，且运行时 Device Type 使用 `smart_lock`；这些行为分别偏离冻结的 `wwtiot`、`WWTIOT`、10 秒与 `smart-lock` 稳定发布元数据。
 - Provider 读取当前只返回布尔 `configured`，尚未实现 `integration_status` 的三层证据语义；simulator 也未作为统一 Provider registry 项接入业务 Device/Command 主链。
-- 对齐后的 schema 已有 Webhook Delivery Attempt、manual replay 关联、worker lease、confirmation/evidence 和 Command `unknown` 字段与约束，但当前内存运行时尚未使用这些结构。
+- 对齐后的 schema 已有 Webhook Delivery Attempt、manual replay 关联、worker lease、confirmation/evidence 和 Command `unknown` 字段与约束；`003_command_transport_failure_timing` 已允许 dispatching 后可证明未发送的 transport failure 保留 `sent_at` 并终止为 `failed`，其 down migration 在已有这类新合同数据时明确拒绝回滚而不改写数据；当前内存运行时尚未使用这些结构。
 - 单管理员认证已执行 JWT/session generation、持久登录限流和安全审计合同；setup 的 POST 完成后仍返回 `403 setup_forbidden`。HTTP JSON object 请求已统一拒绝未知字段、重复 key、尾随值与超限 body，但各资源的字段级 schema 和错误码仍需随持久主链实现继续对齐。
 - 所有列表接口返回完整集合，当前没有服务端分页；request ID 已贯穿 HTTP header、envelope、context、请求日志与认证安全审计，尚未随其他持久领域写入进入 Audit。
 
@@ -66,7 +66,7 @@ verified_against_code_revision: document-commit
 
 ### Webhook、审计与前端
 
-- Event、Webhook Delivery 和 Audit 由独立内存服务维护，不与 Command 持久事务绑定。
+- 领域 HTTP 主链的 Event、Webhook Delivery 和 Audit 仍由独立内存服务维护，不与 Command 持久事务绑定；新增 Event/Audit Repository 只提供可组合的 PostgreSQL 事务能力，不代表运行时已经接入。
 - Webhook retry worker 每 500ms 扫描进程内到期记录，但进程重启后记录与重试进度都会丢失；当前 dead resend 会重置同一记录的计数，不能保留独立重发历史。
 - Webhook 当前签名只覆盖 body，不含 timestamp；未配置 secret 时使用固定本地 fallback，且没有独立 DeliveryAttempt 记录。
 - Project 表单只写 `/v1/projects` 的 `webhook_url`，不会配置 `/v1/projects/webhook-endpoints` 使用的另一套端点。
@@ -76,9 +76,9 @@ verified_against_code_revision: document-commit
 
 ## 已有测试能证明什么
 
-- Go 测试覆盖部分 Project/Device/Command 规则、幂等、离线策略、simulator engine，以及用本地 `httptest` 伪造的 WWTIOT HTTP 接受路径。
+- Go 测试覆盖部分 Project/Device/Command 规则、幂等、离线策略、simulator engine，以及用本地 `httptest` 伪造的 WWTIOT HTTP 接受路径；PostgreSQL integration tests 另覆盖现有 Repository 的事务回滚、Command 并发领取、lease fencing/reclaim、取消/派发期限、dispatching 崩溃恢复、simulator-only verified RawMessage 绑定、WWTIOT evidence 升级失败关闭和 Event/Audit 持久化。
 - 前端类型检查、i18n 检查和构建可验证静态一致性。
-- 这些检查不能证明业务数据持久化、模拟器主链闭环、Webhook 可靠投递或真实智能锁最终执行。
+- 这些检查不能证明 HTTP/worker 主链已经使用业务 Repository，也不能证明模拟器主链闭环、Webhook 可靠投递或真实智能锁最终执行。
 
 ## Unknown 与验证条件
 
@@ -89,6 +89,6 @@ verified_against_code_revision: document-commit
 | V2 资料描述的设备信息 callback 在当前账号下是否可用，以及能否作为可关联的最终执行结果 | 厂商确认回调配置与签名规则，并用受控真实设备验证送达、关联、去重和结果终局性；详见 [WWTIOT Provider 合同](./providers/wwtiot.md)。 |
 | WWTIOT 实际可观测的最高 confirmation level，以及该层级是否足以支撑共享单车正式业务    | 厂商合同、受控真实设备端到端证据，以及产品所有者基于证据的验收决定。                                                               |
 | 生产网络、TLS、限流、配额和重试安全性                                                 | 目标部署网络与厂商限制说明。                                                                                                       |
-| 多实例下的幂等、顺序和恢复行为                                                        | 持久 Repository/worker 接入后进行并发、重启和故障注入测试。                                                                        |
+| 多实例下完整 HTTP/worker 主链的幂等、顺序和恢复行为                                  | 现有 Repository 并发用例通过后，仍需在 worker 接入阶段进行进程重启与故障注入测试。                                                  |
 
 不在本文记录本机数据库内容、真实密钥或真实业务数据；它们既敏感，也不能作为长期实现事实。

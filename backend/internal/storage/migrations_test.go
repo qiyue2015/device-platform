@@ -61,3 +61,26 @@ func TestMigrationPairsExist(t *testing.T) {
 		}
 	}
 }
+
+func TestTransportFailureTimingMigrationMatchesDispatcherContract(t *testing.T) {
+	content, err := embeddedMigrations.ReadFile("migrations/003_command_transport_failure_timing.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlText := string(content)
+	for _, marker := range []string{
+		"reason_code = 'provider_not_configured' AND sent_at IS NULL",
+		"reason_code IN ('provider_transport_error', 'provider_rejected', 'device_reported_failure') AND sent_at IS NOT NULL",
+	} {
+		if !strings.Contains(sqlText, marker) {
+			t.Errorf("transport failure migration is missing %q", marker)
+		}
+	}
+	downContent, err := embeddedMigrations.ReadFile("migrations/003_command_transport_failure_timing.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(downContent), "cannot rollback transport failure timing while dispatched provider_transport_error Commands exist") {
+		t.Error("transport failure timing rollback must fail closed when the old constraint cannot represent current data")
+	}
+}
