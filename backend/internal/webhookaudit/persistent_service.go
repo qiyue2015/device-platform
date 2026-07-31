@@ -326,7 +326,8 @@ func validOptionalText(value *string, maximum int) bool {
 func validEventType(value domain.EventType) bool {
 	switch value {
 	case domain.EventTypeDeviceCreated, domain.EventTypeDeviceLifecycleChanged, domain.EventTypeDeviceConnectionChanged,
-		domain.EventTypeDeviceStateUpdated, domain.EventTypeCommandCreated, domain.EventTypeCommandStatusChanged:
+		domain.EventTypeDeviceStateUpdated, domain.EventTypeCommandCreated, domain.EventTypeCommandStatusChanged,
+		domain.EventTypeCommandEvidenceUpdated:
 		return true
 	default:
 		return false

@@ -62,6 +62,31 @@ func TestMigrationPairsExist(t *testing.T) {
 	}
 }
 
+func TestCommandEvidenceEventMigrationMatchesFrozenContract(t *testing.T) {
+	upContent, err := embeddedMigrations.ReadFile("migrations/007_command_evidence_event.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		"command.evidence_updated",
+		"payload->>'from' <> payload->>'to'",
+		"'status', 'attempt_id', 'outcome', 'confirmation_level', 'evidence_status'",
+		"validate_command_evidence_event",
+		"command.evidence_updated must match its completed Attempt and current Command evidence",
+	} {
+		if !strings.Contains(string(upContent), marker) {
+			t.Errorf("Command evidence Event migration is missing %q", marker)
+		}
+	}
+	downContent, err := embeddedMigrations.ReadFile("migrations/007_command_evidence_event.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(downContent), "cannot rollback command evidence Event contract while command.evidence_updated Events exist") {
+		t.Error("Command evidence Event rollback must fail closed when new Event facts exist")
+	}
+}
+
 func TestInstallationSingletonMigrationMatchesFrozenContract(t *testing.T) {
 	content, err := embeddedMigrations.ReadFile("migrations/006_installation_single_admin.up.sql")
 	if err != nil {

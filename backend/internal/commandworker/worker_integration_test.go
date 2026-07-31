@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -115,8 +116,26 @@ func TestPersistentWorkerWWTIOTResultMatrix(t *testing.T) {
 				if err != nil || len(events) != 2 {
 					t.Fatalf("status Events=%+v err=%v", events, err)
 				}
-				if events[0].Payload["from"] != "queued" || events[0].Payload["to"] != "sent" || events[1].Payload["to"] != string(test.status) {
-					t.Fatalf("status Event history=%+v", events)
+				if events[0].EventType != domain.EventTypeCommandStatusChanged || events[0].Payload["from"] != "queued" || events[0].Payload["to"] != "sent" {
+					t.Fatalf("dispatch status Event=%+v", events[0])
+				}
+				if test.result.Outcome == domain.AttemptOutcomeProviderAccepted {
+					if events[1].EventType != domain.EventTypeCommandEvidenceUpdated ||
+						events[1].Payload["status"] != "sent" || events[1].Payload["attempt_id"] != attempt.ID ||
+						events[1].Payload["outcome"] != "provider_accepted" ||
+						events[1].Payload["confirmation_level"] != "provider_accepted" ||
+						events[1].Payload["evidence_status"] != "unverified" ||
+						!strings.Contains(events[1].DeduplicationKey, ":attempt:"+attempt.ID+":provider_accepted:provider_accepted:unverified") {
+						t.Fatalf("Provider acceptance evidence Event=%+v", events[1])
+					}
+				} else if events[1].EventType != domain.EventTypeCommandStatusChanged ||
+					events[1].Payload["from"] != "sent" || events[1].Payload["to"] != string(test.status) {
+					t.Fatalf("result status Event=%+v", events[1])
+				}
+				for _, event := range events {
+					if event.EventType == domain.EventTypeCommandStatusChanged && event.Payload["from"] == event.Payload["to"] {
+						t.Fatalf("same-state status Event=%+v", event)
+					}
 				}
 				if adapter.calls.Load() != 1 {
 					t.Fatalf("adapter calls=%d", adapter.calls.Load())
@@ -171,6 +190,23 @@ func TestPersistentWorkerSimulatorResultMatrix(t *testing.T) {
 				events, err := store.Events().ListByCommand(context.Background(), workerCommandID)
 				if err != nil || len(events) != 2 || events[0].Source != domain.EventSourceSimulator || events[1].Source != domain.EventSourceSimulator {
 					t.Fatalf("Simulator Events=%+v err=%v", events, err)
+				}
+				if test.outcome == domain.SimulatorOutcomeProviderAccepted {
+					if events[1].EventType != domain.EventTypeCommandEvidenceUpdated || events[1].Payload["attempt_id"] != attempt.ID ||
+						events[1].Payload["status"] != "sent" || events[1].Payload["outcome"] != "provider_accepted" ||
+						events[1].Payload["confirmation_level"] != "provider_accepted" || events[1].Payload["evidence_status"] != "verified" {
+						t.Fatalf("Simulator evidence Event=%+v", events[1])
+					}
+					var rawBody []byte
+					if err := db.QueryRow(`SELECT raw_body FROM webhook_deliveries WHERE event_id = $1`, events[1].ID).Scan(&rawBody); err != nil {
+						t.Fatal(err)
+					}
+					var envelope eventEnvelope
+					if err := json.Unmarshal(rawBody, &envelope); err != nil || envelope.EventType != domain.EventTypeCommandEvidenceUpdated || envelope.Payload["attempt_id"] != attempt.ID {
+						t.Fatalf("evidence Delivery body=%s envelope=%+v err=%v", rawBody, envelope, err)
+					}
+				} else if events[1].EventType != domain.EventTypeCommandStatusChanged || events[1].Payload["from"] == events[1].Payload["to"] {
+					t.Fatalf("Simulator result status Event=%+v", events[1])
 				}
 				assertWorkerTableCount(t, db, "webhook_deliveries", 2)
 			})
@@ -709,6 +745,48 @@ func TestPersistentWorkerStateEventAndDeliveryRollback(t *testing.T) {
 				t.Fatalf("DispatchNext worked=%v err=%v", worked, err)
 			}
 			assertQueuedClaimedWithoutHTTP(t, store, adapter)
+		})
+	})
+
+	t.Run("evidence event conflict", func(t *testing.T) {
+		withWorkerDatabase(t, func(_ *sql.DB, store *repository.PostgresStore) {
+			seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
+			ctx := context.Background()
+			adapter := &fakeAdapter{configured: true, result: acceptedResult()}
+			worker := newTestWorker(t, store, adapter, nil)
+			registration := worker.adapters[0]
+			command, attempt, claimed, err := worker.claimNext(ctx, registration)
+			if err != nil || !claimed {
+				t.Fatalf("claimNext=%v err=%v", claimed, err)
+			}
+			conflictingKey := strings.Join([]string{
+				"command.evidence_updated", command.ID, "attempt", attempt.ID, "provider_accepted", "provider_accepted", "unverified",
+			}, ":")
+			if err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
+				deviceID := command.DeviceID
+				return tx.Events().Create(ctx, domain.Event{
+					ID: "94000000-0000-4000-8000-000000000002", SchemaVersion: 1,
+					EventType: domain.EventTypeDeviceCreated, ProjectID: command.ProjectID,
+					DeviceID: &deviceID, Source: domain.EventSourceSystem,
+					Payload: map[string]any{
+						"device_type_code": "smart-lock", "provider_code": "wwtiot", "lifecycle_status": "active",
+					},
+					DeduplicationKey: conflictingKey, OccurredAt: time.Now().UTC(), CreatedAt: time.Now().UTC(),
+				})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := worker.dispatchClaimed(ctx, registration, command, attempt); err == nil {
+				t.Fatal("evidence Event conflict must fail the result transaction")
+			}
+			current, err := store.Commands().Get(ctx, command.ID)
+			if err != nil || current.Status != domain.CommandStatusSent || current.ConfirmationLevel != domain.ConfirmationNone || current.EvidenceStatus != domain.EvidenceNone {
+				t.Fatalf("evidence conflict rollback Command=%+v err=%v", current, err)
+			}
+			attempts, err := store.Commands().ListAttempts(ctx, command.ID)
+			if err != nil || len(attempts) != 1 || attempts[0].Phase != domain.AttemptPhaseDispatching {
+				t.Fatalf("evidence conflict rollback Attempts=%+v err=%v", attempts, err)
+			}
 		})
 	})
 

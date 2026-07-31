@@ -137,6 +137,7 @@ const (
 	EventTypeDeviceStateUpdated      EventType = "device.state_updated"
 	EventTypeCommandCreated          EventType = "command.created"
 	EventTypeCommandStatusChanged    EventType = "command.status_changed"
+	EventTypeCommandEvidenceUpdated  EventType = "command.evidence_updated"
 )
 
 type RawMessageDirection string

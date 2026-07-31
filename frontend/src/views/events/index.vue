@@ -183,6 +183,7 @@
     'device.state_updated',
     'command.created',
     'command.status_changed',
+    'command.evidence_updated',
   ];
 
   const { t } = useI18n();

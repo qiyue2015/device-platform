@@ -96,6 +96,15 @@ func TestPersistentServiceRejectsInvalidRequestsBeforePersistence(t *testing.T) 
 	}
 }
 
+func TestValidEventTypeIncludesFrozenEvidenceEvent(t *testing.T) {
+	if !validEventType(domain.EventTypeCommandEvidenceUpdated) {
+		t.Fatal("command.evidence_updated must be accepted by Event queries")
+	}
+	if validEventType(domain.EventType("future")) {
+		t.Fatal("unknown Event type must remain invalid")
+	}
+}
+
 func TestPersistentDeliveryDTOIsSafeAndDistinguishesDetailAttempts(t *testing.T) {
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	secretVersion := 7

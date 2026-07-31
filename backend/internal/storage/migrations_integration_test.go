@@ -26,7 +26,7 @@ func TestFrozenContractMigrationOnPostgres(t *testing.T) {
 			t.Fatalf("repeat migrations: %v", err)
 		}
 		var count int
-		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 6 {
+		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 7 {
 			t.Fatalf("migration count = %d, err = %v", count, err)
 		}
 		var profileHash string
@@ -452,7 +452,7 @@ func TestMigrationRollbackUsesVersionOrderWhenTimestampsAreOutOfOrder(t *testing
 		if _, err := db.Exec(`
 			UPDATE schema_migrations
 			SET applied_at = CASE
-				WHEN version = '006_installation_single_admin' THEN now() - interval '1 day'
+				WHEN version = '007_command_evidence_event' THEN now() - interval '1 day'
 				WHEN version = '001_device_platform_core' THEN now() + interval '1 day'
 				ELSE applied_at
 			END
@@ -462,13 +462,31 @@ func TestMigrationRollbackUsesVersionOrderWhenTimestampsAreOutOfOrder(t *testing
 		if err := RollbackLastMigration(ctx, db); err != nil {
 			t.Fatal(err)
 		}
-		assertMigrationNotApplied(t, db, "006_installation_single_admin")
+		assertMigrationNotApplied(t, db, "007_command_evidence_event")
 		var previousApplied bool
-		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '005_audit_log_actions')`).Scan(&previousApplied); err != nil {
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '006_installation_single_admin')`).Scan(&previousApplied); err != nil {
 			t.Fatal(err)
 		}
 		if !previousApplied {
-			t.Fatal("rollback skipped migration 006 and removed an earlier version")
+			t.Fatal("rollback skipped migration 007 and removed an earlier version")
+		}
+	})
+}
+
+func TestCommandEvidenceEventMigrationDownFailsClosed(t *testing.T) {
+	baseURL := requireMigrationTestDatabase(t)
+	withIsolatedSchema(t, baseURL, func(db *sql.DB) {
+		if err := ApplyMigrations(context.Background(), db); err != nil {
+			t.Fatal(err)
+		}
+		assertFrozenSchemaBehavior(t, db)
+		err := RollbackLastMigration(context.Background(), db)
+		if err == nil || !strings.Contains(err.Error(), "cannot rollback command evidence Event contract while command.evidence_updated Events exist") {
+			t.Fatalf("expected fail-closed evidence Event rollback, got %v", err)
+		}
+		var applied bool
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '007_command_evidence_event')`).Scan(&applied); err != nil || !applied {
+			t.Fatalf("007 must remain applied after refused rollback: applied=%v err=%v", applied, err)
 		}
 	})
 }
@@ -617,6 +635,7 @@ func rollbackAuditLogActionsMigration(t *testing.T, ctx context.Context, db *sql
 
 func rollbackInstallationSingletonMigration(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
+	rollbackCommandEvidenceEventMigration(t, ctx, db)
 	if err := RollbackLastMigration(ctx, db); err != nil {
 		t.Fatalf("rollback 006: %v", err)
 	}
@@ -627,6 +646,14 @@ func rollbackInstallationSingletonMigration(t *testing.T, ctx context.Context, d
 	if applied {
 		t.Fatal("006 must be removed before testing earlier rollback")
 	}
+}
+
+func rollbackCommandEvidenceEventMigration(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	if err := RollbackLastMigration(ctx, db); err != nil {
+		t.Fatalf("rollback 007: %v", err)
+	}
+	assertMigrationNotApplied(t, db, "007_command_evidence_event")
 }
 
 func assertFrozenSchemaBehavior(t *testing.T, db *sql.DB) {
@@ -759,6 +786,73 @@ func assertFrozenSchemaBehavior(t *testing.T, db *sql.DB) {
 	`, project1, device1); err == nil {
 		t.Fatal("event schema version other than 1 must fail")
 	}
+	if _, err := db.Exec(`
+		INSERT INTO device_command_attempts (
+			id, command_id, attempt_no, adapter, phase, provider_code, provider_request_key,
+			outcome, confirmation_level, evidence_status, lease_token, lease_owner, lease_expires_at,
+			claimed_at, dispatching_at, completed_at
+		) VALUES (
+			'40000000-0000-0000-0000-000000000020', '30000000-0000-0000-0000-000000000001', 2,
+			'wwtiot_cloud_api', 'completed', 'wwtiot', '100000020',
+			'provider_accepted', 'provider_accepted', 'unverified',
+			'50000000-0000-0000-0000-000000000020', 'worker', now() + interval '1 minute',
+			now() - interval '2 seconds', now() - interval '1 second', now()
+		);
+		UPDATE device_commands
+		SET status = 'sent', sent_at = now() - interval '1 second', result_deadline_at = now() + interval '1 minute',
+			confirmation_level = 'provider_accepted', evidence_status = 'unverified'
+		WHERE id = '30000000-0000-0000-0000-000000000001';
+	`); err != nil {
+		t.Fatalf("seed completed evidence Attempt: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO device_events (
+			id, project_id, device_id, command_id, event_type, source, payload, occurred_at, deduplication_key
+		) VALUES (
+			'60000000-0000-0000-0000-000000000002', $1, $2, '30000000-0000-0000-0000-000000000001',
+			'command.evidence_updated', 'system',
+			'{"status":"sent","attempt_id":"40000000-0000-0000-0000-000000000020","outcome":"provider_accepted","confirmation_level":"provider_accepted","evidence_status":"unverified"}',
+			now(), 'command.evidence_updated:30000000-0000-0000-0000-000000000001:attempt:40000000-0000-0000-0000-000000000020:provider_accepted:provider_accepted:unverified'
+		)
+	`, project1, device1); err != nil {
+		t.Fatalf("valid command.evidence_updated Event: %v", err)
+	}
+	assertSQLFails(t, db, `
+		INSERT INTO device_events (id, project_id, device_id, command_id, event_type, source, payload, occurred_at, deduplication_key)
+		VALUES (
+			'60000000-0000-0000-0000-000000000003', '`+project1+`', '`+device1+`', '30000000-0000-0000-0000-000000000001',
+			'command.evidence_updated', 'system',
+			'{"status":"sent","attempt_id":"40000000-0000-0000-0000-000000000020","outcome":"provider_accepted","confirmation_level":"provider_accepted"}',
+			now(), 'command-evidence-missing-field'
+		)
+	`, "command.evidence_updated missing payload field")
+	assertSQLFails(t, db, `
+		INSERT INTO device_events (id, project_id, device_id, event_type, source, payload, occurred_at, deduplication_key)
+		VALUES (
+			'60000000-0000-0000-0000-000000000004', '`+project1+`', '`+device1+`',
+			'command.evidence_updated', 'system',
+			'{"status":"sent","attempt_id":"40000000-0000-0000-0000-000000000020","outcome":"provider_accepted","confirmation_level":"provider_accepted","evidence_status":"unverified"}',
+			now(), 'command-evidence-missing-command'
+		)
+	`, "command.evidence_updated missing Command association")
+	assertSQLFails(t, db, `
+		INSERT INTO device_events (id, project_id, device_id, command_id, event_type, source, payload, occurred_at, deduplication_key)
+		VALUES (
+			'60000000-0000-0000-0000-000000000006', '`+project1+`', '`+device1+`', '30000000-0000-0000-0000-000000000001',
+			'command.evidence_updated', 'system',
+			'{"status":"sent","attempt_id":"40000000-0000-0000-0000-000000000001","outcome":"provider_accepted","confirmation_level":"provider_accepted","evidence_status":"unverified"}',
+			now(), 'command.evidence_updated:30000000-0000-0000-0000-000000000001:attempt:40000000-0000-0000-0000-000000000001:provider_accepted:provider_accepted:unverified'
+		)
+	`, "command.evidence_updated mismatched completed Attempt")
+	assertSQLFails(t, db, `
+		INSERT INTO device_events (id, project_id, device_id, command_id, event_type, source, payload, occurred_at, deduplication_key)
+		VALUES (
+			'60000000-0000-0000-0000-000000000005', '`+project1+`', '`+device1+`', '30000000-0000-0000-0000-000000000001',
+			'command.status_changed', 'system',
+			'{"from":"sent","to":"sent","reason_code":null,"confirmation_level":"provider_accepted","evidence_status":"unverified"}',
+			now(), 'same-state-status-event'
+		)
+	`, "same-state command.status_changed Event")
 
 	if _, err := db.Exec(`
 		INSERT INTO device_raw_messages (id, device_id, provider_code, provider_device_id, access_type, transport_protocol, adapter, direction, deduplication_key, body)

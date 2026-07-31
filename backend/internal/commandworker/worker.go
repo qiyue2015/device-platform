@@ -358,8 +358,11 @@ func (w *Worker) persistResult(ctx context.Context, registration AdapterRegistra
 			if getErr != nil {
 				return getErr
 			}
-			return w.createStatusEvent(ctx, tx, current, domain.CommandStatusSent, registration.ResultSource,
-				"command.status_changed:"+command.ID+":attempt:"+attempt.ID+":provider_accepted")
+			return w.createEvidenceEvent(ctx, tx, current, attempt.ID, result.Outcome, registration.ResultSource,
+				strings.Join([]string{
+					"command.evidence_updated", command.ID, "attempt", attempt.ID, string(result.Outcome),
+					string(current.ConfirmationLevel), string(current.EvidenceStatus),
+				}, ":"))
 		}
 		transitioned, transitionErr := tx.Commands().TransitionFromAttempt(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.CommandStatusTransition{
 			From: domain.CommandStatusSent, To: target, ReasonCode: reasonCode,
@@ -411,6 +414,23 @@ func actionFor(profile domain.DeviceTypeProfile, identifier domain.ActionIdentif
 }
 
 func (w *Worker) createStatusEvent(ctx context.Context, tx repository.CommandTx, command domain.Command, from domain.CommandStatus, source domain.EventSource, deduplicationKey string) error {
+	if from == command.Status {
+		return ErrRuntimeState
+	}
+	return w.createCommandEvent(ctx, tx, command, source, domain.EventTypeCommandStatusChanged, map[string]any{
+		"from": from, "to": command.Status, "reason_code": command.ReasonCode,
+		"confirmation_level": command.ConfirmationLevel, "evidence_status": command.EvidenceStatus,
+	}, deduplicationKey)
+}
+
+func (w *Worker) createEvidenceEvent(ctx context.Context, tx repository.CommandTx, command domain.Command, attemptID string, outcome domain.AttemptOutcome, source domain.EventSource, deduplicationKey string) error {
+	return w.createCommandEvent(ctx, tx, command, source, domain.EventTypeCommandEvidenceUpdated, map[string]any{
+		"status": command.Status, "attempt_id": attemptID, "outcome": outcome,
+		"confirmation_level": command.ConfirmationLevel, "evidence_status": command.EvidenceStatus,
+	}, deduplicationKey)
+}
+
+func (w *Worker) createCommandEvent(ctx context.Context, tx repository.CommandTx, command domain.Command, source domain.EventSource, eventType domain.EventType, payload map[string]any, deduplicationKey string) error {
 	eventID, deliveryID, err := w.newEventIdentities()
 	if err != nil {
 		return err
@@ -421,12 +441,9 @@ func (w *Worker) createStatusEvent(ctx context.Context, tx repository.CommandTx,
 		occurredAt = time.Now().UTC()
 	}
 	event := domain.Event{
-		ID: eventID, SchemaVersion: domain.EventSchemaVersion, EventType: domain.EventTypeCommandStatusChanged,
+		ID: eventID, SchemaVersion: domain.EventSchemaVersion, EventType: eventType,
 		ProjectID: command.ProjectID, DeviceID: &deviceID, CommandID: &commandID, Source: source,
-		Payload: map[string]any{
-			"from": from, "to": command.Status, "reason_code": command.ReasonCode,
-			"confirmation_level": command.ConfirmationLevel, "evidence_status": command.EvidenceStatus,
-		},
+		Payload:          payload,
 		DeduplicationKey: deduplicationKey, OccurredAt: occurredAt, CreatedAt: occurredAt,
 	}
 	if err := tx.Events().Create(ctx, event); err != nil {
@@ -438,7 +455,7 @@ func (w *Worker) createStatusEvent(ctx context.Context, tx repository.CommandTx,
 		OccurredAt: event.OccurredAt, Source: event.Source, Payload: event.Payload,
 	})
 	if err != nil {
-		return fmt.Errorf("encode Command status Event: %w", err)
+		return fmt.Errorf("encode Command Event: %w", err)
 	}
 	_, _, err = tx.Webhooks().CreateDelivery(ctx, repository.CreateWebhookDeliveryRequest{
 		ID: deliveryID, EventID: event.ID, RawBody: rawBody,
