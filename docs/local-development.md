@@ -30,6 +30,23 @@ pnpm --dir frontend install
 
 `make setup-local` 从示例创建 `backend/.env` 与 `frontend/.env.development`，不会覆盖已有文件。只使用本地测试凭据，不把真实 WWTIOT secret 或业务数据写入仓库、日志或截图。
 
+setup 会生成独立的 32 byte Webhook secret encryption key，并以无 padding base64url 写入忽略提交的 `backend/.env`。已有的已安装本地环境升级后也必须配置 `WEBHOOK_SECRET_ENCRYPTION_KEY`；缺失、解码失败或长度不是 32 byte 时后端会失败关闭，不能复用 `JWT_SECRET`。
+
+仅对从未写入过加密 Webhook secret 的旧本地环境，可执行以下一次性升级；命令不会把 key 输出到终端。若数据库已经存在 `project_webhook_secrets`，必须恢复原部署 key，生成新 key 会使已有版本无法解密。
+
+```bash
+cd backend
+umask 077
+device_platform_webhook_key="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+if grep -q '^WEBHOOK_SECRET_ENCRYPTION_KEY=' .env; then
+  WEBHOOK_SECRET_ENCRYPTION_KEY="$device_platform_webhook_key" perl -0pi -e 's/^WEBHOOK_SECRET_ENCRYPTION_KEY=.*$/WEBHOOK_SECRET_ENCRYPTION_KEY=$ENV{WEBHOOK_SECRET_ENCRYPTION_KEY}/m' .env
+else
+  printf '\nWEBHOOK_SECRET_ENCRYPTION_KEY=%s\n' "$device_platform_webhook_key" >> .env
+fi
+chmod 600 .env
+unset device_platform_webhook_key
+```
+
 `make check-services` 检查 PostgreSQL 与 Redis 端口；`make check-db` 按 `backend/.env` 的 `DATABASE_URL` 发起只读连接检查。端口可达不等于 schema、业务持久化或目标链路已经完成。
 
 ## 启动

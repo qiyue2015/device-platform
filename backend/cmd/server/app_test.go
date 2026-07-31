@@ -9,8 +9,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +24,15 @@ const testJWTSecret = defaultMemoryJWTSecret
 type errorAuthenticator struct {
 	loginErr error
 	parseErr error
+}
+
+type readTrap struct {
+	reads int
+}
+
+func (r *readTrap) Read([]byte) (int, error) {
+	r.reads++
+	return 0, io.ErrUnexpectedEOF
 }
 
 func (a errorAuthenticator) Login(context.Context, string, string, authRequestMetadata) (currentUser, error) {
@@ -44,8 +53,63 @@ func (a errorAuthenticator) Logout(context.Context, currentUser, authRequestMeta
 	return nil
 }
 
+func TestAppRuntimeStateCanSwitchConcurrently(t *testing.T) {
+	application := &app{}
+	auth := errorAuthenticator{}
+	start := make(chan struct{})
+	var readers sync.WaitGroup
+	for range 8 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			<-start
+			for range 1000 {
+				_ = application.runtimeConfig()
+				_ = application.authenticationService()
+			}
+		}()
+	}
+	close(start)
+	for i := range 1000 {
+		application.replaceRuntime(config{Installed: i%2 == 0}, nil, auth, nil, nil)
+	}
+	readers.Wait()
+	if application.authenticationService() == nil {
+		t.Fatal("authentication service was not installed")
+	}
+}
+
+func TestSetupStatusUsesPublishedRuntimeState(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), ".installed")
+	t.Setenv("INSTALL_LOCK_PATH", lockPath)
+	application := newAppWithDeviceService(
+		config{JWTSecret: testJWTSecret},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		devicecore.NewService(),
+	)
+	server := application.routes()
+
+	if err := os.WriteFile(lockPath, []byte("installed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var before setupStatus
+	decodeResponseData(t, doRequest(t, server, http.MethodGet, "/setup/status", "", nil), &before)
+	if before.Installed || !before.NeedsSetup {
+		t.Fatalf("setup status followed unpublished lock state: %+v", before)
+	}
+
+	cfg := application.runtimeConfig()
+	cfg.Installed = true
+	application.replaceRuntime(cfg, nil, application.authenticationService(), application.projectService(), application.deviceResourceService())
+	var after setupStatus
+	decodeResponseData(t, doRequest(t, server, http.MethodGet, "/setup/status", "", nil), &after)
+	if !after.Installed || after.NeedsSetup {
+		t.Fatalf("setup status did not publish installed runtime: %+v", after)
+	}
+}
+
 func TestLoadConfigLoadsEnvFilesWithoutOverridingProcessEnv(t *testing.T) {
-	unsetEnvForTest(t, "DATABASE_URL", "REDIS_URL", "JWT_SECRET", "LOG_LEVEL", "READ_HEADER_TIMEOUT", "DEVICE_PLATFORM_INSTALLED")
+	unsetEnvForTest(t, "DATABASE_URL", "REDIS_URL", "JWT_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY", "LOG_LEVEL", "READ_HEADER_TIMEOUT", "DEVICE_PLATFORM_INSTALLED")
 	t.Setenv("SERVER_ADDR", ":9090")
 	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
 
@@ -56,10 +120,9 @@ SERVER_ADDR=:8081
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/device_platform?sslmode=disable
 REDIS_URL=redis://localhost:6379/0
 JWT_SECRET=0123456789abcdef0123456789abcdef
+WEBHOOK_SECRET_ENCRYPTION_KEY=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
 LOG_LEVEL=debug
 READ_HEADER_TIMEOUT=3s
-WWTIOT_PROVIDER_CODE=hotel-wwtiot
-WWTIOT_PROVIDER_NAME=Hotel WWTIOT
 WWTIOT_USER_ID=env-user
 WWTIOT_USER_KEY=env-key
 `), 0o600); err != nil {
@@ -74,17 +137,98 @@ WWTIOT_USER_KEY=env-key
 	if cfg.ServerAddr != ":9090" {
 		t.Fatalf("expected process env to win, got %q", cfg.ServerAddr)
 	}
-	if cfg.DatabaseURL == "" || cfg.RedisURL == "" || cfg.JWTSecret == "" {
+	if cfg.DatabaseURL == "" || cfg.RedisURL == "" || cfg.JWTSecret == "" || len(cfg.WebhookSecretEncryptionKey) != 32 {
 		t.Fatalf("expected runtime connection fields from env file, got %+v", cfg)
 	}
 	if cfg.ReadHeaderTimeout != 3*time.Second {
 		t.Fatalf("expected parsed read header timeout, got %s", cfg.ReadHeaderTimeout)
 	}
-	if cfg.WWTIOTProviderCode != "hotel-wwtiot" || cfg.WWTIOTProviderName != "Hotel WWTIOT" {
-		t.Fatalf("unexpected wwtiot provider config: %+v", cfg)
-	}
 	if cfg.WWTIOTUserID != "env-user" || cfg.WWTIOTUserKey != "env-key" {
 		t.Fatal("expected WWTIOT credentials from env file")
+	}
+}
+
+func TestLoadConfigPreservesWWTIOTUserKeyBytes(t *testing.T) {
+	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
+	t.Setenv("DEVICE_PLATFORM_INSTALLED", "false")
+	t.Setenv("WWTIOT_USER_KEY", " key-with-significant-spaces ")
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WWTIOTUserKey != " key-with-significant-spaces " {
+		t.Fatalf("WWTIOT UserKey bytes changed: %q", cfg.WWTIOTUserKey)
+	}
+}
+
+func TestSetupErrorsFollowFrozenContract(t *testing.T) {
+	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
+	t.Setenv("DEVICE_PLATFORM_INSTALLED", "true")
+	completed := doRequest(t, newTestServer(), http.MethodPost, "/setup/test-db", `{}`, nil)
+	completedEnvelope := assertEnvelope(t, completed, http.StatusConflict, false)
+	if completedEnvelope.ErrorCode != "setup_completed" {
+		t.Fatalf("setup error_code = %q", completedEnvelope.ErrorCode)
+	}
+
+	t.Setenv("DEVICE_PLATFORM_INSTALLED", "false")
+	cfg := config{ServerAddr: ":0", LogLevel: "error", JWTSecret: testJWTSecret, ReadHeaderTimeout: 5 * time.Second}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := newAppWithDeviceService(cfg, logger, devicecore.NewService()).routes()
+	invalid := doRequest(t, server, http.MethodPost, "/setup/test-db", `{"url":"not-a-database-url","extra":"postgres://user:secret@example.test/db"}`, nil)
+	invalidEnvelope := assertEnvelope(t, invalid, http.StatusBadRequest, false)
+	if invalidEnvelope.ErrorCode != "invalid_install_request" || strings.Contains(invalid.Body.String(), "secret") {
+		t.Fatalf("invalid setup response is not stable and redacted: %s", invalid.Body.String())
+	}
+	invalidURL := doRequest(t, server, http.MethodPost, "/setup/test-db", `{"url":"not-a-database-url"}`, nil)
+	invalidURLEnvelope := assertEnvelope(t, invalidURL, http.StatusBadRequest, false)
+	if invalidURLEnvelope.ErrorCode != "invalid_install_request" || invalidURLEnvelope.Message != "invalid setup request" {
+		t.Fatalf("database setup response = %+v", invalidURLEnvelope)
+	}
+	invalidRedis := doRequest(t, server, http.MethodPost, "/setup/test-redis", `{"url":"not-a-redis-url"}`, nil)
+	if envelope := assertEnvelope(t, invalidRedis, http.StatusBadRequest, false); envelope.ErrorCode != "invalid_install_request" {
+		t.Fatalf("Redis setup response = %+v", envelope)
+	}
+}
+
+func TestInstallRequestDoesNotDefaultRequiredFields(t *testing.T) {
+	valid := setupInstallRequest{
+		Database: databaseSetupRequest{URL: "postgres://local/device_platform_test"},
+		Redis:    redisSetupRequest{URL: "redis://local/0"},
+		Admin: adminSetupRequest{
+			Email: "admin@example.test", DisplayName: "Administrator",
+			Password: "correct-horse", ConfirmPassword: "correct-horse",
+		},
+		Server: serverSetupRequest{Addr: ":8080", LogLevel: "info"},
+	}
+	for _, mutate := range []func(*setupInstallRequest){
+		func(request *setupInstallRequest) { request.Server.Addr = "" },
+		func(request *setupInstallRequest) { request.Server.LogLevel = "" },
+		func(request *setupInstallRequest) { request.Admin.DisplayName = "" },
+	} {
+		request := valid
+		mutate(&request)
+		if err := validateInstallRequest(normalizeInstallRequest(request)); err == nil {
+			t.Fatalf("missing required install field was defaulted: %+v", request)
+		}
+	}
+}
+
+func TestInstallTargetProbeDoesNotTouchFixedNames(t *testing.T) {
+	dir := t.TempDir()
+	legacyProbe := filepath.Join(dir, ".device-platform-env-write-test")
+	if err := os.WriteFile(legacyProbe, []byte("owned-by-user"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateFileTargetWritable(filepath.Join(dir, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(legacyProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "owned-by-user" {
+		t.Fatalf("writability probe changed unrelated file: %q", contents)
 	}
 }
 
@@ -111,10 +255,83 @@ func TestLoadConfigRequiresRuntimeFieldsAfterInstall(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
 	t.Setenv("REDIS_URL", "")
 	t.Setenv("JWT_SECRET", "")
+	t.Setenv("WEBHOOK_SECRET_ENCRYPTION_KEY", "")
 
 	_, err := loadConfig()
 	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
 		t.Fatalf("expected DATABASE_URL error after install, got %v", err)
+	}
+}
+
+func TestExampleConfigAllowsFreshSetupWithoutWebhookEncryptionKey(t *testing.T) {
+	unsetEnvForTest(t, "DATABASE_URL", "REDIS_URL", "JWT_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY", "DEVICE_PLATFORM_INSTALLED")
+	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
+
+	cfg, err := loadConfig(filepath.Join("..", "..", ".env.example"))
+	if err != nil {
+		t.Fatalf("load fresh example config: %v", err)
+	}
+	if cfg.isInstalled() || len(cfg.WebhookSecretEncryptionKey) != 0 {
+		t.Fatalf("fresh example config must remain setup-ready: installed=%v key_len=%d", cfg.isInstalled(), len(cfg.WebhookSecretEncryptionKey))
+	}
+}
+
+func TestDecodeWebhookEncryptionKey(t *testing.T) {
+	valid, err := decodeWebhookEncryptionKey("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+	if err != nil || len(valid) != 32 {
+		t.Fatalf("valid Webhook encryption key: len=%d err=%v", len(valid), err)
+	}
+	for _, raw := range []string{"not-base64!", "c2hvcnQ=", "c2hvcnQ"} {
+		if _, err := decodeWebhookEncryptionKey(raw); err == nil {
+			t.Fatalf("invalid Webhook encryption key accepted: %q", raw)
+		}
+	}
+}
+
+func TestWriteRuntimeEnvPersistsIndependentWebhookEncryptionKey(t *testing.T) {
+	dir := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	request := setupInstallRequest{
+		Database: databaseSetupRequest{URL: "postgres://local/device_platform_test"},
+		Redis:    redisSetupRequest{URL: "redis://local/0"},
+		Server:   serverSetupRequest{Addr: ":8080", LogLevel: "info"},
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env.tmp"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, ".env.tmp"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRuntimeEnv(request, "jwt-secret-that-is-separate-from-webhook", key); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("runtime env mode=%o, want 600", info.Mode().Perm())
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(raw)
+	if !strings.Contains(contents, "WEBHOOK_SECRET_ENCRYPTION_KEY=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8") ||
+		strings.Contains(contents, "WEBHOOK_SECRET_ENCRYPTION_KEY=jwt-secret") {
+		t.Fatal("runtime env did not persist an independent Webhook encryption key")
 	}
 }
 
@@ -384,7 +601,7 @@ func TestSmokeRoutesReturnUnifiedEnvelope(t *testing.T) {
 	apiKey := dataFieldString(t, projectBody, "api_key")
 
 	projects := doRequest(t, server, http.MethodGet, "/v1/projects", "", authHeaders)
-	assertEnvelope(t, projects, http.StatusOK, true)
+	assertPaginatedEnvelope(t, projects, http.StatusOK, 1, 20, 1)
 
 	device := doRequest(t, server, http.MethodPost, "/v1/devices", `{"project_id":"`+projectID+`","name":"smoke lock","device_type":"smart_lock","online":true}`, authHeaders)
 	deviceBody := assertEnvelope(t, device, http.StatusCreated, true)
@@ -557,24 +774,25 @@ func TestCreateDeviceRejectsDuplicateProviderIdentity(t *testing.T) {
 
 func TestCloudProviderEndpointExposesConfigMetadataOnly(t *testing.T) {
 	cfg := config{
-		ServerAddr:         ":0",
-		LogLevel:           "error",
-		JWTSecret:          testJWTSecret,
-		Installed:          true,
-		ReadHeaderTimeout:  5 * time.Second,
-		WWTIOTProviderCode: "hotel-wwtiot",
-		WWTIOTProviderName: "Hotel WWTIOT",
-		WWTIOTAPIURL:       "https://example.invalid/api",
-		WWTIOTUserID:       "test-user",
-		WWTIOTUserKey:      "secret-key",
-		WWTIOTTimeout:      2 * time.Second,
+		ServerAddr:        ":0",
+		LogLevel:          "error",
+		JWTSecret:         testJWTSecret,
+		Installed:         true,
+		ReadHeaderTimeout: 5 * time.Second,
+		WWTIOTAPIURL:      "https://example.invalid/api",
+		WWTIOTUserID:      "test-user",
+		WWTIOTUserKey:     "secret-key",
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := newAppWithDeviceService(cfg, logger, devicecore.NewService()).routes()
 
-	rec := doRequest(t, server, http.MethodGet, "/v1/cloud-providers", "", map[string]string{"Authorization": "Bearer " + testAdminToken(t)})
-	envelope := assertEnvelope(t, rec, http.StatusOK, true)
-	payload, err := json.Marshal(envelope.Data)
+	rec := doRequest(t, server, http.MethodGet, "/v1/cloud-providers?page=1&page_size=1", "", map[string]string{"Authorization": "Bearer " + testAdminToken(t)})
+	envelope := assertPaginatedEnvelope(t, rec, http.StatusOK, 1, 1, 2)
+	data, ok := envelope.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Provider data = %T, want object", envelope.Data)
+	}
+	payload, err := json.Marshal(data["items"])
 	if err != nil {
 		t.Fatalf("marshal providers: %v", err)
 	}
@@ -585,11 +803,49 @@ func TestCloudProviderEndpointExposesConfigMetadataOnly(t *testing.T) {
 	if err := json.Unmarshal(payload, &providers); err != nil {
 		t.Fatalf("decode providers: %v", err)
 	}
-	if len(providers) != 1 ||
-		providers[0]["code"] != "hotel-wwtiot" ||
-		providers[0]["adapter"] != devicecore.AdapterWWTIOTCloudAPI ||
-		providers[0]["configured"] != true {
+	if len(providers) != 1 || providers[0]["code"] != "simulator" ||
+		providers[0]["integration_status"] != "verified" {
 		t.Fatalf("unexpected providers: %+v", providers)
+	}
+	second := doRequest(t, server, http.MethodGet, "/v1/cloud-providers?page=2&page_size=1", "", map[string]string{"Authorization": "Bearer " + testAdminToken(t)})
+	secondEnvelope := assertPaginatedEnvelope(t, second, http.StatusOK, 2, 1, 2)
+	secondData, ok := secondEnvelope.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Provider data = %T, want object", secondEnvelope.Data)
+	}
+	secondItems := secondData["items"].([]interface{})
+	wwtiot := secondItems[0].(map[string]interface{})
+	if wwtiot["code"] != "wwtiot" || wwtiot["adapter"] != devicecore.AdapterWWTIOTCloudAPI ||
+		wwtiot["integration_status"] != "configured_unverified" {
+		t.Fatalf("unexpected WWTIOT Provider: %+v", wwtiot)
+	}
+	for _, query := range []string{"?configured=true", "?page=", "?page=1&page=2", "?page_size=101"} {
+		response := doRequest(t, server, http.MethodGet, "/v1/cloud-providers"+query, "", map[string]string{"Authorization": "Bearer " + testAdminToken(t)})
+		if invalid := assertEnvelope(t, response, http.StatusBadRequest, false); invalid.ErrorCode != "invalid_request" {
+			t.Fatalf("query %q error = %+v", query, invalid)
+		}
+	}
+}
+
+func TestWWTIOTCallbackFailsClosedWithoutReadingBody(t *testing.T) {
+	server := newTestServer()
+	body := &readTrap{}
+	request := httptest.NewRequest(http.MethodPost, "/v1/provider-callbacks/wwtiot", body)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+	envelope := assertEnvelope(t, recorder, http.StatusServiceUnavailable, false)
+	if envelope.ErrorCode != "provider_callback_unverified" || body.reads != 0 {
+		t.Fatalf("callback response=%+v body_reads=%d", envelope, body.reads)
+	}
+
+	unknown := doRequest(t, server, http.MethodPost, "/v1/provider-callbacks/missing", `{"ignored":true}`, nil)
+	if envelope := assertEnvelope(t, unknown, http.StatusNotFound, false); envelope.ErrorCode != "not_found" {
+		t.Fatalf("unknown callback response = %+v", envelope)
+	}
+	wrongMethod := doRequest(t, server, http.MethodGet, "/v1/provider-callbacks/wwtiot", "", nil)
+	if envelope := assertEnvelope(t, wrongMethod, http.StatusMethodNotAllowed, false); envelope.ErrorCode != "method_not_allowed" {
+		t.Fatalf("callback method response = %+v", envelope)
 	}
 }
 
@@ -620,6 +876,7 @@ func TestCreateDeviceReportsContractErrorsWithoutInvalidJSON(t *testing.T) {
 	cases := []struct {
 		name      string
 		body      string
+		wantCode  string
 		wantError string
 	}{
 		{
@@ -631,7 +888,8 @@ func TestCreateDeviceReportsContractErrorsWithoutInvalidJSON(t *testing.T) {
 				"access_type":"mock_gateway",
 				"surprise":"not in contract"
 			}`,
-			wantError: `json: unknown field "surprise"`,
+			wantCode:  "invalid_request",
+			wantError: "invalid request",
 		},
 		{
 			name: "cloud api transport mismatch",
@@ -644,6 +902,7 @@ func TestCreateDeviceReportsContractErrorsWithoutInvalidJSON(t *testing.T) {
 				"transport_protocol":"simulator",
 				"adapter":"wwtiot_cloud_api"
 			}`,
+			wantCode:  "invalid_argument",
 			wantError: "invalid_argument: transport_protocol does not match access_type",
 		},
 		{
@@ -657,6 +916,7 @@ func TestCreateDeviceReportsContractErrorsWithoutInvalidJSON(t *testing.T) {
 				"transport_protocol":"http",
 				"adapter":"mock_gateway"
 			}`,
+			wantCode:  "invalid_argument",
 			wantError: "invalid_argument: adapter does not match access_type",
 		},
 	}
@@ -673,8 +933,8 @@ func TestCreateDeviceReportsContractErrorsWithoutInvalidJSON(t *testing.T) {
 			}
 			var body jsonResponse
 			decodeResponse(t, rec, &body)
-			if body.ErrorCode != "invalid_argument" && body.ErrorCode != "unknown_field" {
-				t.Fatalf("error_code = %q, want stable error code", body.ErrorCode)
+			if body.ErrorCode != tc.wantCode {
+				t.Fatalf("error_code = %q, want %q", body.ErrorCode, tc.wantCode)
 			}
 			if body.Message != tc.wantError {
 				t.Fatalf("message = %q, want %q", body.Message, tc.wantError)
@@ -712,7 +972,6 @@ func TestControlRoutesRequireAdminBearer(t *testing.T) {
 		{method: http.MethodGet, path: "/v1/webhook-deliveries"},
 		{method: http.MethodGet, path: "/v1/audit-logs"},
 		{method: http.MethodPost, path: "/v1/events", body: `{"project_id":"proj_1","event_type":"state_changed"}`},
-		{method: http.MethodPost, path: "/v1/projects/webhook-endpoints", body: `{"project_id":"proj_1","webhook_url":"https://example.invalid/hook"}`},
 	}
 
 	for _, tc := range cases {
@@ -726,11 +985,22 @@ func TestControlRoutesRequireAdminBearer(t *testing.T) {
 	}
 }
 
-func TestCommandCreationRecordsWebhookDeliveryAndAudit(t *testing.T) {
+func TestCommandCreationRecordsAuditWithoutLegacyProjectWebhookAuthority(t *testing.T) {
 	server := newTestServer()
 
 	projectID := createProjectForTest(t, server)
-	configureWebhookForTest(t, server, projectID)
+	legacyWebhook := httptest.NewRecorder()
+	legacyWebhookReq := httptest.NewRequest(http.MethodPost, "/v1/projects/webhook-endpoints", strings.NewReader(`{
+		"project_id":"`+projectID+`",
+		"webhook_url":"https://example.invalid/device-webhook",
+		"webhook_secret":"test-secret"
+	}`))
+	legacyWebhookReq.Header.Set("Content-Type", "application/json")
+	setAdminBearer(legacyWebhookReq)
+	server.ServeHTTP(legacyWebhook, legacyWebhookReq)
+	if legacyWebhook.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("legacy Project Webhook authority status = %d, want 405: %s", legacyWebhook.Code, legacyWebhook.Body.String())
+	}
 	deviceID := createDeviceForTest(t, server, projectID)
 
 	command := httptest.NewRecorder()
@@ -751,11 +1021,6 @@ func TestCommandCreationRecordsWebhookDeliveryAndAudit(t *testing.T) {
 	if commandID == "" {
 		t.Fatalf("command id missing: %+v", commandBody)
 	}
-	deliveryBody := waitForWebhookDelivery(t, server)
-	if len(deliveryBody.Items) == 0 {
-		t.Fatal("expected command event to create a webhook delivery")
-	}
-
 	audits := httptest.NewRecorder()
 	auditReq := httptest.NewRequest(http.MethodGet, "/v1/audit-logs", nil)
 	setAdminBearer(auditReq)
@@ -776,24 +1041,11 @@ func TestCommandCreationRecordsWebhookDeliveryAndAudit(t *testing.T) {
 	}
 }
 
-func TestCloudAPICommandDispatchesToWWTIOT(t *testing.T) {
-	var requestBody map[string]interface{}
+func TestCloudAPICommandCreationDoesNotSynchronouslyDispatch(t *testing.T) {
+	requestCount := 0
 	vendor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Fatalf("vendor method = %s, want POST", r.Method)
-		}
-		if r.Header.Get("Content-Type") != "application/json" {
-			t.Fatalf("content-type = %q, want application/json", r.Header.Get("Content-Type"))
-		}
-		decodeBody(t, r.Body, &requestBody)
-		if requestBody["userid"] != "test-user" ||
-			requestBody["cmd"] != "control" ||
-			requestBody["deviceid"] != "768901037824" ||
-			requestBody["sign"] == "" {
-			t.Fatalf("unexpected vendor request: %+v", requestBody)
-		}
-		serial, _ := requestBody["serialnum"].(float64)
-		_, _ = w.Write([]byte(`{"result":"ok","info":"cmd send ok","deviceid":"768901037824","cmd":"control","serialnum":` + strconv.FormatInt(int64(serial), 10) + `,"userid":"test-user","userkey":"vendor-key","sign":"vendor-sign"}`))
+		requestCount++
+		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer vendor.Close()
 
@@ -807,7 +1059,6 @@ func TestCloudAPICommandDispatchesToWWTIOT(t *testing.T) {
 		WWTIOTAPIURL:      vendor.URL,
 		WWTIOTUserID:      "test-user",
 		WWTIOTUserKey:     "test-key",
-		WWTIOTTimeout:     2 * time.Second,
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := newAppWithDeviceService(cfg, logger, service).routes()
@@ -821,8 +1072,8 @@ func TestCloudAPICommandDispatchesToWWTIOT(t *testing.T) {
 		"command_type":"query_status"
 	}`, map[string]string{"Authorization": "Bearer " + token})
 	commandBody := assertEnvelope(t, command, http.StatusCreated, true)
-	if dataFieldString(t, commandBody, "status") != string(devicecore.CommandStatusSuccess) {
-		t.Fatalf("command status = %+v, want success", commandBody.Data)
+	if dataFieldString(t, commandBody, "status") != string(devicecore.CommandStatusQueued) {
+		t.Fatalf("command status = %+v, want queued", commandBody.Data)
 	}
 	commandID := dataFieldString(t, commandBody, "id")
 
@@ -832,36 +1083,14 @@ func TestCloudAPICommandDispatchesToWWTIOT(t *testing.T) {
 		Attempts []map[string]interface{} `json:"attempts"`
 	}
 	decodeResponseData(t, detail, &detailBody)
-	if detailBody.Command["status"] != string(devicecore.CommandStatusSuccess) {
-		t.Fatalf("detail status = %+v, want success", detailBody.Command)
+	if detailBody.Command["status"] != string(devicecore.CommandStatusQueued) {
+		t.Fatalf("detail status = %+v, want queued", detailBody.Command)
 	}
-	if len(detailBody.Attempts) != 1 {
-		t.Fatalf("attempts = %+v, want one attempt", detailBody.Attempts)
+	if len(detailBody.Attempts) != 0 {
+		t.Fatalf("attempts = %+v, want no synchronous attempt", detailBody.Attempts)
 	}
-	attempt := detailBody.Attempts[0]
-	if attempt["adapter"] != devicecore.AdapterWWTIOTCloudAPI || attempt["status"] != "acked" {
-		t.Fatalf("unexpected attempt: %+v", attempt)
-	}
-	request, ok := attempt["request_body"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("request_body = %T, want object", attempt["request_body"])
-	}
-	body, ok := request["body"].(map[string]interface{})
-	if !ok || body["sign"] != "[redacted]" || body["userid"] != "[redacted]" {
-		t.Fatalf("request body must redact credentials, got %+v", request["body"])
-	}
-	response, ok := attempt["response_body"].(map[string]interface{})
-	if !ok || response["sign"] != "[redacted]" || response["userid"] != "[redacted]" || response["userkey"] != "[redacted]" || response["result"] != "ok" {
-		t.Fatalf("response body must include ok result and redacted credentials, got %+v", attempt["response_body"])
-	}
-	attemptJSON, err := json.Marshal(attempt)
-	if err != nil {
-		t.Fatalf("marshal attempt: %v", err)
-	}
-	for _, secret := range []string{"test-user", "test-key", "vendor-sign", "vendor-key"} {
-		if strings.Contains(string(attemptJSON), secret) {
-			t.Fatalf("attempt detail leaked %q: %s", secret, attemptJSON)
-		}
+	if requestCount != 0 {
+		t.Fatalf("Command creation made %d synchronous Provider requests", requestCount)
 	}
 }
 
@@ -945,22 +1174,6 @@ func createProjectForOpenAPITest(t *testing.T, server http.Handler) (string, str
 		t.Fatalf("project open api fields missing: %+v", project)
 	}
 	return id, apiKey
-}
-
-func configureWebhookForTest(t *testing.T, server http.Handler, projectID string) {
-	t.Helper()
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/projects/webhook-endpoints", strings.NewReader(`{
-		"project_id":"`+projectID+`",
-		"webhook_url":"https://example.invalid/device-webhook",
-		"webhook_secret":"test-secret"
-	}`))
-	req.Header.Set("Content-Type", "application/json")
-	setAdminBearer(req)
-	server.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected webhook config 200, got %d: %s", rec.Code, rec.Body.String())
-	}
 }
 
 func createDeviceForTest(t *testing.T, server http.Handler, projectID string) string {
@@ -1063,6 +1276,30 @@ func assertEnvelope(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int
 	return envelope
 }
 
+func assertPaginatedEnvelope(t *testing.T, rec *httptest.ResponseRecorder, wantStatus, wantPage, wantPageSize, wantTotal int) jsonResponse {
+	t.Helper()
+	if rec.Code != wantStatus {
+		t.Fatalf("HTTP status = %d, want %d: %s", rec.Code, wantStatus, rec.Body.String())
+	}
+	var envelope jsonResponse
+	decodeResponse(t, rec, &envelope)
+	if !envelope.Success || envelope.Status != rec.Code || envelope.Code != 0 || envelope.Message == "" || envelope.ErrorCode != "" {
+		t.Fatalf("expected paginated success envelope, got %+v", envelope)
+	}
+	var raw struct {
+		Meta struct {
+			Page     int `json:"page"`
+			PageSize int `json:"page_size"`
+			Total    int `json:"total"`
+		} `json:"meta"`
+	}
+	decodeBody(t, strings.NewReader(rec.Body.String()), &raw)
+	if raw.Meta.Page != wantPage || raw.Meta.PageSize != wantPageSize || raw.Meta.Total != wantTotal {
+		t.Fatalf("pagination meta = %+v, want page=%d page_size=%d total=%d", raw.Meta, wantPage, wantPageSize, wantTotal)
+	}
+	return envelope
+}
+
 func assertEnvelopeFields(t *testing.T, rec *httptest.ResponseRecorder, envelope jsonResponse, wantSuccess bool) {
 	t.Helper()
 	if envelope.Success != wantSuccess {
@@ -1084,6 +1321,11 @@ func assertEnvelopeFields(t *testing.T, rec *httptest.ResponseRecorder, envelope
 	}
 	if envelope.Code == 0 || envelope.ErrorCode == "" || envelope.Data != nil {
 		t.Fatalf("expected error envelope, got %+v", envelope)
+	}
+	var raw map[string]json.RawMessage
+	decodeBody(t, strings.NewReader(rec.Body.String()), &raw)
+	if string(raw["meta"]) != "null" {
+		t.Fatalf("error envelope meta = %s, want null", raw["meta"])
 	}
 }
 

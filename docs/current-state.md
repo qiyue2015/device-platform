@@ -2,8 +2,8 @@
 title: 当前实现状态
 snapshot_date: 2026-07-31
 status: implementation-snapshot
-contract_freeze_revision: 2026-07-31.1
-verified_against_code_revision: document-commit
+contract_freeze_revision: 2026-07-31.2
+verified_against_code_revision: implementation-unit-2026-07-31
 ---
 
 # 当前实现状态
@@ -23,62 +23,60 @@ verified_against_code_revision: document-commit
 | 能力                              | 状态             | 已验证事实                                                                                                                                                                                                      |
 | --------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 安装与单管理员认证                | 已实现           | 安装使用 PostgreSQL migration；JWT 固定 issuer/audience/jti/session generation，每次受保护请求回查数据库，logout 原子失效旧 token，login 持久限流且 login/refresh/logout 写安全审计；`backend/cmd/server/auth.go`。 |
-| Project、Device、Command HTTP API | 部分实现         | 路由与内存领域服务已接入；业务对象保存在 `map`，见 `backend/cmd/server/app.go:47`、`backend/internal/devicecore/service.go:39`。                                                                                |
-| 业务数据持久化                    | 部分实现         | Project、Device Type、Device、Command、CommandAttempt、RawMessage、Event、Webhook Delivery/Attempt、Audit 与 simulator config 已有 PostgreSQL Repository 和真实数据库集成测试，但尚未注入 HTTP/worker 运行时。 |
-| Project 机器 API                  | 部分实现         | `/v1/open/*` 校验 `X-API-Key`，但运行时保存并遍历明文 key，Project 对象持续返回明文，已配置的 IP whitelist 未在认证中执行；`backend/internal/devicecore/types.go:5`、`backend/internal/httpapi/router.go:311`。 |
-| Project 数据隔离                  | 部分实现         | 对齐后的 schema 以复合外键保证 Command、Device、Event、Delivery 的 Project 归属一致；当前 HTTP 主链仍使用内存服务和 Project 上下文，尚未接入这些持久约束。                                                       |
-| WWTIOT 下行                       | 部分实现         | 当前适配器事实与 action 映射见 [WWTIOT Provider 合同](./providers/wwtiot.md)；运行时入口为 `backend/internal/cloudapi/wwtiot/client.go:76`。                                                                    |
-| WWTIOT callback                   | 未实现 / Unknown | V2 原始资料存在，但仓库没有 callback 路由、签名验证、RawMessage/DeviceState 接入或命令关联实现；签名顺序与命令关联仍需外部确认。                                                                                |
-| Capability 分层                   | 部分实现         | 运行时把具体 action 作为全局 `command_type` 校验，并在核心服务中硬编码默认策略；`backend/internal/devicecore/service.go:627`。Provider 映射位于 adapter，但最小 Device Type Capability profile 尚未接入运行时。 |
-| 设备最终执行语义                  | 未实现           | WWTIOT 2xx 且 `result=ok` 后立即 `sent -> acked -> success`，没有设备回执或状态同步；`backend/cmd/server/command_dispatch.go:89`。                                                                              |
-| 模拟器核心链路                    | 部分实现         | 独立 simulator engine 有状态机，但主应用只注册配置路由；`backend/cmd/server/app.go:109`、`backend/internal/gateway/http.go:21`。正常业务 Command 不进入该 engine。                                              |
-| Event、Webhook、Audit             | 部分实现         | 认证安全审计已写 PostgreSQL；Event/Audit/Webhook Repository 已实现。Webhook Repository 已验证 Attempt 历史、`SKIP LOCKED` 领取、lease 恢复、有界重试和独立 manual replay，但运行时尚未接入，领域 Event、Webhook 与其他 Audit 仍由独立内存服务维护。 |
-| Webhook 配置                      | 部分实现         | Project CRUD 的 `webhook_url` 与 `/v1/projects/webhook-endpoints` 属于两套状态；`backend/internal/devicecore/service.go:65`、`backend/internal/webhookaudit/service.go:65`。                                    |
+| Project、Device、Command HTTP API | 部分实现         | 已安装运行时的 Project 与 Device 管理/Open 读取已接入 PostgreSQL；Command HTTP 仍使用 `devicecore` 内存服务，尚未接入冻结的持久 Command aggregate。                                                                |
+| 业务数据持久化                    | 部分实现         | Project、凭据版本、Device、Device 创建/lifecycle Event、初始 Webhook Delivery 与对应 Audit 已注入 HTTP 运行时；Command、RawMessage、通用 Event/Webhook 查询和 worker、simulator config 尚未统一接入。               |
+| Project 机器 API                  | 已实现           | 已安装运行时按 `X-API-Key` 的 SHA-256 digest 查找 Project，只信任 direct peer 执行 IPv4/IPv6 whitelist；普通 DTO 不返回 key、digest、Webhook secret、ciphertext 或 nonce，轮换提交后旧 key 立即失效。             |
+| Project 数据隔离                  | 部分实现         | Project 认证、配置及 Admin/Open Device 查询已使用 Project-scoped PostgreSQL 查询和 schema 归属约束；Open Command 仍属于旧内存主链，尚未完成同一持久事务边界。                                                    |
+| WWTIOT 下行                       | 部分实现         | V2 action 映射、固定 10 秒 client、严格请求/响应、echo、失败分类、证据等级与脱敏摘要已有组件测试；持久 dispatcher 尚未调用它，因此不代表命令主链或设备成功。                                                       |
+| WWTIOT callback                   | 部分实现 / Unknown | 已有 64 KiB 严格 decoder、字段校验、identity 映射和规范化候选组件；公开 `POST /v1/provider-callbacks/wwtiot` 固定 503 且不读取 body。签名顺序、防重放与命令关联仍为 Unknown。                                    |
+| Capability 分层                   | 部分实现         | `smart-lock` revision 1 profile 与 Device Type 读取已接入持久运行时；旧 Command HTTP 仍在 `devicecore` 硬编码 action/策略，尚未使用发布 profile。                                                                 |
+| 设备最终执行语义                  | 未实现           | HTTP 创建 Command 不再同步调用 WWTIOT 或伪造 `acked/success`；持久 dispatcher、结果观察与可信设备 final evidence 尚未接入，真实设备最终执行仍无证据。                                                          |
+| 模拟器核心链路                    | 部分实现         | 独立 simulator engine 有状态机，但主应用只注册 `gateway.Handler.RegisterSimulator` 提供的配置路由；正常业务 Command 不进入该 engine。                                                                                                                                        |
+| Event、Webhook、Audit             | 部分实现         | Auth/Project/Device Audit 已持久化；Device 创建与 lifecycle 在同一事务写 Event、配置存在时写初始 Delivery。通用查询、Delivery worker、Attempt 与 manual replay HTTP 仍使用独立内存服务。                           |
+| Webhook 配置                      | 部分实现         | `/v1/projects` 是唯一配置入口，旧 `/v1/projects/webhook-endpoints` 写入口已移除；URL、AES-256-GCM secret 版本与 Audit 已持久化，但 Event/Delivery worker 尚未读取该 Project 配置。                                  |
 | 命令超时与离线恢复                | 部分实现         | 领域方法和独立 simulator 逻辑存在；业务 Command 没有周期扫描执行器，状态可能长期悬挂。                                                                                                                          |
 | 管理后台                          | 部分实现         | 已有 Project、Device、Command、Webhook、Audit 和 simulator 页面/API 调用；部分字段、动作与后端不一致。                                                                                                          |
-| 请求关联与分页                    | 部分实现         | 服务端生成 UUID request ID 并写入 `X-Request-ID`、响应 envelope、上下文与请求日志；合法客户端 ID 独立保留，见 `backend/internal/httpjson/request.go`。所有列表仍返回完整集合，`meta` 为空。                        |
+| 请求关联与分页                    | 部分实现         | envelope 固定输出全部字段；request ID 已贯穿 header、响应、日志和持久 Auth/Project/Device Audit。Project、Device Type、Provider、Admin/Open Device 已实现严格分页与冻结排序，其余列表仍待接入。                    |
 
 ## 关键实现漂移
 
 ### 持久化与模型
 
-- PostgreSQL 当前承载 migration 与管理员认证，并已有 Project、Device Type、Device、Command、Command Attempt、RawMessage、Event、Webhook Delivery/Attempt、Audit 和 simulator config Repository；HTTP/worker 运行态尚未注入这些 Repository，相关业务状态仍由进程内存服务维护并会在重启后丢失。
-- `internal/domain`、`internal/api/v1` 和 `internal/devicecore` 三套模型并存；实际 HTTP 主链使用 `devicecore`，其余模型不能证明运行时行为。
-- schema 定义 `projects.api_key_hash`，运行时对象却保存并返回明文 `api_key`。
-- 对齐后的 schema 对未删除 Device 强制全局唯一 Provider identity，PostgreSQL Repository 也按该 identity 查找；当前 HTTP 主链仍使用未注入该约束的内存服务。
-- Provider registry 的 WWTIOT code/name/timeout 可被环境变量改变，且运行时 Device Type 使用 `smart_lock`；这些行为分别偏离冻结的 `wwtiot`、`WWTIOT`、10 秒与 `smart-lock` 稳定发布元数据。
-- Provider 读取当前只返回布尔 `configured`，尚未实现 `integration_status` 的三层证据语义；simulator 也未作为统一 Provider registry 项接入业务 Device/Command 主链。
+- PostgreSQL 当前承载 migration、管理员认证、Project aggregate 和 Device aggregate。Project/Device HTTP 已可跨应用实例重建读取；Command、通用 Event/Webhook HTTP 与 worker、simulator 运行态仍由旧内存服务维护并会在重启后丢失。
+- `internal/domain`、`internal/api/v1` 和 `internal/devicecore` 三套模型仍并存；Project/Device HTTP 已使用冻结 DTO 与持久领域服务，Command HTTP 仍使用 `devicecore`，不能把 Repository 测试误写为 Command 运行时行为。
+- Project API key 只以 SHA-256 digest 持久化，明文只在创建或轮换成功响应出现；Webhook secret 使用独立部署密钥进行 AES-256-GCM 版本化加密。已安装运行时缺少或错误配置 `WEBHOOK_SECRET_ENCRYPTION_KEY` 时会失败关闭。
+- Device HTTP 已执行非 deleted Provider identity 全局唯一、deleted 后释放、稳定 lifecycle、可信 `current_state` 派生读取和 Project scope；创建 Event、初始 Delivery 与 Audit 的任一写入失败都会整体回滚。
+- Provider registry 固定按 `code ASC` 暴露 `simulator` 与 `wwtiot`，返回三层 `integration_status` 且不暴露配置或 secret。当前合同下 WWTIOT 最多为 `configured_unverified`，不能仅凭配置提升为 `verified`。
 - 对齐后的 schema 与 Repository 已有 Webhook Delivery Attempt、manual replay 关联、worker lease、可降低至 `1..5` 次的部署级 Attempt 上限和过期恢复；`004_webhook_delivery_attempt_limit` 的 down migration 在存在低于 5 次即 `dead` 的数据时拒绝回滚。schema 也已有 confirmation/evidence 和 Command `unknown` 字段与约束；`003_command_transport_failure_timing` 允许 dispatching 后可证明未发送的 transport failure 保留 `sent_at` 并终止为 `failed`，其 down migration 同样在旧合同无法表达当前数据时拒绝回滚。当前内存运行时尚未使用这些结构。
-- 单管理员认证已执行 JWT/session generation、持久登录限流和安全审计合同；setup 的 POST 完成后仍返回 `403 setup_forbidden`。HTTP JSON object 请求已统一拒绝未知字段、重复 key、尾随值与超限 body，但各资源的字段级 schema 和错误码仍需随持久主链实现继续对齐。
-- 所有列表接口返回完整集合，当前没有服务端分页；request ID 已贯穿 HTTP header、envelope、context、请求日志与认证安全审计，尚未随其他持久领域写入进入 Audit。
+- 单管理员认证已执行 JWT/session generation、持久登录限流和安全审计合同；setup 完成后 POST 返回 `409 setup_completed`，安装请求不再为必需字段填默认值，连接测试在实际连接前区分 URL schema 错误。HTTP JSON object 统一拒绝未知字段、重复 key、尾随值与超限 body。
+- Project、Device Type、Provider 和 Device list 已提供严格 `page`、`page_size`、`total`、重复/未知 query 拒绝与冻结排序；Command、Event、Webhook Delivery 和 Audit list 尚未全部对齐该合同。
 
 ### 命令与 Provider
 
-- WWTIOT 适配器是同步、单次、仅下行调用，没有自动重试、回调、上行消息或设备状态同步；具体实现事实见 [WWTIOT Provider 合同](./providers/wwtiot.md)。
-- WWTIOT client 对空 body、非 JSON 和缺少字符串 `result` 的 2xx 可能返回成功；没有校验 response echo 或响应签名。
+- WWTIOT client 是可由未来 dispatcher 调用的单次下行组件；它严格限制请求、响应大小、JSON object、`result`、必需 echo、redirect、超时和脱敏摘要，并按 `WroteRequest` 区分发送前后 transport failure。当前没有自动重试，也没有接入可信上行结果。
 - `devicecore` 当前硬编码具体 action 及其策略，尚未实现 Core / Device Type Capability 的责任分离；这是实现漂移，不是新的产品合同。
 - `devicecore` 仍包含 `created`、`offline`、`online_only`、`queue_until_expire`、`replace_latest` 和离线恢复/补偿分支；当前冻结 profile 只使用 `queued` 起始状态与 `dispatch_once`，旧分支不得被当作当前产品合同。
-- Provider HTTP 接受目前被等同于设备执行成功，这是当前最高优先级的状态可信性缺口。
+- Provider HTTP acceptance 组件只产生 `provider_accepted/unverified`，不会生成 Device ACK/final；旧 HTTP Command 创建也不再同步调用 Provider。
 - 模拟器与 `devicecore` 使用两套独立 Command map 和状态机；切换 simulator mode 不会使后台或 Open API 创建的模拟设备命令完成。
 - 独立 simulator engine 的 `success`、`failure`、`timeout`、`offline_then_online` 等旧模式把组件自建状态机结果当成设备 ACK/final 语义；它们不是冻结 simulator Provider 合同，接入统一主链时必须替换，不能兼容为第二套模式。
-- Command 超时有领域方法，但没有业务主链的定时扫描调用方；Cloud 调用失败也没有恢复任务。
-- Device `lifecycle_status=disabled` 当前没有阻止新 Command。
+- Command 超时有领域/Repository 方法，但没有冻结 Command 主链的 dispatcher、deadline scanner 和 dispatching crash recovery 调用方；因此不能验收命令生命周期闭环。
+- 持久 Device 与旧内存 Command 服务尚未统一，不能据旧服务行为证明 disabled/deleted Device、Provider 配置或发布 profile 的 Command 创建约束。
 
 ### Webhook、审计与前端
 
-- 领域 HTTP 主链的 Event、Webhook Delivery 和 Audit 仍由独立内存服务维护，不与 Command 持久事务绑定；新增 Event/Audit/Webhook Repository 只提供可组合的 PostgreSQL 事务能力，不代表运行时已经接入。
+- Device HTTP 已在持久事务内写 Event、初始 Webhook Delivery 和 Audit；Command HTTP 及通用 Event/Webhook/Audit 管理路由仍使用独立内存服务，尚未形成完整统一主链。
 - Webhook retry worker 每 500ms 扫描进程内到期记录，仍未使用 PostgreSQL Delivery/Attempt、领取 lease 或恢复接口；因此当前运行时在进程重启后仍会丢失记录与重试进度，dead resend 仍会重置同一内存记录的计数。Repository 中已验证的独立 replay 历史不能被写成当前 HTTP 行为。
 - Webhook 当前签名只覆盖 body，不含 timestamp；未配置 secret 时使用固定本地 fallback，且没有独立 DeliveryAttempt 记录。
-- Project 表单只写 `/v1/projects` 的 `webhook_url`，不会配置 `/v1/projects/webhook-endpoints` 使用的另一套端点。
+- Project Webhook 配置已收口到 Project aggregate；旧并行写入口不可用。当前缺口是持久 Event/Delivery 创建与 worker 仍未使用该配置和版本化 secret resolver。
 - `/v1/events` 当前允许管理员直接注入任意 Event，与冻结目标的只读事件资源不一致。
 - 前端 Audit 类型期望 `actor_id`、`ip`、`summary`，后端返回 `actor_type`、`ip_address`、`metadata`。
 - 后端具备部分 cancel/online 操作，但当前页面没有完整暴露；部分命令失败字段也存在前后端命名漂移。
 
 ## 已有测试能证明什么
 
-- Go 测试覆盖部分 Project/Device/Command 规则、幂等、离线策略、simulator engine，以及用本地 `httptest` 伪造的 WWTIOT HTTP 接受路径；PostgreSQL integration tests 另覆盖现有 Repository 的事务回滚、Command 并发领取、lease fencing/reclaim、取消/派发期限、dispatching 崩溃恢复、simulator-only verified RawMessage 绑定、WWTIOT evidence 升级失败关闭、Event/Audit 持久化、Webhook 并发领取与过期恢复、重试预算耗尽、manual replay 历史隔离和 simulator config CAS。
+- Go 测试覆盖持久 Project HTTP 生命周期、重启读取、一次性凭据披露、凭据轮换、IP whitelist、并发与回滚；也覆盖持久 Device 创建/读取/过滤/lifecycle、Project 隔离、Provider identity 释放、Device/Event/Delivery/Audit 原子回滚、Provider registry，以及 WWTIOT client/callback 的无真实设备组件合同。PostgreSQL integration tests 另覆盖 Command 与 Webhook Repository 的并发、lease、恢复和证据约束。
 - 前端类型检查、i18n 检查和构建可验证静态一致性。
-- 这些检查不能证明 HTTP/worker 主链已经使用业务 Repository，也不能证明模拟器主链闭环、Webhook 可靠投递或真实智能锁最终执行。
+- 这些检查不能证明持久 Command dispatcher、simulator 主链、Webhook worker、公开可信 callback 或真实智能锁最终执行；WWTIOT HTTP 测试服务器也不能替代真实设备证据。
 
 ## Unknown 与验证条件
 

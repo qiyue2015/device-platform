@@ -24,6 +24,32 @@ type Store interface {
 	WithinTransaction(ctx context.Context, fn func(Tx) error) error
 }
 
+type ProjectStore interface {
+	Projects() ProjectQueries
+	TransactProject(ctx context.Context, fn func(ProjectTx) error) error
+}
+
+type ProjectTx interface {
+	Projects() ProjectRepository
+	Audits() AuditRepository
+}
+
+type DeviceStore interface {
+	Projects() ProjectQueries
+	DeviceTypes() DeviceTypeQueries
+	Devices() DeviceQueries
+	TransactDevice(ctx context.Context, fn func(DeviceTx) error) error
+}
+
+type DeviceTx interface {
+	Projects() ProjectRepository
+	DeviceTypes() DeviceTypeQueries
+	Devices() DeviceRepository
+	Events() EventRepository
+	Webhooks() WebhookRepository
+	Audits() AuditRepository
+}
+
 type Tx interface {
 	Users() UserRepository
 	AuthRateLimits() AuthRateLimitRepository
@@ -78,6 +104,13 @@ type ProjectQueries interface {
 	Get(ctx context.Context, id string) (domain.Project, error)
 	GetByAPIKeyDigest(ctx context.Context, digest []byte) (domain.Project, error)
 	GetWebhookSecretVersion(ctx context.Context, projectID string, version int) (domain.WebhookSecretVersion, error)
+	List(ctx context.Context, request ListProjectsRequest) ([]domain.Project, int64, error)
+}
+
+type ListProjectsRequest struct {
+	Name   *string
+	Limit  int
+	Offset int
 }
 
 type ProjectRepository interface {
@@ -89,6 +122,7 @@ type ProjectRepository interface {
 	SetWebhookConfiguration(ctx context.Context, id string, webhookURL *string, configVersion int64, secretVersion *int) error
 	ReplaceAPIKeyDigest(ctx context.Context, id string, digest []byte) error
 	CreateWebhookSecretVersion(ctx context.Context, secret domain.WebhookSecretVersion) error
+	RetireWebhookSecretVersion(ctx context.Context, projectID string, version int) error
 }
 
 type DeviceTypeQueries interface {
@@ -99,9 +133,21 @@ type DeviceTypeQueries interface {
 
 type DeviceQueries interface {
 	Get(ctx context.Context, id string) (domain.Device, error)
+	GetByProject(ctx context.Context, projectID, id string) (domain.Device, error)
 	GetByProviderIdentity(ctx context.Context, providerCode, providerDeviceID string) (domain.Device, error)
 	ListByProject(ctx context.Context, projectID string) ([]domain.Device, error)
+	List(ctx context.Context, request ListDevicesRequest) ([]domain.Device, int64, error)
 	GetCurrentState(ctx context.Context, deviceID string) (domain.DeviceState, error)
+}
+
+type ListDevicesRequest struct {
+	ProjectID        *string
+	DeviceTypeCode   *string
+	ProviderCode     *string
+	ConnectionStatus *domain.ConnectionStatus
+	LifecycleStatus  *domain.LifecycleStatus
+	Limit            int
+	Offset           int
 }
 
 type DeviceRepository interface {

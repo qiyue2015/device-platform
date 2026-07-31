@@ -77,6 +77,18 @@ func (s *PostgresStore) WithinTransaction(ctx context.Context, fn func(*Postgres
 	return nil
 }
 
+func (s *PostgresStore) TransactProject(ctx context.Context, fn func(ProjectTx) error) error {
+	return s.WithinTransaction(ctx, func(tx *PostgresTx) error {
+		return fn(tx)
+	})
+}
+
+func (s *PostgresStore) TransactDevice(ctx context.Context, fn func(DeviceTx) error) error {
+	return s.WithinTransaction(ctx, func(tx *PostgresTx) error {
+		return fn(tx)
+	})
+}
+
 type PostgresTx struct {
 	tx *sql.Tx
 }
@@ -154,6 +166,41 @@ func (r *postgresProjectRepository) GetWebhookSecretVersion(ctx context.Context,
 	return secret, nil
 }
 
+func (r *postgresProjectRepository) List(ctx context.Context, request ListProjectsRequest) ([]domain.Project, int64, error) {
+	if request.Limit < 1 || request.Limit > 100 || request.Offset < 0 {
+		return nil, 0, ErrInvalidRepositoryRequest
+	}
+	var total int64
+	if err := r.exec.QueryRowContext(ctx, `
+		SELECT count(*)
+		FROM projects
+		WHERE ($1::text IS NULL OR name = $1)
+	`, nullableString(request.Name)).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.exec.QueryContext(ctx, projectSelect+`
+		WHERE ($1::text IS NULL OR name = $1)
+		ORDER BY created_at DESC, id DESC
+		LIMIT $2 OFFSET $3
+	`, nullableString(request.Name), request.Limit, request.Offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]domain.Project, 0, request.Limit)
+	for rows.Next() {
+		item, err := scanProject(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
 func (r *postgresProjectRepository) Create(ctx context.Context, project domain.Project) error {
 	_, err := r.exec.ExecContext(ctx, `
 		INSERT INTO projects (
@@ -217,6 +264,15 @@ func (r *postgresProjectRepository) CreateWebhookSecretVersion(ctx context.Conte
 		secret.CreatedAt,
 		nullableTime(secret.RetiredAt),
 	)
+	return err
+}
+
+func (r *postgresProjectRepository) RetireWebhookSecretVersion(ctx context.Context, projectID string, version int) error {
+	_, err := r.exec.ExecContext(ctx, `
+		UPDATE project_webhook_secrets
+		SET retired_at = COALESCE(retired_at, GREATEST(now(), created_at))
+		WHERE project_id = $1 AND version = $2
+	`, projectID, version)
 	return err
 }
 
@@ -374,6 +430,10 @@ func (r *postgresDeviceRepository) Get(ctx context.Context, id string) (domain.D
 	return scanDevice(r.exec.QueryRowContext(ctx, deviceSelect+` WHERE d.id = $1`, id))
 }
 
+func (r *postgresDeviceRepository) GetByProject(ctx context.Context, projectID, id string) (domain.Device, error) {
+	return scanDevice(r.exec.QueryRowContext(ctx, deviceSelect+` WHERE d.project_id = $1 AND d.id = $2`, projectID, id))
+}
+
 func (r *postgresDeviceRepository) GetByProviderIdentity(ctx context.Context, providerCode, providerDeviceID string) (domain.Device, error) {
 	return scanDevice(r.exec.QueryRowContext(ctx, deviceSelect+`
 		WHERE lower(d.provider_code) = lower($1) AND d.provider_device_id = $2
@@ -399,6 +459,50 @@ func (r *postgresDeviceRepository) ListByProject(ctx context.Context, projectID 
 		return nil, err
 	}
 	return items, nil
+}
+
+func (r *postgresDeviceRepository) List(ctx context.Context, request ListDevicesRequest) ([]domain.Device, int64, error) {
+	if request.Limit < 1 || request.Limit > 100 || request.Offset < 0 {
+		return nil, 0, ErrInvalidRepositoryRequest
+	}
+	const where = `
+		WHERE ($1::uuid IS NULL OR d.project_id = $1)
+			AND ($2::text IS NULL OR dt.code = $2)
+			AND ($3::text IS NULL OR d.provider_code = $3)
+			AND ($4::text IS NULL OR d.connection_status = $4)
+			AND ($5::text IS NULL OR d.lifecycle_status = $5)`
+	args := []any{
+		nullableString(request.ProjectID),
+		nullableString(request.DeviceTypeCode),
+		nullableString(request.ProviderCode),
+		nullableConnectionStatus(request.ConnectionStatus),
+		nullableLifecycleStatus(request.LifecycleStatus),
+	}
+	var total int64
+	if err := r.exec.QueryRowContext(ctx, `
+		SELECT count(*) FROM devices d JOIN device_types dt ON dt.id = d.device_type_id
+	`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.exec.QueryContext(ctx, deviceSelect+where+`
+		ORDER BY d.created_at DESC, d.id DESC LIMIT $6 OFFSET $7
+	`, append(args, request.Limit, request.Offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]domain.Device, 0, request.Limit)
+	for rows.Next() {
+		item, err := scanDevice(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
 }
 
 func (r *postgresDeviceRepository) GetCurrentState(ctx context.Context, deviceID string) (domain.DeviceState, error) {
@@ -568,7 +672,23 @@ func nullableTime(value *time.Time) any {
 	return *value
 }
 
+func nullableConnectionStatus(value *domain.ConnectionStatus) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func nullableLifecycleStatus(value *domain.LifecycleStatus) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
 var (
+	_ ProjectStore      = (*PostgresStore)(nil)
+	_ DeviceStore       = (*PostgresStore)(nil)
 	_ ProjectRepository = (*postgresProjectRepository)(nil)
 	_ DeviceTypeQueries = (*postgresDeviceTypeRepository)(nil)
 	_ DeviceRepository  = (*postgresDeviceRepository)(nil)

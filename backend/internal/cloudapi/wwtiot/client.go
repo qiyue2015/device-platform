@@ -6,191 +6,338 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
+	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
+
+	"github.com/qiyue2015/device-platform/internal/domain"
+	"github.com/qiyue2015/device-platform/internal/httpjson"
 )
 
 const (
-	DefaultAPIURL = "http://gps.wwtiot.com/api/"
+	DefaultAPIURL       = "http://gps.wwtiot.com/api/"
+	requestTimeout      = 10 * time.Second
+	maxResponseBytes    = 64 << 10
+	maxSummaryTextBytes = 4 << 10
 )
 
 var (
-	ErrNotConfigured      = errors.New("wwtiot client is not configured")
-	ErrUnsupportedCommand = errors.New("unsupported wwtiot command")
+	providerDeviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+	requestKeyPattern       = regexp.MustCompile(`^[1-9][0-9]{0,8}$`)
 )
 
 type Config struct {
 	APIURL  string
 	UserID  string
 	UserKey string
-	Timeout time.Duration
 }
 
 func (cfg Config) Configured() bool {
-	return strings.TrimSpace(cfg.UserID) != "" && strings.TrimSpace(cfg.UserKey) != ""
+	_, _, _, ok := normalizeConfig(cfg)
+	return ok
+}
+
+type DispatchRequest struct {
+	ProviderDeviceID   string
+	Action             domain.ActionIdentifier
+	Payload            map[string]any
+	ProviderRequestKey string
+}
+
+type DispatchResult struct {
+	Outcome           domain.AttemptOutcome
+	ConfirmationLevel domain.ConfirmationLevel
+	EvidenceStatus    domain.EvidenceStatus
+	HTTPStatus        int
+	RequestSummary    map[string]any
+	ResponseSummary   map[string]any
+	ErrorDetail       string
 }
 
 type Client struct {
 	apiURL     string
 	userID     string
 	userKey    string
+	configured bool
 	httpClient *http.Client
-	now        func() time.Time
-}
-
-type Result struct {
-	HTTPRequest  map[string]any `json:"http_request"`
-	HTTPStatus   int            `json:"http_status"`
-	ResponseBody map[string]any `json:"response_body"`
 }
 
 func NewClient(cfg Config, httpClient *http.Client) *Client {
+	apiURL, userID, userKey, configured := normalizeConfig(cfg)
 	if httpClient == nil {
-		timeout := cfg.Timeout
-		if timeout <= 0 {
-			timeout = 10 * time.Second
-		}
-		httpClient = &http.Client{Timeout: timeout}
+		httpClient = &http.Client{}
 	}
-	apiURL := strings.TrimSpace(cfg.APIURL)
-	if apiURL == "" {
-		apiURL = DefaultAPIURL
+	clientCopy := *httpClient
+	clientCopy.Timeout = requestTimeout
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
 	return &Client{
-		apiURL:     apiURL,
-		userID:     strings.TrimSpace(cfg.UserID),
-		userKey:    strings.TrimSpace(cfg.UserKey),
-		httpClient: httpClient,
-		now:        time.Now,
+		apiURL: apiURL, userID: userID, userKey: userKey,
+		configured: configured, httpClient: &clientCopy,
 	}
 }
 
 func (c *Client) Configured() bool {
-	return c != nil && c.userID != "" && c.userKey != ""
+	return c != nil && c.configured
 }
 
-func (c *Client) SendCommand(ctx context.Context, providerDeviceID, commandType string, payload map[string]any) (Result, error) {
+func (c *Client) Dispatch(ctx context.Context, request DispatchRequest) DispatchResult {
 	if !c.Configured() {
-		return Result{}, ErrNotConfigured
+		return invalidRequestResult("WWTIOT Provider is not configured")
 	}
-	body, err := c.buildRequest(providerDeviceID, commandType, payload)
+	body, summary, err := c.buildRequest(request)
 	if err != nil {
-		return Result{}, err
+		return invalidRequestResult(err.Error())
 	}
-	result := Result{
-		HTTPRequest: map[string]any{
-			"method": "POST",
-			"url":    c.apiURL,
-			"body":   redactSensitiveFields(body),
-		},
-	}
-	payloadBytes, err := json.Marshal(body)
+	result := DispatchResult{RequestSummary: summary}
+	payload, err := json.Marshal(body)
 	if err != nil {
-		return result, fmt.Errorf("encode wwtiot request: %w", err)
+		return invalidRequestResult("encode WWTIOT request")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL, bytes.NewReader(payloadBytes))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL, bytes.NewReader(payload))
 	if err != nil {
-		return result, fmt.Errorf("create wwtiot request: %w", err)
+		return invalidRequestResult("create WWTIOT request")
 	}
-	req.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	var wroteRequest atomic.Bool
+	trace := &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { wroteRequest.Store(true) }}
+	httpRequest = httpRequest.WithContext(httptrace.WithClientTrace(httpRequest.Context(), trace))
+	response, err := c.httpClient.Do(httpRequest)
 	if err != nil {
-		return result, fmt.Errorf("send wwtiot request: %w", err)
-	}
-	defer resp.Body.Close()
-	result.HTTPStatus = resp.StatusCode
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return result, fmt.Errorf("read wwtiot response: %w", err)
-	}
-	if len(respBytes) > 0 {
-		if err := json.Unmarshal(respBytes, &result.ResponseBody); err != nil {
-			result.ResponseBody = map[string]any{"raw": string(respBytes)}
+		if wroteRequest.Load() {
+			return transportAfterSend(result, err)
 		}
-		result.ResponseBody = redactSensitiveFields(result.ResponseBody)
+		return transportBeforeSend(result, err)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return result, fmt.Errorf("wwtiot http status %d", resp.StatusCode)
+	defer response.Body.Close()
+	result.HTTPStatus = response.StatusCode
+
+	responseBytes, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if err != nil {
+		return transportAfterSend(result, err)
 	}
-	if value, ok := result.ResponseBody["result"].(string); ok && !strings.EqualFold(value, "ok") {
-		return result, fmt.Errorf("wwtiot result %q", value)
+	if len(responseBytes) > maxResponseBytes {
+		return invalidResponse(result, nil, "WWTIOT response exceeds 64 KiB")
 	}
-	return result, nil
+	decoded, decodeErr := decodeResponse(responseBytes)
+	result.ResponseSummary = responseSummary(decoded)
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return invalidResponse(result, decoded, fmt.Sprintf("WWTIOT HTTP status %d", response.StatusCode))
+	}
+	if decodeErr != nil {
+		return invalidResponse(result, decoded, "WWTIOT response is not a strict JSON object")
+	}
+	resultValue, ok := decoded["result"].(string)
+	if !ok {
+		return invalidResponse(result, decoded, "WWTIOT response result must be a string")
+	}
+	if resultValue != "ok" {
+		result.Outcome = domain.AttemptOutcomeProviderRejected
+		result.ConfirmationLevel = domain.ConfirmationTransportSent
+		result.EvidenceStatus = domain.EvidenceUnverified
+		result.ErrorDetail = summaryText(decoded["info"])
+		return result
+	}
+	if !c.matchesSuccessEcho(decoded, body) {
+		return invalidResponse(result, decoded, "WWTIOT success response echo is invalid")
+	}
+	result.Outcome = domain.AttemptOutcomeProviderAccepted
+	result.ConfirmationLevel = domain.ConfirmationProviderAccepted
+	result.EvidenceStatus = domain.EvidenceUnverified
+	return result
 }
 
-func (c *Client) buildRequest(providerDeviceID, commandType string, payload map[string]any) (map[string]any, error) {
-	deviceID := strings.TrimSpace(providerDeviceID)
-	if deviceID == "" {
-		return nil, fmt.Errorf("%w: provider_device_id is required", ErrUnsupportedCommand)
+func normalizeConfig(cfg Config) (string, string, string, bool) {
+	rawURL := strings.TrimSpace(cfg.APIURL)
+	parsed, err := url.Parse(rawURL)
+	validURL := err == nil && parsed.IsAbs() && parsed.Host != "" && parsed.Opaque == "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == "" && (parsed.Scheme == "http" || parsed.Scheme == "https")
+	userID := strings.TrimSpace(cfg.UserID)
+	validUserID := utf8.ValidString(userID) && len(userID) >= 1 && len(userID) <= 128
+	validUserKey := utf8.ValidString(cfg.UserKey) && len(cfg.UserKey) >= 1 && len(cfg.UserKey) <= 512
+	return rawURL, userID, cfg.UserKey, validURL && validUserID && validUserKey
+}
+
+func (c *Client) buildRequest(request DispatchRequest) (map[string]any, map[string]any, error) {
+	deviceID := strings.TrimSpace(request.ProviderDeviceID)
+	if !providerDeviceIDPattern.MatchString(deviceID) {
+		return nil, nil, fmt.Errorf("provider_device_id is invalid")
 	}
-	serial := c.now().UnixNano() / int64(time.Millisecond)
-	if serial < 0 {
-		serial = -serial
+	if !requestKeyPattern.MatchString(request.ProviderRequestKey) {
+		return nil, nil, fmt.Errorf("provider_request_key is invalid")
 	}
-	serial %= 1000000000
-	if serial == 0 {
-		serial = time.Now().Unix() % 100000
+	if len(request.Payload) != 0 {
+		return nil, nil, fmt.Errorf("smart-lock payload must be an empty object")
+	}
+	serial, err := strconv.ParseInt(request.ProviderRequestKey, 10, 64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("provider_request_key is invalid")
 	}
 
-	switch strings.TrimSpace(commandType) {
-	case "unlock":
-		return c.openCloseBody("open", deviceID, serial), nil
-	case "lock":
-		return c.openCloseBody("close", deviceID, serial), nil
-	case "query_status":
-		commandTypeValue := numericPayloadValue(payload, "type", 23)
-		value := numericPayloadValue(payload, "value", 4)
-		body := map[string]any{
-			"userid":    c.userID,
-			"cmd":       "control",
-			"type":      commandTypeValue,
-			"value":     value,
-			"deviceid":  deviceID,
-			"serialnum": serial,
+	var body map[string]any
+	switch request.Action {
+	case domain.ActionIdentifier("unlock"):
+		body = c.openCloseBody("open", deviceID, serial)
+	case domain.ActionIdentifier("lock"):
+		body = c.openCloseBody("close", deviceID, serial)
+	case domain.ActionIdentifier("query_status"):
+		body = map[string]any{
+			"userid": c.userID, "cmd": "control", "type": int64(23), "value": int64(4),
+			"deviceid": deviceID, "serialnum": serial,
 		}
-		body["sign"] = md5Sign(c.userID, "control", commandTypeValue, value, deviceID, serial, c.userKey)
-		return body, nil
+		body["sign"] = md5Sign(c.userID, "control", int64(23), int64(4), deviceID, serial, c.userKey)
 	default:
-		return nil, fmt.Errorf("%w: %s", ErrUnsupportedCommand, commandType)
+		return nil, nil, fmt.Errorf("unsupported smart-lock action")
 	}
+	return body, requestSummary(body), nil
 }
 
-func (c *Client) openCloseBody(cmd, deviceID string, serial int64) map[string]any {
+func (c *Client) openCloseBody(command, deviceID string, serial int64) map[string]any {
 	body := map[string]any{
-		"userid":    c.userID,
-		"cmd":       cmd,
-		"deviceid":  deviceID,
-		"serialnum": serial,
+		"userid": c.userID, "cmd": command, "deviceid": deviceID, "serialnum": serial,
 	}
-	body["sign"] = md5Sign(c.userID, cmd, deviceID, serial, c.userKey)
+	body["sign"] = md5Sign(c.userID, command, deviceID, serial, c.userKey)
 	return body
 }
 
-func numericPayloadValue(payload map[string]any, key string, fallback int64) int64 {
-	value, ok := payload[key]
-	if !ok {
-		return fallback
-	}
-	switch typed := value.(type) {
-	case int:
-		return int64(typed)
-	case int64:
-		return typed
-	case float64:
-		return int64(typed)
-	case json.Number:
-		parsed, err := typed.Int64()
-		if err == nil {
-			return parsed
+func (c *Client) matchesSuccessEcho(response, request map[string]any) bool {
+	for _, key := range []string{"userid", "deviceid", "cmd"} {
+		value, ok := response[key].(string)
+		if !ok || value != request[key] {
+			return false
 		}
 	}
-	return fallback
+	sign, ok := response["sign"].(string)
+	if !ok || sign == "" {
+		return false
+	}
+	if !sameInteger(response["serialnum"], request["serialnum"]) {
+		return false
+	}
+	if request["cmd"] == "control" {
+		return sameInteger(response["type"], request["type"]) && sameInteger(response["value"], request["value"])
+	}
+	return true
+}
+
+func decodeResponse(data []byte) (map[string]any, error) {
+	var decoded map[string]any
+	if err := httpjson.DecodeStrict(bytes.NewReader(data), &decoded); err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
+func sameInteger(left, right any) bool {
+	leftValue, leftOK := integerValue(left)
+	rightValue, rightOK := integerValue(right)
+	return leftOK && rightOK && leftValue == rightValue
+}
+
+func integerValue(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		if typed != float64(int64(typed)) {
+			return 0, false
+		}
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case string:
+		if typed == "" || strings.TrimSpace(typed) != typed {
+			return 0, false
+		}
+		parsed, err := strconv.ParseInt(typed, 10, 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func invalidRequestResult(detail string) DispatchResult {
+	return DispatchResult{
+		Outcome: domain.AttemptOutcomeInvalidRequest, ConfirmationLevel: domain.ConfirmationNone,
+		EvidenceStatus: domain.EvidenceNone, ErrorDetail: truncateText(detail, maxSummaryTextBytes),
+	}
+}
+
+func transportBeforeSend(result DispatchResult, err error) DispatchResult {
+	result.Outcome = domain.AttemptOutcomeTransportErrorBeforeSend
+	result.ConfirmationLevel = domain.ConfirmationNone
+	result.EvidenceStatus = domain.EvidenceNone
+	result.ErrorDetail = truncateText(err.Error(), maxSummaryTextBytes)
+	return result
+}
+
+func transportAfterSend(result DispatchResult, err error) DispatchResult {
+	result.Outcome = domain.AttemptOutcomeTransportErrorAfterSend
+	result.ConfirmationLevel = domain.ConfirmationTransportSent
+	result.EvidenceStatus = domain.EvidenceVerified
+	result.ErrorDetail = truncateText(err.Error(), maxSummaryTextBytes)
+	return result
+}
+
+func invalidResponse(result DispatchResult, response map[string]any, detail string) DispatchResult {
+	result.Outcome = domain.AttemptOutcomeInvalidResponse
+	result.ConfirmationLevel = domain.ConfirmationTransportSent
+	result.EvidenceStatus = domain.EvidenceVerified
+	result.ErrorDetail = truncateText(detail, maxSummaryTextBytes)
+	if result.ResponseSummary == nil {
+		result.ResponseSummary = responseSummary(response)
+	}
+	return result
+}
+
+func requestSummary(body map[string]any) map[string]any {
+	return allowlistSummary(body, []string{"cmd", "deviceid", "serialnum", "type", "value"})
+}
+
+func responseSummary(body map[string]any) map[string]any {
+	return allowlistSummary(body, []string{"result", "info", "cmd", "deviceid", "serialnum", "type", "value"})
+}
+
+func allowlistSummary(body map[string]any, keys []string) map[string]any {
+	if body == nil {
+		return nil
+	}
+	result := make(map[string]any, len(keys))
+	for _, key := range keys {
+		value, exists := body[key]
+		if !exists {
+			continue
+		}
+		if text, ok := value.(string); ok {
+			result[key] = truncateText(text, maxSummaryTextBytes)
+			continue
+		}
+		result[key] = value
+	}
+	return result
+}
+
+func summaryText(value any) string {
+	text, _ := value.(string)
+	return truncateText(text, maxSummaryTextBytes)
+}
+
+func truncateText(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	value = value[:limit]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func md5Sign(parts ...any) string {
@@ -200,28 +347,4 @@ func md5Sign(parts ...any) string {
 	}
 	sum := md5.Sum([]byte(builder.String()))
 	return hex.EncodeToString(sum[:])
-}
-
-func redactSensitiveFields(body map[string]any) map[string]any {
-	if body == nil {
-		return nil
-	}
-	redacted := make(map[string]any, len(body))
-	for key, value := range body {
-		if isSensitiveField(key) {
-			redacted[key] = "[redacted]"
-			continue
-		}
-		redacted[key] = value
-	}
-	return redacted
-}
-
-func isSensitiveField(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "sign", "userid", "user_id", "userkey", "user_key":
-		return true
-	default:
-		return false
-	}
 }

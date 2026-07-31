@@ -11,30 +11,6 @@ import (
 )
 
 func registerWebhookAuditRoutes(mux *http.ServeMux, service *webhookaudit.Service) {
-	mux.HandleFunc("/v1/projects/webhook-endpoints", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
-			return
-		}
-		var req webhookaudit.ProjectEndpoint
-		if !decodeWebhookJSON(w, r, &req) {
-			return
-		}
-		if err := service.UpsertProject(req); err != nil {
-			writeWebhookServiceError(w, err)
-			return
-		}
-		auditHTTP(service, r, webhookaudit.AuditRequest{
-			Action:       "project.webhook_configured",
-			ActorType:    "admin",
-			ProjectID:    req.ProjectID,
-			ResourceType: "project",
-			ResourceID:   req.ProjectID,
-			Metadata:     map[string]any{"has_webhook": req.WebhookURL != ""},
-		})
-		writeWebhookJSON(w, http.StatusOK, "ok", map[string]any{"ok": true})
-	})
-
 	mux.HandleFunc("/v1/events", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:

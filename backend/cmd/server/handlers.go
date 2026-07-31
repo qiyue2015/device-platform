@@ -8,7 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qiyue2015/device-platform/internal/deviceservice"
 	"github.com/qiyue2015/device-platform/internal/httpjson"
+	"github.com/qiyue2015/device-platform/internal/projectservice"
+	"github.com/qiyue2015/device-platform/internal/storage/repository"
 )
 
 type loginRequest struct {
@@ -28,7 +31,7 @@ func (a *app) handleReady(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodGet {
 		return newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
-	if !a.cfg.isInstalled() {
+	if !a.runtimeInstalled() {
 		writeOK(w, map[string]interface{}{
 			"status": "setup_required",
 			"checks": map[string]string{"setup": "required"},
@@ -46,20 +49,21 @@ func (a *app) handleLogin(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodPost {
 		return newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
-	if a.auth == nil {
+	auth := a.authenticationService()
+	if auth == nil {
 		return newAPIError(http.StatusServiceUnavailable, "setup_required", "system setup is required")
 	}
 	metadata := authMetadataFromRequest(r)
 	var req loginRequest
 	if err := httpjson.DecodeStrict(r.Body, &req); err != nil {
-		_, loginErr := a.auth.Login(r.Context(), "", "", metadata)
+		_, loginErr := auth.Login(r.Context(), "", "", metadata)
 		return mapLoginError(w, loginErr)
 	}
-	user, err := a.auth.Login(r.Context(), req.Email, req.Password, metadata)
+	user, err := auth.Login(r.Context(), req.Email, req.Password, metadata)
 	if err != nil {
 		return mapLoginError(w, err)
 	}
-	token, err := a.auth.IssueToken(user)
+	token, err := auth.IssueToken(user)
 	if err != nil {
 		return err
 	}
@@ -87,11 +91,15 @@ func (a *app) handleRefresh(w http.ResponseWriter, r *http.Request) error {
 	if !ok {
 		return newAPIError(http.StatusUnauthorized, "unauthorized", "login required")
 	}
-	token, err := a.auth.IssueToken(user)
+	auth := a.authenticationService()
+	if auth == nil {
+		return newAPIError(http.StatusUnauthorized, "unauthorized", "login required")
+	}
+	token, err := auth.IssueToken(user)
 	if err != nil {
 		return err
 	}
-	if err := a.auth.RecordRefresh(r.Context(), user, authMetadataFromRequest(r)); err != nil {
+	if err := auth.RecordRefresh(r.Context(), user, authMetadataFromRequest(r)); err != nil {
 		if errors.Is(err, errAuthDependencyUnavailable) {
 			return newAPIError(http.StatusServiceUnavailable, "auth_dependency_unavailable", "authentication service unavailable")
 		}
@@ -120,7 +128,11 @@ func (a *app) handleLogout(w http.ResponseWriter, r *http.Request) error {
 	if !ok {
 		return newAPIError(http.StatusUnauthorized, "unauthorized", "login required")
 	}
-	if err := a.auth.Logout(r.Context(), user, authMetadataFromRequest(r)); err != nil {
+	auth := a.authenticationService()
+	if auth == nil {
+		return newAPIError(http.StatusUnauthorized, "unauthorized", "login required")
+	}
+	if err := auth.Logout(r.Context(), user, authMetadataFromRequest(r)); err != nil {
 		if errors.Is(err, errAuthDependencyUnavailable) {
 			return newAPIError(http.StatusServiceUnavailable, "auth_dependency_unavailable", "authentication service unavailable")
 		}
@@ -171,7 +183,8 @@ func (a *app) handleSetupStatus(w http.ResponseWriter, r *http.Request) error {
 	if r.Method != http.MethodGet {
 		return newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
-	writeOK(w, getSetupStatus())
+	installed := a.runtimeInstalled()
+	writeOK(w, setupStatus{NeedsSetup: !installed, Installed: installed, Step: "system"})
 	return nil
 }
 
@@ -184,12 +197,15 @@ func (a *app) handleSetupTestDB(w http.ResponseWriter, r *http.Request) error {
 	}
 	var req databaseSetupRequest
 	if err := httpjson.DecodeStrict(r.Body, &req); err != nil {
-		return newAPIError(http.StatusBadRequest, "invalid_request", "invalid request")
+		return newAPIError(http.StatusBadRequest, "invalid_install_request", "invalid setup request")
+	}
+	if err := validateDatabaseURL(req.URL); err != nil {
+		return newAPIError(http.StatusBadRequest, "invalid_install_request", "invalid setup request")
 	}
 	if err := testDatabaseConnection(r.Context(), req.URL); err != nil {
-		return newAPIError(http.StatusBadRequest, "database_unavailable", err.Error())
+		return newAPIError(http.StatusBadRequest, "database_unavailable", "database is unavailable")
 	}
-	writeOK(w, map[string]string{"message": "database connection successful"})
+	writeOK(w, map[string]bool{"reachable": true})
 	return nil
 }
 
@@ -202,12 +218,15 @@ func (a *app) handleSetupTestRedis(w http.ResponseWriter, r *http.Request) error
 	}
 	var req redisSetupRequest
 	if err := httpjson.DecodeStrict(r.Body, &req); err != nil {
-		return newAPIError(http.StatusBadRequest, "invalid_request", "invalid request")
+		return newAPIError(http.StatusBadRequest, "invalid_install_request", "invalid setup request")
+	}
+	if _, err := redisOptionsFromURL(req.URL); err != nil {
+		return newAPIError(http.StatusBadRequest, "invalid_install_request", "invalid setup request")
 	}
 	if err := testRedisConnection(r.Context(), req.URL); err != nil {
-		return newAPIError(http.StatusBadRequest, "redis_unavailable", err.Error())
+		return newAPIError(http.StatusBadRequest, "redis_unavailable", "Redis is unavailable")
 	}
-	writeOK(w, map[string]string{"message": "redis connection successful"})
+	writeOK(w, map[string]bool{"reachable": true})
 	return nil
 }
 
@@ -217,25 +236,38 @@ func (a *app) handleSetupInstall(w http.ResponseWriter, r *http.Request) error {
 	}
 	var req setupInstallRequest
 	if err := httpjson.DecodeStrict(r.Body, &req); err != nil {
-		return newAPIError(http.StatusBadRequest, "invalid_request", "invalid request")
+		return newAPIError(http.StatusBadRequest, "invalid_install_request", "invalid installation request")
 	}
 	result, err := performInstall(r.Context(), req)
 	if err != nil {
 		return err
 	}
-	a.cfg.DatabaseURL = result.DatabaseURL
-	a.cfg.RedisURL = result.RedisURL
-	a.cfg.JWTSecret = result.JWTSecret
-	a.cfg.Installed = true
-	if a.db != nil {
-		_ = a.db.Close()
-	}
+	cfg := a.runtimeConfig()
+	cfg.DatabaseURL = result.DatabaseURL
+	cfg.RedisURL = result.RedisURL
+	cfg.JWTSecret = result.JWTSecret
+	cfg.WebhookSecretEncryptionKey = append([]byte(nil), result.WebhookSecretEncryptionKey...)
+	cfg.Installed = true
 	db, err := sql.Open("postgres", result.DatabaseURL)
 	if err != nil {
 		return err
 	}
-	a.db = db
-	a.auth = newDBAuthenticator(db, result.JWTSecret)
+	store := repository.NewPostgresStore(db)
+	projects, err := projectservice.New(store, projectservice.Config{
+		EncryptionKeys: map[int][]byte{1: result.WebhookSecretEncryptionKey}, ActiveEncryptionKeyVersion: 1,
+	})
+	if err != nil {
+		_ = db.Close()
+		return err
+	}
+	devices, err := deviceservice.New(store, deviceServiceConfig(cfg))
+	if err != nil {
+		_ = db.Close()
+		return err
+	}
+	if previousDB := a.replaceRuntime(cfg, db, newDBAuthenticator(db, result.JWTSecret), projects, devices); previousDB != nil && previousDB != db {
+		_ = previousDB.Close()
+	}
 	writeOK(w, map[string]bool{"installed": true})
 	return nil
 }

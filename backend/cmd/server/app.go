@@ -8,23 +8,31 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/qiyue2015/device-platform/internal/devicecore"
+	"github.com/qiyue2015/device-platform/internal/deviceservice"
+	"github.com/qiyue2015/device-platform/internal/domain"
 	"github.com/qiyue2015/device-platform/internal/gateway"
 	"github.com/qiyue2015/device-platform/internal/httpapi"
 	"github.com/qiyue2015/device-platform/internal/httpjson"
+	"github.com/qiyue2015/device-platform/internal/projectservice"
 	"github.com/qiyue2015/device-platform/internal/storage"
+	"github.com/qiyue2015/device-platform/internal/storage/repository"
 	"github.com/qiyue2015/device-platform/internal/webhookaudit"
 )
 
 type app struct {
+	runtimeMu      sync.RWMutex
 	cfg            config
 	logger         *slog.Logger
 	db             *sql.DB
 	auth           authenticator
 	deviceService  *devicecore.Service
 	commandRouter  httpapi.DeviceService
+	projects       httpapi.ProjectService
+	devices        httpapi.DeviceResourceService
 	cloudProviders cloudProviderRegistry
 	gateway        *gateway.Service
 	webhooks       *webhookaudit.Service
@@ -33,9 +41,12 @@ type app struct {
 type handlerFunc func(http.ResponseWriter, *http.Request) error
 
 func newApp(cfg config, logger *slog.Logger) (*app, error) {
+	cfg.Installed = cfg.isInstalled()
 	var db *sql.DB
 	var auth authenticator
-	if cfg.isInstalled() {
+	var projects httpapi.ProjectService
+	var devices httpapi.DeviceResourceService
+	if cfg.Installed {
 		var err error
 		db, err = sql.Open("postgres", cfg.DatabaseURL)
 		if err != nil {
@@ -46,14 +57,30 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 			return nil, err
 		}
 		auth = newDBAuthenticator(db, cfg.JWTSecret)
+		store := repository.NewPostgresStore(db)
+		projects, err = projectservice.New(store, projectservice.Config{
+			EncryptionKeys: map[int][]byte{1: cfg.WebhookSecretEncryptionKey}, ActiveEncryptionKeyVersion: 1,
+		})
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("initialize Project service: %w", err)
+		}
+		devices, err = deviceservice.New(store, deviceServiceConfig(cfg))
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("initialize Device service: %w", err)
+		}
 	}
 	service := devicecore.NewService()
+	if projects == nil {
+		projects = httpapi.NewMemoryProjectService(service)
+	}
 	simulatorGateway := gateway.NewSimulatorGateway(gateway.ModeConfig{})
 	gatewayService := gateway.NewService(simulatorGateway, gateway.ServiceConfig{})
 	webhookService := webhookaudit.NewService(http.DefaultClient)
 	cloudProviders := newCloudProviderRegistry(cfg)
 	startWebhookWorker(context.Background(), webhookService)
-	return newAppWithServices(cfg, logger, db, auth, service, gatewayService, webhookService, cloudProviders), nil
+	return newAppWithServices(cfg, logger, db, auth, service, gatewayService, webhookService, cloudProviders, projects, devices), nil
 }
 
 func newAppWithDeviceService(cfg config, logger *slog.Logger, service *devicecore.Service) *app {
@@ -66,10 +93,11 @@ func newAppWithDeviceService(cfg config, logger *slog.Logger, service *devicecor
 		secret = defaultMemoryJWTSecret
 	}
 	auth, _ := newMemoryAuthenticator("admin@test.local", "Test Admin", "test-admin-password", secret)
-	return newAppWithServices(cfg, logger, nil, auth, service, gatewayService, webhookService, cloudProviders)
+	application := newAppWithServices(cfg, logger, nil, auth, service, gatewayService, webhookService, cloudProviders, httpapi.NewMemoryProjectService(service), nil)
+	return application
 }
 
-func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authenticator, service *devicecore.Service, gatewayService *gateway.Service, webhookService *webhookaudit.Service, cloudProviders cloudProviderRegistry) *app {
+func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authenticator, service *devicecore.Service, gatewayService *gateway.Service, webhookService *webhookaudit.Service, cloudProviders cloudProviderRegistry, projects httpapi.ProjectService, devices httpapi.DeviceResourceService) *app {
 	commandRouter := httpapi.DeviceService(service)
 	if len(cloudProviders.List()) > 0 {
 		commandRouter = newCommandDispatchService(service, cloudProviders)
@@ -81,6 +109,8 @@ func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authen
 		auth:           auth,
 		deviceService:  service,
 		commandRouter:  commandRouter,
+		projects:       projects,
+		devices:        devices,
 		cloudProviders: cloudProviders,
 		gateway:        gatewayService,
 		webhooks:       webhookService,
@@ -103,17 +133,37 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("/v1/auth/me", a.handle(a.requireBearer(a.handleMe)))
 	mux.HandleFunc("/v1/auth/menu", a.handle(a.requireBearer(a.handleMenu)))
 	mux.HandleFunc("/v1/cloud-providers", a.handle(a.requireBearer(a.handleCloudProviders)))
+	mux.HandleFunc("/v1/provider-callbacks/", a.handle(a.handleProviderCallback))
 
 	mux.HandleFunc("/v1/admin/", a.handle(a.requireBearer(a.handleAdminPlaceholder)))
-	openRouter := httpapi.NewOpenRouterWithHooks(a.commandRouter, httpapi.RouterHooks{
+	projectBridge := appProjectService{app: a}
+	deviceBridge := appDeviceService{app: a}
+	routerHooks := httpapi.RouterHooks{
 		OnCommandCreated: a.recordCommandCreated,
+		ProjectMetadata:  a.projectRequestMetadata,
+		DeviceMetadata:   a.deviceRequestMetadata,
+	}
+	legacyOpenRouter := httpapi.NewOpenRouterWithResourceServices(a.commandRouter, projectBridge, nil, routerHooks)
+	resourceOpenRouter := httpapi.NewOpenRouterWithResourceServices(a.commandRouter, projectBridge, deviceBridge, routerHooks)
+	openRouter := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a.deviceResourceService() == nil {
+			legacyOpenRouter.ServeHTTP(w, r)
+			return
+		}
+		resourceOpenRouter.ServeHTTP(w, r)
 	})
 	mux.Handle("/v1/open/", openRouter)
 	protectedV1 := http.NewServeMux()
 	registerWebhookAuditRoutes(protectedV1, a.webhooks)
 	gateway.NewHandler(a.gateway).RegisterSimulator(protectedV1)
-	protectedV1.Handle("/v1/", httpapi.NewRouterWithHooks(a.commandRouter, httpapi.RouterHooks{
-		OnCommandCreated: a.recordCommandCreated,
+	legacyV1Router := httpapi.NewRouterWithResourceServices(a.commandRouter, projectBridge, nil, routerHooks)
+	resourceV1Router := httpapi.NewRouterWithResourceServices(a.commandRouter, projectBridge, deviceBridge, routerHooks)
+	protectedV1.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a.deviceResourceService() == nil {
+			legacyV1Router.ServeHTTP(w, r)
+			return
+		}
+		resourceV1Router.ServeHTTP(w, r)
 	}))
 	mux.Handle("/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/v1/open/") {
@@ -124,6 +174,80 @@ func (a *app) routes() http.Handler {
 	}))
 
 	return httpjson.WithRequestID(withRequestLogging(a.logger, withCORS(mux)))
+}
+
+func (a *app) runtimeConfig() config {
+	a.runtimeMu.RLock()
+	defer a.runtimeMu.RUnlock()
+	return a.cfg
+}
+
+func (a *app) runtimeInstalled() bool {
+	a.runtimeMu.RLock()
+	defer a.runtimeMu.RUnlock()
+	return a.cfg.Installed
+}
+
+func (a *app) authenticationService() authenticator {
+	a.runtimeMu.RLock()
+	defer a.runtimeMu.RUnlock()
+	return a.auth
+}
+
+func (a *app) replaceRuntime(cfg config, db *sql.DB, auth authenticator, projects httpapi.ProjectService, devices httpapi.DeviceResourceService) *sql.DB {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	previousDB := a.db
+	a.cfg = cfg
+	a.db = db
+	a.auth = auth
+	a.projects = projects
+	a.devices = devices
+	return previousDB
+}
+
+func (a *app) projectService() httpapi.ProjectService {
+	a.runtimeMu.RLock()
+	defer a.runtimeMu.RUnlock()
+	return a.projects
+}
+
+func (a *app) setProjectService(service httpapi.ProjectService) {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	a.projects = service
+}
+
+func (a *app) deviceResourceService() httpapi.DeviceResourceService {
+	a.runtimeMu.RLock()
+	defer a.runtimeMu.RUnlock()
+	return a.devices
+}
+
+func (a *app) setDeviceResourceService(service httpapi.DeviceResourceService) {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	a.devices = service
+}
+
+func (a *app) projectRequestMetadata(r *http.Request) projectservice.RequestMetadata {
+	user, _ := userFromRequest(r)
+	return projectservice.RequestMetadata{
+		ActorType: domain.ActorTypeAdmin, ActorID: user.ID, IPAddress: clientIP(r), RequestID: httpjson.RequestID(r.Context()),
+	}
+}
+
+func (a *app) deviceRequestMetadata(r *http.Request) deviceservice.RequestMetadata {
+	user, _ := userFromRequest(r)
+	return deviceservice.RequestMetadata{
+		ActorType: domain.ActorTypeAdmin, ActorID: user.ID, IPAddress: clientIP(r), RequestID: httpjson.RequestID(r.Context()),
+	}
+}
+
+func deviceServiceConfig(cfg config) deviceservice.Config {
+	return deviceservice.Config{
+		WWTIOTEndpoint: cfg.WWTIOTAPIURL, WWTIOTUserID: cfg.WWTIOTUserID, WWTIOTUserKey: cfg.WWTIOTUserKey,
+	}
 }
 
 func (a *app) recordCommandCreated(r *http.Request, command devicecore.Command) {
@@ -201,10 +325,11 @@ func (a *app) requireBearer(next handlerFunc) handlerFunc {
 		if !ok {
 			token = ""
 		}
-		if a.auth == nil || token == "" {
+		auth := a.authenticationService()
+		if auth == nil || token == "" {
 			return newAPIError(http.StatusUnauthorized, "unauthorized", "login required")
 		}
-		user, err := a.auth.ParseToken(r.Context(), token)
+		user, err := auth.ParseToken(r.Context(), token)
 		if err != nil {
 			if errors.Is(err, errAuthDependencyUnavailable) {
 				return newAPIError(http.StatusServiceUnavailable, "auth_dependency_unavailable", "authentication service unavailable")

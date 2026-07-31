@@ -100,7 +100,7 @@ func TestRuntimeAndInstallRejectDriftedFrozenProfile(t *testing.T) {
 		Server: serverSetupRequest{Addr: ":18080", LogLevel: "info"},
 	})
 	var installErr apiError
-	if !errors.As(err, &installErr) || installErr.code != "contract_validation_failed" || !strings.Contains(installErr.message, "profile hash drift") {
+	if !errors.As(err, &installErr) || installErr.status != 500 || installErr.code != "migration_failed" || installErr.message != "database contract validation failed" {
 		t.Fatalf("performInstall must fail closed on profile drift, got %v", err)
 	}
 	for _, path := range []string{filepath.Join(tempDir, ".env"), filepath.Join(tempDir, ".installed")} {

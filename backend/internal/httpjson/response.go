@@ -17,9 +17,9 @@ type Response struct {
 	Status    int    `json:"status"`
 	Message   string `json:"message"`
 	Code      int    `json:"code"`
-	ErrorCode string `json:"error_code,omitempty"`
+	ErrorCode string `json:"error_code"`
 	Data      any    `json:"data"`
-	Meta      any    `json:"meta,omitempty"`
+	Meta      any    `json:"meta"`
 	RequestID string `json:"request_id"`
 }
 
@@ -32,13 +32,17 @@ func Created(w http.ResponseWriter, data any) {
 }
 
 func Write(w http.ResponseWriter, status int, message string, data any) {
+	WriteWithMeta(w, status, message, data, nullValue{})
+}
+
+func WriteWithMeta(w http.ResponseWriter, status int, message string, data, meta any) {
 	writeEnvelope(w, status, Response{
 		Success: true,
 		Status:  status,
 		Message: message,
 		Code:    0,
 		Data:    data,
-		Meta:    nullValue{},
+		Meta:    meta,
 	})
 }
 
@@ -53,6 +57,7 @@ func Error(w http.ResponseWriter, status int, errorCode, message string) {
 		Code:      status,
 		ErrorCode: errorCode,
 		Data:      nil,
+		Meta:      nullValue{},
 	})
 }
 
