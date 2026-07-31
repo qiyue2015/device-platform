@@ -5,7 +5,9 @@ Thumbs.db
 # Local agent/runtime state
 .omx/
 .installed
+.installed.lock
 backend/.installed
+backend/.installed.lock
 data/
 backend/data/
 
