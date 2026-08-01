@@ -90,6 +90,7 @@
         </template>
         <template #provider="{ record }">
           <div class="dp-cell-primary">{{ record.provider_code }}</div>
+          <div class="dp-cell-secondary dp-monospace">{{ record.provider_profile }}</div>
           <div class="dp-cell-secondary dp-monospace">{{
             record.provider_device_id || t('devicePlatform.common.notConfigured')
           }}</div>
@@ -153,16 +154,29 @@
             </a-option>
           </a-select>
         </a-form-item>
+        <a-form-item :label="t('devicePlatform.devices.form.providerProfile')">
+          <a-select v-model="deviceForm.provider_profile" data-testid="device-provider-profile">
+            <a-option v-for="profile in deviceAccessPreset?.profiles || []" :key="profile" :value="profile">
+              {{ profile }}
+            </a-option>
+          </a-select>
+        </a-form-item>
         <a-form-item :label="t('devicePlatform.devices.form.transportAdapter')">
           <a-input
             :model-value="deviceAccessPreset ? `${deviceAccessPreset.transport_protocol} / ${deviceAccessPreset.adapter}` : '-'"
             readonly
           />
         </a-form-item>
-        <a-form-item v-if="deviceForm.provider_code === 'wwtiot'" :label="t('devicePlatform.devices.form.providerDeviceId')">
+        <a-form-item v-if="deviceForm.provider_code !== 'simulator'" :label="t('devicePlatform.devices.form.providerDeviceId')">
           <a-input
             v-model="deviceForm.provider_device_id"
-            :placeholder="t('devicePlatform.devices.form.providerDeviceId.cloudPlaceholder')"
+            :placeholder="
+              t(
+                deviceForm.provider_code === 'omni'
+                  ? 'devicePlatform.devices.form.providerDeviceId.omniPlaceholder'
+                  : 'devicePlatform.devices.form.providerDeviceId.cloudPlaceholder'
+              )
+            "
             data-testid="device-provider-device-id"
           />
         </a-form-item>
@@ -232,6 +246,7 @@
     name: '',
     device_type_code: 'smart-lock',
     provider_code: 'simulator',
+    provider_profile: 'simulator-v1',
     provider_device_id: '',
   });
   const editForm = reactive({ name: '', lifecycle_status: 'active' });
@@ -345,7 +360,9 @@
   watch(
     () => deviceForm.provider_code,
     (providerCode) => {
-      if (providerCode !== 'wwtiot') deviceForm.provider_device_id = '';
+      const provider = providers.value.find((item) => item.code === providerCode);
+      deviceForm.provider_profile = provider?.profiles[0] || '';
+      if (providerCode === 'simulator') deviceForm.provider_device_id = '';
     }
   );
 
@@ -382,8 +399,18 @@
       done(false);
       return;
     }
-    if (deviceForm.provider_code === 'wwtiot' && !deviceForm.provider_device_id.trim()) {
+    if (!deviceForm.provider_profile) {
+      Message.warning(t('devicePlatform.devices.message.providerProfileRequired'));
+      done(false);
+      return;
+    }
+    if (deviceForm.provider_code !== 'simulator' && !deviceForm.provider_device_id.trim()) {
       Message.warning(t('devicePlatform.devices.message.providerDeviceRequired'));
+      done(false);
+      return;
+    }
+    if (deviceForm.provider_code === 'omni' && !/^\d{15}$/.test(deviceForm.provider_device_id.trim())) {
+      Message.warning(t('devicePlatform.devices.message.omniIMEIRequired'));
       done(false);
       return;
     }
@@ -394,7 +421,8 @@
         name: deviceForm.name.trim(),
         device_type_code: deviceForm.device_type_code,
         provider_code: deviceForm.provider_code,
-        ...(deviceForm.provider_code === 'wwtiot' ? { provider_device_id: deviceForm.provider_device_id.trim() } : {}),
+        provider_profile: deviceForm.provider_profile,
+        ...(deviceForm.provider_code !== 'simulator' ? { provider_device_id: deviceForm.provider_device_id.trim() } : {}),
       });
       deviceForm.name = '';
       deviceForm.provider_device_id = '';

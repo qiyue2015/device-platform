@@ -141,6 +141,9 @@
           <a-descriptions-item :label="t('devicePlatform.commands.columns.policy')">
             {{ commandDetail.delivery_policy }}
           </a-descriptions-item>
+          <a-descriptions-item :label="t('devicePlatform.commands.detail.provider')">
+            {{ commandDetail.provider_code }} / <span class="dp-monospace">{{ commandDetail.provider_profile }}</span>
+          </a-descriptions-item>
           <a-descriptions-item :label="t('devicePlatform.commands.detail.confirmation')">
             {{ commandDetail.confirmation_level }} / {{ commandDetail.evidence_status }}
           </a-descriptions-item>
@@ -151,7 +154,11 @@
         </a-descriptions>
         <h3 class="dp-panel-title">{{ t('devicePlatform.commands.detail.timeline') }}</h3>
         <pre class="dp-json">{{
-          JSON.stringify({ attempts: commandDetail.attempts, events: commandDetail.events }, null, 2)
+          JSON.stringify(
+            { attempts: commandDetail.attempts, results: commandDetail.results, events: commandDetail.events },
+            null,
+            2
+          )
         }}</pre>
       </template>
     </a-drawer>
@@ -206,7 +213,7 @@
   const deviceOptions = reactive({ page: 1, total: 0, loaded: 0, loading: false, request: 0 });
 
   const activeStatuses = ['queued', 'sent', 'acked'];
-  const failedStatuses = ['failed', 'timeout', 'cancelled', 'unknown'];
+  const failedStatuses = ['failed', 'timeout', 'cancelled'];
   const activeCount = computed(() => commands.value.filter((command) => activeStatuses.includes(command.status)).length);
   const successCount = computed(() => commands.value.filter((command) => command.status === 'success').length);
   const failedCount = computed(() => commands.value.filter((command) => failedStatuses.includes(command.status)).length);

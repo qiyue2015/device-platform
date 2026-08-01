@@ -42,7 +42,7 @@
         :data="providers"
         :columns="providerColumns"
         :pagination="providerPagination"
-        :scroll="{ x: 940 }"
+        :scroll="{ x: 1160 }"
         @page-change="onProviderPageChange"
         @page-size-change="onProviderPageSizeChange"
       >
@@ -53,6 +53,11 @@
         <template #transport="{ record }">
           <div class="dp-cell-primary">{{ record.transport_protocol }}</div>
           <div class="dp-cell-secondary dp-monospace">{{ record.adapter }}</div>
+        </template>
+        <template #profiles="{ record }">
+          <div class="dp-tag-list">
+            <a-tag v-for="profile in record.profiles" :key="profile">{{ profile }}</a-tag>
+          </div>
         </template>
         <template #integrationStatus="{ record }">
           <a-tag :color="providerStatusColor(record.integration_status)">
@@ -193,6 +198,7 @@
     { title: t('devicePlatform.providers.columns.provider'), slotName: 'provider', width: 230 },
     { title: t('devicePlatform.common.access'), dataIndex: 'access_type', width: 160 },
     { title: t('devicePlatform.providers.columns.transport'), slotName: 'transport', width: 250 },
+    { title: t('devicePlatform.providers.columns.profiles'), slotName: 'profiles', width: 320 },
     { title: t('devicePlatform.providers.columns.integrationStatus'), slotName: 'integrationStatus', width: 250 },
   ]);
   const deviceTypeColumns = computed(() => [

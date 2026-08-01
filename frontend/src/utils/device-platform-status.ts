@@ -20,7 +20,6 @@ export const commandStatusMap: Record<string, BusinessStatusMeta> = {
   failed: { label: 'failed', color: 'red' },
   timeout: { label: 'timeout', color: 'red' },
   cancelled: { label: 'cancelled', color: 'gray' },
-  unknown: { label: 'unknown', color: 'orange' },
 };
 
 export const webhookStatusMap: Record<string, BusinessStatusMeta> = {

@@ -60,6 +60,7 @@ export interface CloudProviderRecord {
   access_type: string;
   transport_protocol: string;
   adapter: string;
+  profiles: string[];
   integration_status: 'unconfigured' | 'configured_unverified' | 'verified';
 }
 
@@ -76,6 +77,7 @@ export interface DeviceRecord {
   device_type_code: string;
   name: string;
   provider_code: string;
+  provider_profile: string;
   provider_device_id: string;
   access_type: string;
   transport_protocol: string;
@@ -92,6 +94,8 @@ export interface CommandRecord {
   id: string;
   project_id: string;
   device_id: string;
+  provider_code: string;
+  provider_profile: string;
   command_type: string;
   payload: Record<string, unknown>;
   device_type_revision: number;
@@ -122,11 +126,23 @@ export interface CommandAttemptRecord {
   evidence_status: string;
   request_summary?: Record<string, unknown>;
   response_summary?: Record<string, unknown>;
-  error_code: string | null;
+  reason_code: string | null;
   error_detail: string | null;
   claimed_at: string;
   dispatching_at: string | null;
   completed_at: string | null;
+}
+
+export interface CommandResultRecord {
+  result_id: string;
+  attempt_id: string | null;
+  source: string;
+  outcome: string;
+  confirmation_level: string;
+  evidence_status: string;
+  reported_at: string | null;
+  observed_at: string;
+  late: boolean;
 }
 
 export interface EventRecord {
@@ -143,6 +159,7 @@ export interface EventRecord {
 
 export interface CommandDetail extends CommandRecord {
   attempts: CommandAttemptRecord[];
+  results: CommandResultRecord[];
   events: EventRecord[];
 }
 
@@ -245,6 +262,7 @@ export function createDevice(data: {
   name: string;
   device_type_code: string;
   provider_code: string;
+  provider_profile: string;
   provider_device_id?: string;
 }) {
   return axios.post<DeviceRecord>('/v1/devices', data);
