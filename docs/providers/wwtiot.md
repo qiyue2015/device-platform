@@ -1,145 +1,117 @@
 ---
 title: WWTIOT Provider 合同
-created: 2026-07-31
-updated: 2026-07-31
+updated: 2026-08-01
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.4
+contract_revision: 2026-08-01
 ---
 
 # WWTIOT Provider 合同
 
-本文记录当前 WWTIOT 厂商资料、适配器代码事实、真实设备验收事实、confirmation level 和 Unknown。它从属于[平台边界合同](../platform-boundary-contract.md)、[当前目标合同](../platform-target-contract.md)、[领域模型合同](../domain-model-contract.md)、通用 [API 合同](../api-contract.md)与 [smart-lock Device Type 合同](../device-types/smart-lock.md)。厂商资料、代码实现和真实设备结果是三个独立证据层级，任一层都不能代替另一层。
+本文只定义 WWTIOT 厂商协议事实、`smart-lock` action 映射、adapter 必须遵守的证据上限和厂商 Unknown。它从属于 [Platform Target](../platform-target-contract.md)、[Domain Model](../domain-model-contract.md)、[API](../api-contract.md)与 [smart-lock Device Type](../device-types/smart-lock.md)，不得重定义 Core 状态机、设备能力或业务验收门槛。
 
-## 证据等级与资料依据
+## 证据边界
 
-本文使用以下证据等级：
+| 证据层级         | 能证明                                 | 不能证明                               |
+| ---------------- | -------------------------------------- | -------------------------------------- |
+| 厂商资料         | 文档中写明的字段、签名顺序和示例       | 当前账号配置、线上可用性或真实设备行为 |
+| adapter 合同测试 | 平台按本合同构造、校验和分类消息       | WWTIOT 服务接受、设备收到或执行        |
+| 受控真实设备验收 | 指定凭据、设备和时间窗口内观测到的行为 | 未覆盖设备、环境或长期稳定性           |
 
-- **厂商资料事实**：外部归档的厂商资料直接写明的接口、字段或示例；它不证明当前生产配置或真实设备行为。
-- **代码事实**：当前仓库实际实现或本地自动化测试能够证明的行为；它不自动成为厂商合同。
-- **真实设备验收事实**：在受控凭据、指定设备和可观测结果下取得的端到端证据。没有验收记录时必须标为 Unknown。
+## 厂商资料事实
 
-本次核对使用两份只读外部资料，不将原始 PDF 复制到仓库：
+本合同依据两份外部归档资料：《平台转发协议 V1.1》（2020，SHA-256 `5937e0b4d68961bd07346139381c237050286e5cc8054815c276be8a5a5edcfa`）和《物网通平台转发协议 V2》（2021，SHA-256 `bb88f399c6010be5f1ab9eaa17eb36b7b680e5ef0787755f5e64b58bd689f718`）。V2 页面将相关接口标为“开发中”，因此资料版本和生产可用性仍是 Unknown。
 
-| 资料                                    | 厂商资料事实                                                                                                    | 资料局限                                                                               |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| 《平台转发协议 V1.1》（6 页，2020）     | 第 2 页定义 HTTP、签名和开锁示例：`cmd=control`、`type=1`、`value=0`；第 3-5 页给出设备信息和下发指令应答格式。 | 历史版本，只用于解释版本差异，不作为当前实现映射。                                     |
-| 《物网通平台转发协议 V2》（6 页，2021） | 第 1-3 页定义开锁、关锁及同步响应；第 3-4 页定义设备信息回调；第 5-6 页定义获取锁状态请求及同步响应。           | 文档页面将四项接口状态均标为“开发中”；生产可用性、当前账号配置与真实设备行为仍需验收。 |
+## Provider 注册与配置
 
-本次只读核验文件 SHA-256：V1.1 为 `5937e0b4d68961bd07346139381c237050286e5cc8054815c276be8a5a5edcfa`，V2 为 `bb88f399c6010be5f1ab9eaa17eb36b7b680e5ef0787755f5e64b58bd689f718`。hash 只用于确认本次审阅的资料版本，不把外部附件纳入仓库或产品运行依赖。
+| 字段                 | 合同值                                 |
+| -------------------- | -------------------------------------- |
+| `code`               | `wwtiot`                               |
+| `name`               | `WWTIOT`                               |
+| `access_type`        | `cloud_api`                            |
+| `transport_protocol` | `http`                                 |
+| `adapter`            | `wwtiot_cloud_api`                     |
+| 调用方式             | 持久 Command Worker 发起单次 HTTP 下行 |
 
-当前适配器明确以 **V2 映射**为准。V1.1 与 V2 的命令格式不同，不能混用，也不能用 V1.1 的 `control/type=1/value=0` 解释当前开锁实现。
+部署提供 `WWTIOT_API_URL`、`WWTIOT_USER_ID`、`WWTIOT_USER_KEY`。URL 必须是无 userinfo、query、fragment 的 absolute HTTP/HTTPS URL；UserID trim 后为 `1..128` UTF-8 byte，UserKey 为 `1..512` byte 且不 trim。任一配置缺失或非法时 Provider 为 `unconfigured`，不得发请求。
 
-## Provider 元数据与配置
+资料给出的默认 URL 是 `http://gps.wwtiot.com/api/`。它是厂商资料事实，不是生产安全批准；未确认 HTTPS 或等价响应真实性机制前，响应正文的 evidence status 最高为 `unverified`。
 
-| 项目                 | 冻结值                           |
-| -------------------- | -------------------------------- |
-| code                 | `wwtiot`                         |
-| name                 | `WWTIOT`                         |
-| `access_type`        | `cloud_api`                      |
-| `transport_protocol` | `http`                           |
-| adapter              | `wwtiot_cloud_api`               |
-| 调用方式             | 异步 worker 发起的单次 HTTP 下行 |
+## V2 下行映射
 
-Provider code/name 固定为 `wwtiot`/`WWTIOT`，Provider request timeout 固定来自 `smart-lock` revision 2 的 10 秒；部署变量不能覆盖这些合同值。部署只提供 `WWTIOT_API_URL`、`WWTIOT_USER_ID` 与 `WWTIOT_USER_KEY`，本文不记录真实值或 secret。URL 必须是无 userinfo、query 或 fragment 的 absolute HTTP/HTTPS URL，UserID trim 后为 `1..128` UTF-8 byte，UserKey 为 `1..512` byte 且不 trim。任一缺失或不合法时 Provider 为 `unconfigured`，dispatcher 不发请求。
+V2 是唯一采用的 adapter 版本；V1.1 仅用于识别历史差异，不能作为 fallback。
 
-默认 API URL 为厂商资料给出的 `http://gps.wwtiot.com/api/`。明文 HTTP 的生产可接受性与厂商是否支持 HTTPS 为 Unknown；部署可以通过 `WWTIOT_API_URL` 选择已确认的 absolute HTTP/HTTPS endpoint，但不能据此推断 endpoint 身份已验证。
+| `smart-lock` action | V2 请求                       | 签名字段顺序                                                   |
+| ------------------- | ----------------------------- | -------------------------------------------------------------- |
+| `unlock`            | `cmd=open`                    | `userid + cmd + deviceid + serialnum + UserKey`                |
+| `lock`              | `cmd=close`                   | `userid + cmd + deviceid + serialnum + UserKey`                |
+| `query_status`      | `cmd=control&type=23&value=4` | `userid + cmd + type + value + deviceid + serialnum + UserKey` |
 
-## 厂商资料中的版本差异
+签名是上述 UTF-8 字节无分隔拼接后的 MD5。请求还携带 `userid`、`deviceid`、`serialnum` 和 `sign`；API payload 不得覆盖任何 Provider 字段。
 
-| smart-lock action | V1.1 厂商资料事实                          | V2 厂商资料事实                                                             | 当前采用版本 |
-| ----------------- | ------------------------------------------ | --------------------------------------------------------------------------- | ------------ |
-| `unlock`          | `cmd=control`、`type=1`、`value=0`。       | `cmd=open`。                                                                | V2           |
-| `lock`            | 未在已核对的下行指令章节给出独立请求定义。 | `cmd=close`。                                                               | V2           |
-| `query_status`    | 未在已核对的下行指令章节给出独立请求定义。 | `cmd=control`、`type=23`、`value=4`；资料说明设备随后通过回调上报当前状态。 | V2           |
+`serialnum` 是 Attempt 的持久 Provider request key。同一 Attempt 恢复时必须复用，不得生成第二个外部效果；平台生成正十进制且不超过 9 位，并在 Provider 范围内强制唯一。该范围是平台保守约束，不声称是厂商限制。
 
-两版资料都要求按文档字段顺序拼接字段值和 `UserKey` 后计算 UTF-8 字节流的 MD5。V2 的开锁/关锁请求字段顺序为 `userid + cmd + deviceid + serialnum + UserKey`，获取锁状态为 `userid + cmd + type + value + deviceid + serialnum + UserKey`。
+UserID、UserKey、完整 sign、Provider endpoint 和原始 transport error 不得进入普通日志、API、Event 或 Audit。请求/响应诊断只保存 adapter allowlist 后的脱敏摘要。
 
-V2 同步成功响应示例包含 `result=ok` 和 `info="cmd send ok"`。这直接支持“厂商平台接受或发送命令”的解释，不足以单独证明设备已经执行。V2 还描述了包含 `cmd`、`lockstatus`、电量、位置和时间等字段的设备信息回调；其 callback 示例 `serialnum=0`，资料没有定义它与下行 `serialnum` 的关联规则，也没有把该 callback 定义为某条命令的终局结果。
+## 下行传输约束
 
-## V2 adapter action 映射
+- Provider request timeout 来自 `smart-lock` profile，当前为 10 秒；禁止自动 redirect 和自动重试。
+- 响应最多 64 KiB，必须是单个无重复 key、无尾随值的 JSON object；Attempt 摘要最多 4 KiB。
+- transport 是否已经写出必须由 `WroteRequest` 或等价可验证信号确定。无法证明未写出时一律按“可能已发送”处理。
+- `unlock`/`lock` 的安全策略、在线门槛和观察期限只由 Device Type 合同定义；本合同不能以厂商偏好覆盖。
 
-| smart-lock action | adapter 请求映射                    | 与厂商资料的关系                  |
-| ----------------- | ----------------------------------- | --------------------------------- |
-| `unlock`          | `cmd=open`                          | 与 V2 一致，不采用 V1.1 映射。    |
-| `lock`            | `cmd=close`                         | 与 V2 一致。                      |
-| `query_status`    | `cmd=control`、`type=23`、`value=4` | 与 V2 一致；不允许 payload 覆盖。 |
+## 同步响应映射
 
-请求还包含 `userid`、`deviceid`、持久化的 `serialnum` 和 `sign`。adapter 按上述 V2 字段顺序无分隔拼接后执行 MD5；`serialnum` 的唯一性、防重放要求、有效范围和真实服务端校验行为仍为 Unknown。
+V2 的 `result=ok` / `info="cmd send ok"` 最多证明 Provider 接受或声称已发送命令，不证明 Device ACK 或 final result。
 
-## 响应与 confirmation level
+| 观测                                | Attempt outcome                               | confirmation / evidence          | Command 影响                               |
+| ----------------------------------- | --------------------------------------------- | -------------------------------- | ------------------------------------------ |
+| 构造请求前发现配置不可用            | `invalid_request`                             | `none / none`                    | `failed/provider_not_configured`           |
+| 可以证明请求未写出                  | `transport_error_before_send`                 | `none / none`                    | `failed/provider_transport_error`          |
+| 请求可能写出但没有完整响应          | `indeterminate` + `provider_delivery_unknown` | `transport_sent / verified`      | 保持 `sent`，到观察期限 `timeout`          |
+| 非 2xx、非法 JSON、字段/echo 不合法 | `indeterminate` + `provider_response_invalid` | `transport_sent / verified`      | 保持 `sent`，到观察期限 `timeout`          |
+| 2xx 且结构有效，`result != ok`      | `provider_rejected`                           | `transport_sent / unverified`    | `failed/provider_rejected`                 |
+| 2xx 且结构/echo 有效，`result=ok`   | `provider_accepted`                           | `provider_accepted / unverified` | 保持 `sent`，不能进入 `acked` 或 `success` |
 
-- 非 2xx、空 body、非 JSON object、重复/尾随 JSON、缺少字符串 `result` 或关键 echo 不匹配都必须按下表分类，不能作为成功。
-- HTTP Command 创建不得同步调用 adapter，也不得依据同步 Provider 响应执行 `sent -> acked -> success`；只有持久 dispatcher 可以在 Attempt 已进入 `dispatching` 后调用 adapter。
-- V2 的 `result=ok` / `info="cmd send ok"` 是厂商资料中的同步响应示例；其协议语义层级最多是 `provider_accepted`，且当前响应真实性仍为 `unverified`。它不能单独推进 Device `acked` 或 `success`。
-- V2 设备信息回调可以提供设备状态证据，但回调签名字段顺序、命令关联规则、结果终局性和真实环境送达行为尚未确认。平台只有在这些条件经受控验收后，才能据实提升 confirmation level。
+有效响应必须包含 string `result`、`userid`、`deviceid`、`cmd` 和非空 `sign`，并包含可规范化为十进制整数的 `serialnum`；echo 必须与请求一致。`query_status` 还必须匹配 `type=23`、`value=4`。`info` 不参与成功判定。
 
-## 冻结目标的 adapter 行为
+V2 响应包含 `sign`，但已知资料没有无歧义给出响应验签顺序。平台不得猜测；厂商确认并经受控验证前，依赖响应正文的 acceptance/rejection 证据保持 `unverified`。
 
-### 下行请求
+## 设备信息 callback
 
-- adapter 只接受 `smart-lock` profile 的 `unlock`、`lock` 与 `query_status`，并严格生成上表 V2 字段；API payload 不能覆盖 `cmd`、`type`、`value`、`userid`、`deviceid`、`serialnum` 或 `sign`。
-- `serialnum` 在 Attempt 创建时生成并持久化为 Provider request key，同一次 Attempt 重读相同值。当前生成正十进制且不超过 9 位，并以数据库唯一约束处理碰撞；该范围是平台保守选择，不是厂商限制，厂商防重放语义仍为 Unknown。
-- UserID、UserKey 与完整 sign 不进入普通日志、API、Event 或 Audit。Attempt 只保留允许诊断的脱敏摘要。
-- 物理 action 服从 smart-lock revision 2 的 `online_only` 并禁止自动重试；`query_status` 使用单次 `dispatch_once` 且同样不自动重试。此策略是平台当前采用的保守产品决策，不是 WWTIOT 资料、现有代码或真实设备证据证明的厂商事实。在厂商幂等与防重放合同未确认前，网络 timeout、连接中断、无效响应和崩溃恢复均不得自动重发。
-- adapter 使用 profile 的 10 秒 request timeout，禁止自动 redirect，响应最多读取 64 KiB；Attempt 只保留最多 4 KiB 的字段 allowlist 摘要。超过上限、非 JSON object、重复 JSON key 或尾随 JSON 均为 `outcome=indeterminate`、reason `provider_response_invalid`。
+V2 描述了包含 `cmd`、`deviceid`、`battery`、`lockstatus`、`time`、`serialnum` 和 `sign` 的设备信息 callback，但示例没有定义与下行 `serialnum` 的关联，也没有将其定义为某条 Command 的终局结果。
 
-### 同步响应分类
+在签名顺序、防重放和身份关联 Unknown 关闭前，公开 `/v1/provider-callbacks/wwtiot` 必须按 [API 合同](../api-contract.md)失败关闭：不读取或保存 body，不更新 DeviceState/Command，不产生 Event。
 
-| 观测                                                       | Attempt outcome               | confirmation level  | evidence status | Command 结果                                                              |
-| ---------------------------------------------------------- | ----------------------------- | ------------------- | --------------- | ------------------------------------------------------------------------- |
-| Command 创建后的配置漂移导致请求构造前发现 Provider 不可用 | `invalid_request`             | `none`              | `none`          | `failed`，`provider_not_configured`；正常创建前会同步拦截                 |
-| 明确未发出请求的本地连接错误                               | `transport_error_before_send` | `none`              | `none`          | `failed`；只有实现能证明未发送时适用                                      |
-| 请求可能已发出但没有完整响应                               | `indeterminate`               | `transport_sent`    | `verified`      | 保持 `sent`，Attempt reason `provider_delivery_unknown`；到期 `timeout`   |
-| 非 2xx                                                     | `indeterminate`               | `transport_sent`    | `verified`      | 保持 `sent`，Attempt reason `provider_response_invalid`；不猜测为明确拒绝 |
-| 2xx 但 body 不是 JSON object，或缺少字符串 `result`        | `indeterminate`               | `transport_sent`    | `verified`      | 保持 `sent`，Attempt reason `provider_response_invalid`；到期 `timeout`   |
-| 2xx 且 `result != ok`                                      | `provider_rejected`           | `transport_sent`    | `unverified`    | `failed`，保留厂商 `info`                                                 |
-| 2xx、`result=ok`，且必需 echo 与请求一致                   | `provider_accepted`           | `provider_accepted` | `unverified`    | 保持 `sent`，不能进入 `acked`/`success`                                   |
-| 2xx、`result=ok`，但关键 echo 缺失或不一致                 | `indeterminate`               | `transport_sent`    | `verified`      | 保持 `sent`，Attempt reason `provider_response_invalid`；到期 `timeout`   |
+Unknown 关闭后，入口仍必须满足：
 
-V2 同步响应包含 `sign`，但现有资料没有无歧义写明响应签名的字段顺序；代码不得猜测验证顺序。当前明文 HTTP 下响应真实性存在风险，因此仅凭结构正确的响应只能记录 `evidence_status=unverified`。厂商确认 HTTPS 或响应签名规则并经受控验证后，才能将真实 WWTIOT acceptance evidence 标为 `verified`。
+- 最大 64 KiB，单个无重复 key、无尾随值的 JSON object；
+- 必需字段为 `userid`、`cmd`、`deviceid`、`battery`、`lockstatus`、`time`、`serialnum`、`sign`；
+- `userid` 与部署配置一致，Provider identity 全局唯一映射 Device；
+- 验签、防重放和 deduplication 在返回成功前持久化；
+- 只有签名可信的 callback 可产生 RawMessage 和 [smart-lock DeviceState](../device-types/smart-lock.md#devicestate-规范化)；
+- 只有另有可信且无歧义的 Command 关联证据时才可创建 CommandResult；迟到结果服从 Domain Model 的终态不改写规则。
 
-结构正确的成功响应要求 `result`、`userid`、`deviceid`、`cmd`、`serialnum` 和非空 `sign`；`result` 必须严格等于小写 `ok`，前三个 echo 必须是与请求完全一致的 string。`serialnum` 接受 JSON integer 或十进制 integer string 后比较；`query_status` 还要求以同样规则匹配 `type=23`、`value=4`。`info` 和其他扩展字段不参与成功判断，只能进入 4 KiB allowlist 摘要；重复 key 或关键字段类型不符使用 `outcome=indeterminate`、reason `provider_response_invalid`。
+decoder/validator 稳定错误码为 `callback_payload_too_large`、`callback_invalid_json`、`callback_missing_field`、`callback_invalid_field`、`callback_user_mismatch`、`callback_device_not_found`、`callback_device_ambiguous`。这些机器码用于受控诊断，不得回显 body 或 sign。
 
-transport 是否已发送必须由 HTTP transport 的 `WroteRequest`（或可证明等价信号）记录；DNS/dial 等明确未写请求的错误使用 `confirmation_level=none`，一旦已写或无法证明未写就使用 `transport_sent` 与 `outcome=indeterminate`。Command 不进入 `unknown`，而是保持 `sent` 到观察期限后终止为 `timeout`。底层网络错误原文可能包含敏感 Provider endpoint，不得进入 Attempt、Command、Event、日志或 API；adapter 只返回稳定的发送前/发送后诊断。
+## 当前代码事实
 
-`evidence_status` 评价本次 outcome 所依赖的证据。由本地 `WroteRequest` 单独证明的 transport/invalid-response 分类为 `verified`，明确未发送且 confirmation 为 `none` 时为 `none`；依赖当前无法验签 HTTP body 的 `provider_accepted` 和 `provider_rejected` 均为 `unverified`。Provider rejection 可以保守地令 Command 失败，但不得把未签名响应提升为更高 confirmation level。
+截至 2026-08-01 的冻结前审计，后端已注册 `wwtiot` cloud adapter，三项 action 通过持久 Command Worker 使用同一 Device、Command、Attempt、Event、Webhook 与 Audit 主链；同步响应分类、发送前/发送后 transport 错误、响应结构/echo 校验、脱敏摘要和 callback 无副作用 decoder/validator 均有本地测试。当前运行时以 PostgreSQL polling/lease 驱动 Command 与 Webhook，尚未实现目标合同中的 NATS JetStream Outbox/Inbox 传播。公开 WWTIOT callback 仍固定失败关闭，因此没有可信 DeviceState 或 CommandResult 上行主链。以上是代码快照，不是厂商或真实设备事实。
 
-### 设备信息 callback
+## 真实设备验收事实
 
-- 对外入口遵循通用 `/v1/provider-callbacks/{provider_code}`，Provider adapter 负责解析，不在 Core 添加 WWTIOT 专用状态分支。
-- 当前资料能支持 callback DTO 解码、字段校验、Device identity 查找与规范化映射的代码和无副作用契约测试。decoder 输入上限 64 KiB，要求单个无重复 key、无尾随值的 JSON object；`userid`、`cmd`、`deviceid`、`battery`、`lockstatus`、`time`、`serialnum` 和 `sign` 必须存在。`userid`、`cmd`、`deviceid`、`time`、`sign` 必须是非空 string；资料的示例值与参数类型标注不一致，因此 `battery`、`lockstatus` 和 `serialnum` 接受 JSON integer 或十进制 integer string 后规范化。`bike`、`lng`、`lat`、`gx`、`gy`、`gz` 是允许但不可信的可选字段，其他字段保留在受控 raw map 供诊断，不进入规范化状态。
-- decoder 仅返回结构化候选消息和 validation error；它不验证签名、不写数据库、不产生 Event。`userid` 与部署配置不匹配或 Device identity 不能全局唯一映射时，validator 返回稳定失败，不生成可信 RawMessage/DeviceState。结构正确但超出当前规范化范围的 `lockstatus`、battery 或 time 按 [DeviceState 映射规则](../device-types/smart-lock.md#devicestate-规范化)保留 Unknown/null 与受控 raw 值，不猜测，也不把整条消息误报为已验证设备结果。
-- decoder/validator 稳定错误码为 `callback_payload_too_large`、`callback_invalid_json`、`callback_missing_field`、`callback_invalid_field`、`callback_user_mismatch`、`callback_device_not_found` 和 `callback_device_ambiguous`。这些错误当前只用于组件契约测试与安全诊断，不改变公开 callback 的固定 503 响应。
-- 当前资料不能无歧义证明 callback sign 字段顺序、防重放规则或命令关联。公开入口在这些条件确认前必须失败关闭：不得更新 DeviceState，不得产生可投递 Event，更不得推进 Command。
-- 条件确认后，签名通过的 callback 可以更新 [smart-lock DeviceState](../device-types/smart-lock.md#devicestate-规范化)。只有另有可信且无歧义的命令关联证据时，才可提升 Command confirmation level。
-- 已终止 Command 的迟到 callback 或 final result 只能按通用合同追加不可变 CommandResult 与 `command.result_recorded` Event，并标记 `late=true`；不得把 `timeout` 覆盖为 `acked`、`success` 或 `failed`。
+当前仓库没有可复核的真实 WWTIOT 端到端验收记录。本轮没有使用真实凭据，也没有执行 `query_status`、`unlock` 或 `lock`。厂商资料、签名生成和本地伪 HTTP Provider 测试不能证明设备收到、拒绝、执行、迟到 callback 或最终锁体状态；这些事实全部为 **Unknown**。
 
-### simulator 对齐
+## Provider Unknown
 
-simulator 接受 `provider_accepted`、`provider_rejected`、`transport_error_before_send`、`transport_error_after_send`、`invalid_response` 五种配置模式和 `0..60000` ms 可控 delay，并通过同一 Provider interface 使用与业务 Command 相同的持久状态机；后两种配置模式统一持久化为 Attempt `outcome=indeterminate`，只以稳定 reason 区分。精确 API 和状态映射以 [API 合同的 Simulator 配置](../api-contract.md#simulator-配置)为准。它不提供 `device_acked`、`device_succeeded` 或其他 Device final 模式。
+| 未知内容                                                           | 阻塞                                                                                                              | 不阻塞                                                                         | 关闭证据                                                                         |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| V2 是否仍为有效正式版本，标注“开发中”的接口是否已生产开放          | 正式 WWTIOT 兼容承诺、真实业务验收                                                                                | 按归档 V2 实现隔离 adapter 和合同测试                                          | 厂商盖章/可追溯正式文档及版本确认                                                |
+| HTTPS 或响应签名的正式校验规则                                     | 将 acceptance/rejection evidence 提升为 `verified`、生产传输安全验收                                              | 使用 `unverified` 如实实现下行分类                                             | 厂商 HTTPS endpoint 或明确响应验签规范，加受控联调证据                           |
+| `serialnum` 的范围、幂等、防重放和服务端校验                       | 自动重试、超时后重放、request key 长期兼容保证                                                                    | 当前唯一持久 key、单次发送、禁自动重试                                         | 厂商书面语义和重复/超时受控测试                                                  |
+| callback 签名顺序、防重放、可靠送达、去重键和 identity incarnation | 启用公开 callback、DeviceState 更新；未来若改变当前 identity 永不复用裁决时还会阻塞复用设计                       | callback 失败关闭、identity tombstone、下行截至 Provider evidence              | 厂商 callback 合同及签名/重复/迟到受控验证；复用另需可信 incarnation 和显式迁移 |
+| `online`、`offline` 的可信来源、新鲜度、过期语义、`last_seen_at` 更新来源和过期处理责任 | `online_only` 的 `unlock`、`lock` 创建与派发、连接状态/`last_seen_at` 验收；冻结 TTL 到期后 PostgreSQL 迁移、Event 时点与崩溃恢复 | `query_status`、非物理 Core 能力、adapter 下行合同测试和无新鲜证据时的失败关闭；`last_seen_at` 保持 `null` | 厂商 heartbeat/状态合同、批准的新鲜度窗口、权威时间来源和乱序规则、受控断网/Redis 丢失/恢复及 Event 验证 |
+| callback 与 Command 的关联及是否存在独立 ACK/final result/query    | `device_acked`、`device_final`、Command `acked`、`success`、真实业务验收                                          | `provider_accepted -> timeout` Core 实现                                       | 厂商正式关联规则和真实设备端到端矩阵                                             |
+| 真实设备的收到、执行、拒绝、延迟和锁体结果                         | smart-lock 真实设备验收                                                                                           | simulator、adapter 合同测试和可靠性建设                                        | 受控凭据、指定设备、明确写授权、设备侧观察记录                                   |
+| 限流、配额、错误码、网络 timeout 和重试安全性                      | 生产容量/降级参数和自动重试                                                                                       | 保守单次发送、无自动重试                                                       | 厂商限制说明和目标网络压测                                                       |
 
-## 已验证与 Unknown
-
-### 代码验收门槛
-
-Current State 只有在自动化检查证明三项 action 的精确请求/签名映射、严格响应矩阵、请求写出前后错误分类、redirect/body 上限、敏感字段 allowlist，以及无副作用 callback decoder/validator 后，才能把 WWTIOT 代码层集成标为已实现。伪 Provider 测试只验证仓库代码，不是真实设备验收。
-
-### 真实设备验收事实
-
-当前仓库没有可复核的真实 WWTIOT 设备端到端验收记录。厂商资料已获得、签名代码可生成请求、本地伪 Provider 测试通过，都不能证明指定设备已收到或执行命令。因此真实设备收到、拒绝、执行、延迟回调以及最终状态的事实均为 **Unknown**。
-
-这些 Unknown 不阻塞 Platform Core 对持久化、Outbox、Webhook、Audit、`provider_accepted` 和终态 `timeout` 的诚实技术实现，也不允许实现擅自提升 confirmation level。它们阻塞公开可信 callback/final result 的启用、[smart-lock 真实设备验收矩阵](../device-types/smart-lock.md#真实设备验收矩阵)的完成，以及“共享单车正式业务可用”或“当前真实目标已业务验收”的声明。
-
-### Unknown
-
-- 当前使用资料是否为厂商仍有效的正式版本，以及 V2 页面“开发中”状态之后是否有修订版。
-- V2 未定义的错误码、限流、幂等、防重放和 `serialnum` 约束。
-- 当前凭据、设备与回调 URL 的实际配置状态。
-- 设备信息回调的签名字段顺序、可靠送达、去重与命令关联规则。
-- `result=ok` 在真实环境中的准确边界，以及设备信息回调能够支持的最高 confirmation level。
-- 是否另有独立 Device ACK、final result callback 或结果查询能力。
-- 真实设备收到、执行、拒绝和延迟响应的行为。
-- timeout、限流、重试安全性、网络与 TLS 条件。
-- 验证以上事实需要厂商确认、受控凭据、指定测试设备、回调观测条件和明确的真实设备写操作授权。
-
-WWTIOT 可观测层级是否足以支撑共享单车正式业务，由产品所有者在厂商合同和受控设备证据到齐后决定。
+WWTIOT 的最高可信 confirmation level 是否满足共享单车业务不由 Provider 合同决定；该产品裁决归 [Platform Target](../platform-target-contract.md)。

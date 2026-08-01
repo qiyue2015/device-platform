@@ -2,7 +2,7 @@
 
 Device Platform 是由一名管理员维护的 IoT 设备接入与控制平台。当前唯一目标是依据共享单车智能锁的真实接入和使用，形成可实际运行、可持久化、状态可信的核心链路；通用性来自已确认的平台边界和统一 Gateway/Provider 接入方式，不来自对未来业务的预建。
 
-当前代码已经包含持久化 Project/Device/Command、统一 simulator/WWTIOT dispatcher、Event/Webhook/Audit 和管理后台，并能把 WWTIOT HTTP acceptance 保持在 `provider_accepted`。最新 `.4` 实施合同进一步移除了混合用途的 Command `unknown`、冻结了 `online_only` 物理动作策略、追加式 Result/Event 和新版 Webhook wire；这些改动尚未进入业务代码。真实 WWTIOT callback、final result 与设备行为仍无验收证据，因此当前只能区分“已有 `.3` 实现事实”“待实现 `.4` 合同”和“待真实业务验收”，不能声明当前真实目标已经完成。
+当前产品范围只有一个共享单车 Project 和一个 `smart-lock` Device Type；WWTIOT cloud API 与 Omni direct-device TCP 都是当前必须接入的 Provider。当前代码已经让两者经过同一持久 Device、Command、Attempt、Result、DeviceState、Event、Webhook 和 Audit 模型：WWTIOT 下行最多证明 `provider_accepted`，Omni 当前只安全启用 `query_status` 并最多证明 `transport_sent`。真实 callback/设备身份、Device ACK、final result 与锁体行为仍无验收证据，详见 [Current State](./docs/current-state.md)。
 
 ## 仓库结构
 
@@ -21,7 +21,7 @@ Device Platform 是由一名管理员维护的 IoT 设备接入与控制平台�
 2. [Platform Target Contract](./docs/platform-target-contract.md)：当前真实目标与完成定义。
 3. [Domain Model Contract](./docs/domain-model-contract.md)：对象、关系、不变量、事务边界和恢复责任。
 4. [API Contract](./docs/api-contract.md)：接口、认证和生命周期语义。
-5. [Current State](./docs/current-state.md)：`2026-07-31` 的实现事实、`.4` 漂移与真实验收缺口。
+5. [Current State](./docs/current-state.md)：`2026-08-01` 的双 Provider 实现事实、验证证据与真实验收缺口。
 6. [Local Development](./docs/local-development.md)：启动、检查和当前可验证范围。
 
 历史交付过程由 Git 保存，不作为当前权威文档。下级文档、schema、模板菜单和当前代码不能反向扩大产品边界。
@@ -30,6 +30,7 @@ Device Platform 是由一名管理员维护的 IoT 设备接入与控制平台�
 
 - [smart-lock Device Type Contract](./docs/device-types/smart-lock.md)：规范化智能锁能力与已确认安全属性。
 - [WWTIOT Provider 合同](./docs/providers/wwtiot.md)：V1.1/V2 厂商资料、当前 V2 实现映射、confirmation level 与真实设备验收 Unknown。
+- [Omni Provider 合同](./docs/providers/omni.md)：两个直连协议 profile、当前安全映射、session/runtime 约束与真实设备验收 Unknown。
 
 两类从属合同均受 Platform Boundary、Platform Target 和通用 API Contract 约束；具体 action 不进入 Platform Core 全局语义。
 
@@ -93,8 +94,8 @@ pnpm i18n:check
 ## 代码位置
 
 - 后端入口与 handlers：`backend/cmd/server/`
-- 核心设备与命令逻辑：`backend/internal/devicecore/`
-- Gateway/simulator：`backend/internal/gateway/`
+- 核心设备与命令逻辑：`backend/internal/deviceservice/`、`backend/internal/commandservice/`、`backend/internal/commandworker/`
+- Provider adapter：`backend/internal/cloudapi/wwtiot/`、`backend/internal/directdevice/omni/`、`backend/internal/simulator/`
 - Webhook/Audit：`backend/internal/webhookaudit/`
 - migration 与 storage contracts：`backend/internal/storage/`
 - 前端 API 与页面：`frontend/src/api/`、`frontend/src/views/`

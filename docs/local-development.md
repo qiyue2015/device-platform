@@ -1,57 +1,50 @@
 ---
 title: 本地开发与验证
-created: 2026-05-16
-updated: 2026-07-31
+updated: 2026-08-01
 status: operational-guide
 ---
 
 # 本地开发与验证
 
-本文说明当前仓库可执行的本地启动和廉价验证方式，不定义产品边界或完成状态。目标验收以[当前平台目标合同](./platform-target-contract.md)为准，当前缺口见[当前实现状态](./current-state.md)。
+本文说明当前仓库的本地启动、测试和安全边界，不定义产品合同或真实设备完成状态。完成门槛见 [Platform Target](./platform-target-contract.md)，当前实现与 Unknown 见 [Current State](./current-state.md)。
 
 ## 本地依赖
 
-| Service     | 默认地址                                     |
-| ----------- | -------------------------------------------- |
-| PostgreSQL  | `localhost:5432`                             |
-| Redis       | `localhost:6379`                             |
-| Backend API | `localhost:8080`                             |
-| Frontend    | `localhost:5173`，端口占用时以 Vite 输出为准 |
+| Service | 默认地址或用途 |
+| ------- | -------------- |
+| PostgreSQL | `localhost:5432`，权威领域事实与 worker lease |
+| Redis | `localhost:6379`，认证限流和可重建运行依赖 |
+| Backend API | `http://localhost:8080` |
+| Frontend | `http://localhost:5173`，端口占用时以 Vite 输出为准 |
+| NATS | 当前代码未实现，不是本地启动依赖 |
 
-从仓库根目录准备忽略提交的本地环境文件并检查服务：
+从仓库根目录准备忽略提交的环境文件并检查服务：
 
 ```bash
 createdb device_platform
 make setup-local
 make check-services
 make check-db
-pnpm --dir frontend install
+pnpm --dir frontend install --frozen-lockfile
 ```
 
-`make setup-local` 从示例创建 `backend/.env` 与 `frontend/.env.development`，不会覆盖已有文件。只使用本地测试凭据，不把真实 WWTIOT secret 或业务数据写入仓库、日志或截图。
+`make setup-local` 不覆盖已有文件。只使用本地测试凭据；真实 Provider secret、真实 IMEI、raw frame 和未脱敏业务数据不得进入仓库、日志、测试夹具或截图。
 
-setup 会生成独立的 32 byte Webhook secret encryption key，并以无 padding base64url 写入忽略提交的 `backend/.env`。已有的已安装本地环境升级后也必须配置 `WEBHOOK_SECRET_ENCRYPTION_KEY`；缺失、解码失败或长度不是 32 byte 时后端会失败关闭，不能复用 `JWT_SECRET`。
+## Provider 配置
 
-持久 Webhook dispatcher 默认每 2 秒扫描，单次 HTTP timeout 为 10 秒、lease 为 15 秒，最多执行 5 次 HTTP Attempt，失败间隔为 `1s,5s,30s,2m`。部署可用 `WEBHOOK_MAX_ATTEMPTS` 降低次数，并同步用 `WEBHOOK_RETRY_SCHEDULE` 提供少一次且不短于对应默认值的间隔；timeout、lease 或 schedule 非法时启动失败关闭。`WEBHOOK_EGRESS_ALLOWLIST` 默认留空，只允许解析为公开地址的目标；即使 Project 允许配置本机 HTTP URL，连接 loopback 或内网目标仍需在部署配置中显式加入受控 IP/CIDR，例如仅本地测试时使用 `127.0.0.1/32`。不要用宽网段替代目标清单，云 metadata 固定地址始终拒绝。
+WWTIOT 使用 `WWTIOT_API_URL`、`WWTIOT_USER_ID` 和 `WWTIOT_USER_KEY`。缺失凭据时 registry 仍可只读展示 Provider，但 `integration_status=unconfigured`，Command 创建/派发失败关闭。普通本地测试使用 `httptest` fake Provider，不需要真实凭据，也不授权调用真实 Cloud API。
 
-当前代码仍使用 `.3` Webhook 签名 wire：`sha256(HMAC(secret, timestamp + "." + raw_body))`，且没有 secret-version header。冻结的 `.4` 合同已改为 `v1.timestamp.secret_version.raw_body`、`v1=` 签名、`X-Device-Platform-Secret-Version` 和 300 秒验签窗口；在代码和自动化测试完成对齐前，不得把本地 Webhook 检查记录为 `.4` 技术实现通过。
+Omni 两个 profile listener 必须同时配置或同时留空：
 
-仅对从未写入过加密 Webhook secret 的旧本地环境，可执行以下一次性升级；命令不会把 key 输出到终端。若数据库已经存在 `project_webhook_secrets`，必须恢复原部署 key，生成新 key 会使已有版本无法解密。
-
-```bash
-cd backend
-umask 077
-device_platform_webhook_key="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
-if grep -q '^WEBHOOK_SECRET_ENCRYPTION_KEY=' .env; then
-  WEBHOOK_SECRET_ENCRYPTION_KEY="$device_platform_webhook_key" perl -0pi -e 's/^WEBHOOK_SECRET_ENCRYPTION_KEY=.*$/WEBHOOK_SECRET_ENCRYPTION_KEY=$ENV{WEBHOOK_SECRET_ENCRYPTION_KEY}/m' .env
-else
-  printf '\nWEBHOOK_SECRET_ENCRYPTION_KEY=%s\n' "$device_platform_webhook_key" >> .env
-fi
-chmod 600 .env
-unset device_platform_webhook_key
+```text
+OMNI_BIKE_LISTEN_ADDR=
+OMNI_IOT_LISTEN_ADDR=
+OMNI_MAX_FRAME_BYTES=4096
+OMNI_MAX_CONNECTIONS=256
+OMNI_READ_TIMEOUT=5m
 ```
 
-`make check-services` 检查 PostgreSQL 与 Redis 端口；`make check-db` 按 `backend/.env` 的 `DATABASE_URL` 发起只读连接检查。端口可达不等于 schema、业务持久化或目标链路已经完成。
+普通开发默认把两个地址留空，Provider 为 `unconfigured`。需要运行本地 TCP peer 测试时，只绑定明确的 loopback 测试端口；不要暴露到公网，也不要接入真实设备。只配置一个地址、非法 frame/connection limit/read timeout，或任一 listener 运行时非预期退出都会失败关闭双 profile runtime。该 fatal 状态使 `/readyz` 和业务 API 返回 `503 provider_runtime_unavailable`，需要排除故障并重启完整运行时，不能只继续使用剩余 profile。
 
 ## 启动
 
@@ -65,25 +58,25 @@ make dev-backend
 make dev-frontend
 ```
 
-存活检查：
+存活与就绪检查：
 
 ```bash
 curl http://localhost:8080/healthz
 curl http://localhost:8080/readyz
 ```
 
-`/healthz` 只证明进程存活。首次安装前 `/readyz` 会报告需要 setup。
+`/healthz` 只证明进程存活。首次安装前 `/readyz` 返回 setup required；Omni 双 profile runtime 降级后即使 HTTP 进程仍存活也必须 unready。
 
-浏览器打开：
+浏览器使用：
 
 ```text
 http://localhost:5173/setup
 http://localhost:5173/auth/login
 ```
 
-setup 完成后使用刚创建的本地管理员登录。前端开发环境通过 Vite 将相对 `/setup/...` 和 `/v1/...` 请求代理到 `http://localhost:8080`；通常保持 `VITE_API_BASE_URL=''`。
+setup 完成后使用本地管理员登录。前端开发环境通过 Vite 代理相对 `/setup/...` 与 `/v1/...` 请求到后端；通常保持 `VITE_API_BASE_URL=''`。
 
-## 直接使用子项目命令
+## 后端检查
 
 从 `backend/`：
 
@@ -92,93 +85,60 @@ make build
 make test
 make test-int
 make lint
-make migrate-up
-make migrate-down
 ```
 
-`make test-int` 用于带 `integration` tag 且具备外部条件的测试。需要 PostgreSQL 的用例只读取 `MIGRATION_TEST_DATABASE_URL`，并拒绝连接数据库名不是 `device_platform_test` 的 URL；需要真实多进程启动的用例还读取 `MIGRATION_TEST_REDIS_URL`。未设置时对应测试会明确跳过，不能把跳过结果记录为 PostgreSQL/Redis integration 已通过。
-
-只对已经确认的本地测试服务运行，例如：
+PostgreSQL integration 只读取 `MIGRATION_TEST_DATABASE_URL`，数据库名保护规则要求 `_test` 后缀。必须使用归属明确、专用且可丢弃的本地测试数据库；不得因为另一个 `_test` 数据库已经存在就复用、清空或迁移它：
 
 ```bash
-MIGRATION_TEST_DATABASE_URL='postgres://user:password@127.0.0.1:5432/device_platform_test?sslmode=disable' \
+createdb device_platform_local_test
+MIGRATION_TEST_DATABASE_URL='postgres://local_user:local_password@127.0.0.1:5432/device_platform_local_test?sslmode=disable' \
 MIGRATION_TEST_REDIS_URL='redis://127.0.0.1:6379/0' \
 make test-int
 ```
 
-PostgreSQL integration 在 `device_platform_test` 内为每个测试创建随机 schema，并在结束时删除；不要把 URL 指向 `postgres` 管理库、开发业务库或任何生产数据库。`MIGRATION_TEST_REDIS_URL` 只用于连接和多进程运行时依赖检查，不授权清理共享 Redis 数据。`make migrate-up` / `make migrate-down` 会直接修改 `DATABASE_URL` 指向的数据库，只能在已明确识别的本地开发库执行。
+各用例在该数据库创建随机 schema 并在结束时删除。不要将 URL 指向 `postgres` 管理库、开发业务库、共享测试库或生产数据库。未设置环境变量时 integration test 会明确跳过；跳过不能记为 PostgreSQL/Redis 验收通过。
 
-### Command evidence Event 升级预检
+`make migrate-up` / `make migrate-down` 会修改 `DATABASE_URL` 指向的数据库。只允许在已核对的本地开发库执行；对已有权威历史先按 migration 注释和专项测试执行 fail-stop 预检。历史 WWTIOT RawMessage 缺少可证明真实性字段时，009 只允许保守回填 `unverified`，不得提升为 `verified`。
 
-`007_command_evidence_event` 要求 `command.status_changed` 只表示 `from != to` 的真实状态迁移。旧 worker 曾可能为 Provider acceptance 写入同状态 Event；该旧记录没有足够信息可靠恢复冻结合同要求的 Attempt 关联，也可能已经生成不可变的 Webhook Delivery raw body，因此 migration 不会自动删除、改名或改写历史。
+Omni 关键定向检查：
 
-在任何已有数据的数据库执行 migration 前，先只读检查：
-
-```sql
-SELECT count(*) AS invalid_status_event_count
-FROM device_events
-WHERE event_type = 'command.status_changed'
-  AND (
-    payload->>'from' IS NULL
-    OR payload->>'to' IS NULL
-    OR payload->>'from' = payload->>'to'
-  );
+```bash
+go test -race ./internal/directdevice/omni -run 'TestRuntime|TestListener|TestRegistry|TestAdapter|TestParse|TestDecoder' -count=1
+go test -race ./cmd/server -run 'TestOmniRuntimeFailureSignalsFatalAndMakesAppUnready' -count=1
 ```
 
-结果为 `0` 才能继续。结果大于 `0` 时，`007` 会原子失败、不记录 migration version，也不会改变 Event 或 Delivery。对于明确可丢弃的本地开发/测试数据库，应在保留必要诊断证据后从空数据库重建；对于任何非一次性或可能具有权威历史的数据，必须停止升级、保留备份，并在逐条核对 Command、Attempt、Event 与 Delivery 后另行冻结显式数据迁移方案，禁止原地手工修补或把旧记录静默解释为 `command.evidence_updated`。仓库本身不能证明外部数据库是否存在这类历史。
+这些测试使用内存 writer、loopback TCP peer 或故障 listener，不连接真实设备。
+
+## 前端检查
 
 从 `frontend/`：
 
 ```bash
-pnpm dev
-pnpm build
 pnpm type:check
-pnpm lint:fix
-pnpm format
 pnpm i18n:check
+pnpm lint:fix
+pnpm build
 ```
 
-从仓库根目录：
+可见页面变更还需在本地服务上用 ego-browser 验收 Provider、Device 与 Command 页面。当前仓库没有前端单元测试 runner；类型检查、lint、i18n、生产构建和浏览器 smoke 是本地证据，但不证明真实 Provider。
 
-```bash
-make check-backend
-make check-frontend
-make check
-```
+## 当前允许验证
 
-`check-backend` 运行 Go 测试与 lint；`staticcheck` 仅在本机已安装时运行。`check-frontend` 运行 type check、production build 与 i18n key 检查。`make check` 还会检查本地 PostgreSQL/Redis 可达性。
+- setup、单管理员认证、Project/Device/Command 和只读诊断页面。
+- WWTIOT V2 请求映射、响应分类、timeout、恢复与 callback 固定失败关闭。
+- Omni 两 profile codec、listener/session、RawMessage/Audit、query_status 单次写入、timeout 和 runtime fatal 行为。
+- Project、Device、Provider/profile 隔离，以及 Event/Webhook/Audit 的持久事务与恢复。
+- simulator 通过同一持久主链产生受控 Provider 层结果。
 
-## 当前可以安全验证
+这些检查不能证明真实 WWTIOT 服务状态、Omni 设备/profile 对应、TCP peer 真实性、设备收到/执行、Device ACK、device final 或真实锁体状态。
 
-- setup 状态、管理员登录和已接入的后台页面。
-- Project、Device、Command 的当前 HTTP 行为。
-- PostgreSQL 中的 Command/simulator/Webhook worker、重试、恢复、签名和审计行为。
-- 使用本地 `httptest` 伪造 Provider 的 WWTIOT HTTP 请求映射。
-- 前端类型、构建和双语 key 一致性。
+## 真实设备禁区
 
-这些检查证明本地持久化、模拟器主链和 Webhook dispatcher 的代码行为，不证明目标部署网络、某个外部 Webhook endpoint、真实 WWTIOT 服务或智能锁执行结果。
+没有受控设备、现场观察、恢复方案和逐次明确授权时，不执行真实 `query_status`、`unlock` 或 `lock`。timeout、网络中断、身份不一致或结果 Unknown 时，不自动重试任何真实写操作。真实验收开始前至少需要：
 
-## 分层验收路径
+- WWTIOT 受控凭据、正式响应/callback 规则和隔离智能锁；
+- Omni 型号/固件/profile 对照、受控网络身份方案和隔离智能锁；
+- 每次动作的明确授权、可观察锁体状态、现场恢复负责人和停止条件；
+- 脱敏证据模板，能关联 Project、Device、Provider/profile、Command、Attempt、Result、Event、Webhook 和 Audit。
 
-Platform Core 技术实现验收先验证持久化、正交 Command/Attempt/confirmation 语义、Outbox/Webhook/Audit 和诚实的 `provider_accepted -> sent -> timeout` 链路。它可以使用 simulator、伪 Provider 和本地 PostgreSQL 复现，但这些证据只证明技术实现，不证明共享单车正式业务可用。
-
-真实业务验收最终需要验证：
-
-```text
-Shared-bicycle Project
-  -> Open API
-  -> persistent Command and Attempt
-  -> unified Gateway/Provider
-  -> trustworthy device result
-  -> persistent State and Event
-  -> signed Webhook delivery
-  -> consistent Audit and admin diagnosis
-```
-
-模拟器已通过同一持久 Command、Attempt、Event、Delivery 与 dispatcher 链路执行 [API 合同冻结的受控 Provider outcome](./api-contract.md#simulator-配置)，且不扩展为设备 ACK 或 final result 模式。该主链的本地验收不能替代真实设备证据。
-
-真实 WWTIOT 验收需要受控凭据、隔离测试设备、厂商执行结果合同和明确的真实设备写操作授权。缺少任一条件时保持 Unknown，不调用真实 Cloud API 写接口。
-
-## 不由本文承诺
-
-生产部署、Nginx、容器化、CI/CD、设备直连、电子围栏及其他未确认能力，不因出现在本地配置、schema 或代码草稿中而成为当前完成项。
+当前运行时使用 PostgreSQL polling/lease，不需要 NATS；目标 NATS JetStream Outbox/Inbox 未实现，相关消息重复、Ack、redelivery 和 Broker 恢复不能记录为已通过。

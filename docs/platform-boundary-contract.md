@@ -1,9 +1,8 @@
 ---
 title: 平台边界合同
-created: 2026-07-31
-updated: 2026-07-31
+updated: 2026-08-01
 status: frozen-for-implementation
-freeze_revision: 2026-07-31.3
+contract_revision: 2026-08-01
 ---
 
 # 平台边界合同
@@ -140,14 +139,6 @@ OTA、固件管理、批量操作、规则引擎、告警、长期遥测保留�
 
 不从想象中的未来项目推导通用性。只有真实接入证明现有边界无法干净承载时，才记录具体需求和限制，评估是否修订本合同，并以最小必要改动演进模型。
 
-## 文档权威顺序
+## 下级约束
 
-1. 本文 `Platform Boundary Contract`：决定产品归属与非目标。
-2. [Platform Target Contract](./platform-target-contract.md)：决定当前真实目标与完成定义。
-3. [Domain Model Contract](./domain-model-contract.md)：定义当前目标的对象、不变量、事务边界和恢复责任。
-4. [API Contract](./api-contract.md)：定义边界内、服务当前目标的接口和生命周期语义。
-5. Device Type 与 Provider 合同：定义具体能力和厂商映射。
-6. [Current State](./current-state.md)：记录带日期的实现事实，不定义产品范围。
-7. [Local Development](./local-development.md)：说明本地运行与验证方式。
-
-下级文档、历史文档、数据库 schema、Admin9 模板菜单和当前代码都不能静默扩大或缩小本合同。发生冲突时，应显式记录为目标、合同或实现漂移，而不是用现状反向改写产品边界。
+完整权威顺序和概念所有权见[文档入口](./README.md)。下级文档、历史记录、数据库 schema、管理后台和代码都不能静默扩大或缩小本合同；实质产品冲突必须进入 Platform Target 的产品所有者裁决清单。

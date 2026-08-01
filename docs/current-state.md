@@ -1,107 +1,104 @@
 ---
 title: 当前实现状态
-snapshot_date: 2026-07-31
+snapshot_date: 2026-08-02
 status: implementation-snapshot
-contract_freeze_revision: 2026-07-31.4
-verified_against_code_revision: 6a79a693c25795e17edd3a5270b4e0b828700c0a
+contract_revision: 2026-08-01
+verified_against: current-worktree
 ---
 
 # 当前实现状态
 
-本文是 `2026-07-31` 对包含本文件的 Git revision 的状态快照，用于区分已经实现的事实、局部实现和缺口。它不是产品合同，不能扩大或缩小[平台边界合同](./platform-boundary-contract.md)或[当前目标合同](./platform-target-contract.md)。
+本文记录 `2026-08-02` 当前工作树的实现与可验证范围，不是产品合同。产品边界和完成门槛分别由 [Platform Boundary](./platform-boundary-contract.md) 与 [Platform Target](./platform-target-contract.md) 定义；实现和测试不能反向降低合同或真实设备验收门槛。
 
 状态含义：
 
-- **已实现**：运行时主链已接入，并有代码或测试证据。
-- **部分实现**：存在可运行部分，但核心语义或链路未闭合。
-- **仅合同或 schema**：存在类型、接口或表结构，没有运行时接入。
-- **未实现**：当前代码未提供目标能力。
-- **Unknown**：仅凭仓库与安全本地检查不能确认，需要外部条件。
+- **已实现**：当前运行时主链已接入，并有本地代码或测试证据。
+- **部分实现**：安全子集已接入，但受合同 Unknown 阻塞的分支保持失败关闭。
+- **目标未实现**：合同已接受，但当前代码没有运行时实现。
+- **模拟验证**：由本地 fake Provider、TCP peer、simulator 或故障注入证明，不代表真实厂商/设备。
+- **真实设备 Unknown**：仓库和本地测试无法证明，需要外部资料、凭据、受控设备与授权。
+
+## 原始资料核验
+
+实施工作保存了对以下四份只读外部归档资料的完整读取和逐页渲染核对记录；本次最终工作树复审未重新渲染，原件未修改、未迁入仓库：
+
+| 资料 | SHA-256 |
+| ---- | ------- |
+| WWTIOT《平台转发协议 V1.1》 | `5937e0b4d68961bd07346139381c237050286e5cc8054815c276be8a5a5edcfa` |
+| WWTIOT《物网通平台转发协议 V2》 | `bb88f399c6010be5f1ab9eaa17eb36b7b680e5ef0787755f5e64b58bd689f718` |
+| Omni《欧米智能马蹄锁 TCP+BLE 接口协议 V2.0.7》 | `36e835214954d9c45d0c35a3b3aed588d47038dfacc37c9e090301d0b5f7aec3` |
+| Omni《OMNI 物联网设备 TCP 接口协议 V1.3.5》 | `2865a3c93b8c9c2c7185c0549c2955aa525cab8482713ece61b57a6cddc742f6` |
+
+资料只证明对应版本所写协议。它们不证明当前设备型号/profile、目标网络真实性、厂商服务现状或真实锁体行为。
 
 ## 能力快照
 
-| 能力                     | 状态               | 已验证事实                                                                                                                                                                                                                                                                          |
-| ------------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 安装与单管理员认证       | 已实现             | 安装按进程 mutex、独立跨进程文件锁和 PostgreSQL session advisory lock 串行化；`users` 由数据库强制单例/admin-only，持久四阶段 recovery journal、唯一 `0600` 临时/备份文件、marker-only 完成权威、marker 前完整运行时预构造、原子服务/worker 发布和三类 readiness 失败关闭均已实现。 |
-| Project、Device HTTP API | 已实现             | 已安装运行时的 Project 与 Device 管理/Open 读取已接入 PostgreSQL，并执行冻结的字段、隔离、分页、lifecycle 与凭据边界。                                                                                                                                                              |
-| Command HTTP API         | 部分实现           | Admin/Open 创建、列表、详情和 queued cancel 已接入持久 Command aggregate；但 `.4` 要求的完整 effect fingerprint、`online_only` gate、Results DTO 和移除 `unknown` 尚未实现。                                                                                                        |
-| 业务数据持久化           | 部分实现           | Project、凭据版本、Device、Command/Attempt、Simulator 配置、Event、Webhook Delivery/Attempt、Audit 与 worker 进度已接入 PostgreSQL 运行时；公开 callback 仍按冻结合同关闭，因此 RawMessage 尚未进入运行时主链。                                                                     |
-| Project 机器 API         | 已实现             | 已安装运行时按 `X-API-Key` 的 SHA-256 digest 查找 Project，只信任 direct peer 执行 IPv4/IPv6 whitelist；普通 DTO 不返回 key、digest、Webhook secret、ciphertext 或 nonce，轮换提交后旧 key 立即失效。                                                                               |
-| Project 数据隔离         | 已实现             | Project 认证、配置以及 Admin/Open Device 和 Command 查询/写入均使用 Project-scoped PostgreSQL 校验；Open API 不能用 body、header 或 query 切换 Project，跨 Project 资源按不可见处理。                                                                                               |
-| WWTIOT 下行              | 部分实现           | 持久 dispatcher 已按冻结 profile 调用 V2 adapter；固定 10 秒 client、严格请求/响应、echo、失败分类、证据等级与脱敏摘要已有组件和集成测试。仅证明代码层投递链，不代表真实服务接受、设备 ACK 或设备成功。                                                                             |
-| WWTIOT callback          | 部分实现 / Unknown | 已有 64 KiB 严格 decoder、字段校验、identity 映射和规范化候选组件；公开 `POST /v1/provider-callbacks/wwtiot` 固定 503 且不读取 body。签名顺序、防重放与命令关联仍为 Unknown。                                                                                                       |
-| Capability 分层          | 部分实现           | 当前代码已接入 `smart-lock` revision 1，三个 action 都是 `dispatch_once`；冻结合同已升为 revision 2，要求 `unlock`/`lock=online_only`，因此 profile、数据库快照和 gate 尚待实施。                                                                                                   |
-| 设备最终执行语义         | 未实现             | HTTP 创建 Command 不同步调用 WWTIOT；dispatcher 对 Provider HTTP acceptance 只保存 `sent/provider_accepted/unverified`，结果观察超时会结束悬挂状态，但可信 Device ACK/final evidence 尚未接入，真实设备最终执行仍无证据。                                                           |
-| 模拟器核心链路           | 已实现             | 已安装运行时使用持久 `GET/PATCH /v1/simulator`，并让 simulator Device 的 Command 经过统一 dispatcher、Attempt、Command 状态机、Event、初始 Delivery 与 timeout scanner；只产生受控 Provider 层结果，不产生 Device ACK/final 或 `success`。                                          |
-| Event、Webhook、Audit    | 部分实现           | 持久 Event、Delivery/Attempt、Audit、dispatcher 和 dead replay 主链已接入；但 `.4` 的 CommandResult、`command.result_recorded`、新 Webhook 签名输入、secret-version header 和 300 秒验签窗口尚未实现。                                                                              |
-| Webhook 配置             | 已实现             | `/v1/projects` 是唯一配置入口；URL、AES-256-GCM secret 版本与 Audit 已持久化，初始与 replay Delivery 保存配置 snapshot，worker 按 snapshot 解析历史 secret，不使用 fallback。                                                                                                       |
-| 命令超时与崩溃恢复       | 部分实现           | 持久 worker 已处理 deadline、lease 与晚结果 fencing；当前仍把 dispatching 崩溃写为 `unknown/provider_delivery_unknown`，尚未改为 Attempt `indeterminate`、Command 保持 `sent` 到终态 `timeout`，也没有追加式迟到 Result/Event。                                                     |
-| 管理后台                 | 部分实现           | `.3` 的 Project、Device、Provider/Device Type、Command、Event、Webhook、Audit 和 simulator 页面已接入；尚未对齐 `.4` 的无 `unknown` 状态、Result 详情、revision 2 profile 和新版 Webhook 诊断字段。                                                                                 |
-| 请求关联与分页           | 已实现             | envelope 固定输出全部字段；request ID 已贯穿 header、响应、日志和适用的持久 Audit。Project、Device Type、Provider、Admin/Open Device、Command、Event、Webhook Delivery 与 Audit 已实现严格分页和冻结排序。                                                                          |
+| 能力 | 状态 | 当前代码与本地证据 |
+| ---- | ---- | ------------------ |
+| 当前产品合同 | 已冻结 | 一个共享单车业务应用作为 Project；唯一 Device Type 为 `smart-lock`；WWTIOT 与 Omni 均为当前必须接入的 Provider。 |
+| 统一持久主链 | 已实现 | Project、Device、Command、Attempt、Result、DeviceState、RawMessage、Event、Webhook Delivery/Attempt 与 Audit 使用同一 PostgreSQL 领域模型；没有 Omni 旁路 Command 系统。 |
+| Project/Device/Provider 隔离 | 已实现 | API、repository、Device identity、Command binding 与 Omni inbound 均校验 Project、Provider、profile 和 Device；同文本 identity 不能跨 Provider/Project 串线。Core 只依赖通用 `ProviderRegistration`/`DeviceIdentityPolicy`，WWTIOT identity、Omni IMEI 与 simulator 自生成规则分别由对应 adapter 提供并在 app 装配。 |
+| `smart-lock` revision 2 | 已实现 | `unlock`/`lock=online_only`，`query_status=dispatch_once`，统一空 payload、deadline、request timeout、result timeout 和禁止自动重试。 |
+| WWTIOT 下行 | 部分实现 | 三项 action 通过 V2 adapter 与持久 worker；严格请求/响应、echo、错误映射和脱敏已接入。有效 `result=ok` 最多形成 `provider_accepted/unverified`，随后无可信 final 时 `timeout`。 |
+| WWTIOT 上行 | 受控失败关闭 | 公开 callback 固定返回 `503 provider_callback_unverified` 且不读取/保存 body；因此不会产生 RawMessage、Result、DeviceState 或 Event。 |
+| Omni codec/session/listener | 已实现 | 两个显式 profile、方向化 framing、Q0/H0/S5/S6 精确 schema、分包/粘包/错误 frame、Q0-only binding、identity generation、唯一 session、短写与 deadline、主动停机清理均有测试。 |
+| Omni 双 profile runtime | 已实现 | 两个 listener 必须同时配置；任一 listener 非预期退出会关闭 sibling、清理 session、禁用 adapter，并使应用 fatal/unready，业务 API 返回 `503 provider_runtime_unavailable`。 |
+| Omni 下行 | 部分实现 | bike S5 与 IoT S6 `query_status` 通过同一持久 worker 单次写入，最高为 `transport_sent/verified`，随后 `timeout`；这只证明本进程 socket 写入。物理 action 因映射/能力 Unknown 在写前失败关闭。 |
+| Omni 上行 | 部分实现 | 合法或拒绝 frame 在 RawMessage + Audit 同一事务保存为 `unverified`；重复、未注册 identity、profile mismatch 与跨 Provider/Project 隔离有测试。不会产生可信 Result、DeviceState、online 或 final。 |
+| Webhook 与 Audit | 已实现于当前持久事实 | Event 事务创建 Delivery，持久 worker 记录 Attempt/重试/dead/replay；Audit 可还原 actor、Project、资源和脱敏 metadata。Omni 接收/拒绝分别使用 `provider.message_received/rejected`。 |
+| 管理后台 | 已实现，浏览器验收为历史报告 | Provider 页面展示 profile，Device 创建要求显式 profile 并校验 Omni IMEI，Command 详情展示 Provider/profile、Attempt、Result、Event；历史 ego-browser 报告覆盖这些路径，但本次最终工作树复审未操作浏览器。 |
+| NATS JetStream Outbox/Inbox | 目标未实现 | ADR、Runtime 和 Messaging 已定义目标；当前代码无 NATS 依赖，Command/Webhook 使用 PostgreSQL polling/lease。不得把当前 worker 测试记为 JetStream 验收。 |
+| 真实设备端到端 | 真实设备 Unknown | 当前没有受控 WWTIOT/Omni 设备、Omni profile 对照、可信上行身份、逐次写授权或设备侧观察记录。没有执行真实 `query_status`、`unlock` 或 `lock`。 |
 
-## 关键实现漂移
+## 双 Provider 行为证据
 
-### 持久化与模型
+下表中的“成功”只表示对应 Provider 当前最高可证明的较低层成功，不表示设备执行成功。
 
-- PostgreSQL 当前承载 migration、管理员认证、Project、Device、Command aggregate、Simulator 配置、Event、Webhook Delivery/Attempt、Audit，以及 Command/Webhook worker 进度。已安装运行时的 HTTP、dispatcher、scanner、重试与 lease 恢复均读取持久事实；公开 callback 按冻结合同保持 503，因此 RawMessage 仍未进入运行时主链。
-- `internal/domain`、`internal/api/v1` 和 `internal/devicecore` 三套模型仍并存；已安装运行时的 Project/Device/Command HTTP 已使用冻结 DTO 与持久领域服务。未安装生产构造器不再创建旧 `devicecore`、simulator 或 Webhook 内存服务；全部 `/v1/...` 业务 API 在普通未安装、恢复未完成或旧进程等待重启时分别固定返回 `503 setup_required`、`503 setup_recovery_required` 或 `503 setup_restart_required`。旧路径只保留为隔离测试兼容，不是生产运行模型。
-- Project API key 只以 SHA-256 digest 持久化，明文只在创建或轮换成功响应出现；Webhook secret 使用独立部署密钥进行 AES-256-GCM 版本化加密。已安装运行时缺少或错误配置 `WEBHOOK_SECRET_ENCRYPTION_KEY` 时会失败关闭。
-- Device HTTP 已执行非 deleted Provider identity 全局唯一、deleted 后释放、稳定 lifecycle、可信 `current_state` 派生读取和 Project scope；创建 Event、初始 Delivery 与 Audit 的任一写入失败都会整体回滚。
-- Provider registry 固定按 `code ASC` 暴露 `simulator` 与 `wwtiot`，返回三层 `integration_status` 且不暴露配置或 secret。当前合同下 WWTIOT 最多为 `configured_unverified`，不能仅凭配置提升为 `verified`。
-- 当前 schema 与 Repository 已有 Webhook Delivery Attempt、manual replay、worker lease、confirmation/evidence 和 Command `unknown` 约束；尚无 `.4` 的 CommandResult、`indeterminate` outcome 与无 `unknown` Command 状态约束。现有 migration 历史只证明旧合同的数据演进，不能当作 `.4` 已实现；具体表名、索引和数据迁移方案留给实施设计，但历史记录不得被静默改义或覆盖。
-- 单管理员认证已执行 JWT/session generation、持久登录限流和安全审计合同；setup 完成后 POST 在解析 body 前即返回 `409 setup_completed`，安装请求不再为必需字段填默认值，连接测试在实际连接前区分 URL schema 错误。HTTP JSON object 统一拒绝未知字段、重复 key、尾随值与超限 body。
-- 首次安装以完成标记作为唯一持久完成权威，`DEVICE_PLATFORM_INSTALLED` 单独存在不会使进程进入安装态。独立文件锁不会因 marker 原子替换改变 inode；数据库 advisory lock 从 migration 前持有到管理员补偿或 marker 写入及运行时发布。运行配置替换前先持久化不含连接串、密码或 secret 的 `prepared|admin_pending|admin_reverted|config_reverted` journal 及带 SHA-256 完整性摘要的唯一 `0600` 备份，文件替换和阶段推进均 fsync 文件与父目录。正常失败和启动恢复按阶段幂等补偿，marker 已存在时只清工件，绝不删除管理员或恢复旧配置；恢复失败的进程只提供 setup、health 与 readiness，并保持业务 API 失败关闭。所有可失败的服务与 worker 构造在 marker 前完成，成功后作为一个运行时快照发布；`server.addr` 与 `server.log_level` 仍只在下次启动生效。
-- Project、Device Type、Provider、Device、Command、Event、Webhook Delivery 和 Audit list 均已提供严格 `page`、`page_size`、`total`、重复/未知 query 拒绝与冻结排序。
+| 行为 | WWTIOT 本地证据 | Omni 本地证据 | 真实设备事实 |
+| ---- | --------------- | ------------- | ------------ |
+| 较低层成功 | 有效 V2 response 只进入 `provider_accepted/unverified` | S5/S6 完整 socket 写入只进入 `transport_sent/verified` | Unknown |
+| 拒绝/发送前失败 | Provider rejection、发送前 transport failure 和 invalid response 分开映射 | 缺失/歧义 session、非法 profile、物理 mapping Unknown 在写前拒绝 | Unknown |
+| timeout | acceptance 或不确定发送保持 `sent`，到观察期限 `timeout` | query_status 写入后保持 `sent`，到观察期限 `timeout` | Unknown |
+| 重复 | Command 幂等/worker lease 不重复下行；callback 入口重复请求同样失败关闭 | 同一连接代际内按 RawMessage fingerprint 去重并保留 duplicate Audit；跨连接代际的相同 frame 是独立观察；终态 Command 不重写 socket | Unknown |
+| 迟到 | worker 恢复后的迟到 adapter 返回被 lease fencing；未启用 callback 不接收设备迟到结果 | 恢复后不重写 socket；未认证上行不能成为迟到 Device Result | Unknown |
+| 不可关联消息 | callback 在认证/关联合同关闭前完全不接收 | 未注册 IMEI、profile/identity mismatch 保持无 Project/Device 的 `unverified` 诊断 | Unknown |
+| 恢复 | dispatching 崩溃转 delivery unknown，保持原 deadline 且不自动重发 | 同一通用恢复，并另有 listener 停机、session generation 与双 profile fatal 测试 | Unknown |
 
-### 命令与 Provider
+## 本地验证证据
 
-- WWTIOT client 是由持久 dispatcher 调用的单次下行 adapter；`Prepare` 在外部 I/O 前冻结脱敏 request summary 和确切请求 body，事务提交 `sent` 后才执行 HTTP。它严格限制请求、响应大小、JSON object、`result`、必需 echo、redirect 和超时，并按 `WroteRequest` 区分发送前后 transport failure。底层 transport 错误原文和敏感 Provider endpoint 不进入 Attempt、Command 或 API，只保留稳定的发送前/发送后诊断。当前没有自动重试，也没有接入可信上行结果。
-- `devicecore` 测试兼容路径仍硬编码具体 action 及其策略；生产构造器和已安装 Command HTTP 不再使用该路径，而由持久 Device Type profile 提供 action 与策略。测试兼容代码不是第二套产品合同或生产运行模型。
-- `devicecore` 仍包含 `created`、`offline`、`online_only`、`queue_until_expire`、`replace_latest` 和离线恢复/补偿分支；这些旧兼容分支不是 revision 2 已实现的证据。生产 profile 当前仍是 revision 1 / `dispatch_once`，需要按冻结合同显式实施 `online_only`。
-- Provider HTTP acceptance 组件只产生 `provider_accepted/unverified`，不会生成 Device ACK/final；旧 HTTP Command 创建也不再同步调用 Provider。
-- Provider acceptance 在 Command 保持 `sent` 时写入独立 `command.evidence_updated`，不再制造 `from=sent,to=sent` 的 `command.status_changed`；这是已验证的 `.3` 代码事实。`.4` 新增的 Result/Event 和 indeterminate/timeout 语义尚未实现。
-- 已安装运行时的 simulator 配置与 Command 已统一进入 PostgreSQL 主链。新领取 Attempt 在领取事务内锁定并保存当时的 outcome、delay 与 config version；PATCH 也锁定同一配置行，因此提交顺序决定后续 claim 使用的版本，已领取或重新领取的同一 Attempt 保留原 snapshot 和 request key。
-- 生产未安装状态不再启动内存 gateway 或旧 Webhook worker，只开放 setup/health 与明确失败关闭的业务入口。`devicecore` 中 `success`、`failure`、`timeout`、`offline_then_online` 等独立 engine/mode 仅由隔离测试兼容路径使用；它们不是生产事实或第二套产品合同，已安装 `/v1/simulator/gateway` 固定为 `404`。
-- `/v1/admin/**` 通配占位处理器已移除；后台只响应冻结合同明确列出的管理路由，未知技术路径返回统一 `404 not_found`，不以占位成功响应暗示能力存在。
-- Command 主链已有持久 dispatcher、deadline scanner 和 dispatching crash recovery 调用方。claim/preflight、`sent` 事务提交、外部 I/O 与结果事务分离；过期 claimed Attempt 只续领同一 Attempt/request key，过期 dispatching Attempt 当前不重放但会转 `unknown`，与 `.4` 的 `indeterminate` Attempt + 最终 `timeout` 合同存在明确漂移。
-- 持久 Command 创建已与 Device、Provider registry 和发布 profile 统一，且 disabled/deleted Device、Provider 配置、payload 与 Project scope 均在落库前校验；本地集成测试能证明 `queued` 到 Provider 结果分类的代码主链，但不能证明真实 WWTIOT 服务或设备执行。
-- 公开 WWTIOT callback 当前失败关闭，因此 WWTIOT Device 的 `connection_status` 保持 `unknown`。在 revision 2 实施后，这会按保守合同阻止 `unlock`/`lock` 创建；只有可信在线证据链启用后才可进行真实物理动作验收，不能用后台写值或 Provider acceptance 绕过。
+本次最终工作树复审完成以下新鲜、本地、只作用于代码和构建产物的验证：
 
-### Webhook、审计与前端
+- 后端短测试 `go test ./... -count=1 -short`、Omni race 测试 `go test -race ./internal/directdevice/omni -count=1` 与 `go vet ./...` 通过；短测试因 `httptest` 本地回环限制在沙箱外执行，但没有启动持久服务或访问真实 Provider/设备。
+- 固定 `staticcheck 2024.1.1 (0.5.1)` 使用任务临时目录中的 Go `1.23.12` 执行默认与 `integration` tags，两组均无 finding。Go build/module cache 与 `STATICCHECK_CACHE` 均保持在任务临时目录；未修改仓库、用户 cache 或全局 Go 工具链。
+- 本任务确认专属数据库 `device_platform_dual_provider_test` 不存在且当前角色具备建库能力后创建该库，令 `MIGRATION_TEST_DATABASE_URL` 精确指向它，执行完整 `go test ./... -count=1 -tags=integration -timeout=120s -v`。Migration `009` up/down、repository identity tombstone、Device service tombstone、状态变化后的历史 Command 幂等重放、CommandResult、Omni inbound 持久化/隔离和 worker 主链/恢复均通过；测试使用各自唯一临时 schema。10 个依赖独立 Redis 的进程/安装/WWTIOT runtime 用例因未设置 `MIGRATION_TEST_REDIS_URL` 明确跳过，不计为 Redis 验收。全部测试和连接结束后，该任务专属数据库被删除；既有 `device_platform_test` 与 acceptance 数据库均未被复用、迁移、清空、改权或删除。
+- 前端 `pnpm --dir frontend install --frozen-lockfile`、正式 `pnpm --dir frontend i18n:check`、TypeScript 类型检查、production build、范围 ESLint、变更源码与 `package.json` 的 Prettier，以及三个变更页面的 Stylelint 通过。`tsx@4.20.6` 已作为直接 devDependency 固定；i18n 检查确认 zh-CN/en-US 各 387 个 key 且集合一致，当前引用的 280 个 key 均存在。
+- `git diff --check` 通过。
 
-- Device 与 Command HTTP 已在持久事务内写 Event、配置存在时的初始 Webhook Delivery 和 Audit；已安装运行时的 Event、Webhook Delivery/Attempt 与 Audit 管理路由读取相同的 PostgreSQL 事实。Event 与 Audit 没有写入 API。
-- 最终 schema 与持久 Audit 服务已移除从未由运行时写入的 `setup.completed`；历史 migration 中该值只用于把旧 schema 逐步迁移到 `006`，不构成当前 allowlist。
-- dead resend 只创建新的持久 `pending` Delivery，使用重发时的当前 endpoint/config/secret version snapshot，通过 `replay_of_delivery_id` 保留来源，并与管理员 `webhook.delivery_replayed` Audit 同事务提交；原 Delivery、raw body snapshot、状态和 Attempts 不变。并发重发各自创建独立历史，endpoint 未配置或非 dead 均失败关闭。
-- 已安装运行时只启动持久 Webhook dispatcher；它领取 PostgreSQL Delivery、为每次请求创建 Attempt、按 `1s, 5s, 30s, 2m` 有界重试、恢复过期 lease 并在耗尽后进入 `dead`。未安装兼容模式的旧内存 worker 不再作为安装后事实。
-- worker 当前逐字节复用 Delivery raw body，以 `timestamp + "." + raw_body` 生成 `sha256=` HMAC-SHA256，并携带 timestamp/signature/event-id headers；任意 2xx 进入 `delivered`。它尚未实现 `.4` 的 `v1.timestamp.secret_version.raw_body` 输入、`v1=` 格式、`X-Device-Platform-Secret-Version` 和接收方 300 秒合同。
-- dispatcher 禁止 redirect 和环境代理，连接时校验 DNS 返回的每个地址以防 rebinding；默认拒绝非公开、loopback、link-local、multicast 与云 metadata 地址，只有部署 `WEBHOOK_EGRESS_ALLOWLIST` 可显式开放所需内部网段，metadata 固定地址不能由宽网段放行。
-- `/v1/events` 与 `/v1/audit-logs` 在已安装持久运行时和未安装兼容路径都严格只读；旧内存 service 的写方法仍是未接入路由的代码残留。
-- 前端 API 类型与页面已使用后端冻结字段和 `{items}` 分页 envelope；所有资源表格只请求当前服务端页并使用 `meta.total`，Dashboard 也只读取有界第一页，不再隐式拉取全量。Project/Device 引用选择器按 100 条服务端页触底续载，不会静默截断第 101 条后的资源。Audit 展示 `actor_type`、`actor_id`、`ip_address`、`metadata`、资源与 `occurred_at`；Command 详情展示扁平 aggregate、Attempt/Event、confirmation/evidence 与终止原因；Webhook 展示 `target_url`、Attempt 详情并只允许对 `dead` Delivery replay。
-- Admin9 模板的用户、角色、菜单、字典、系统日志和用户中心源码、locale 与 `/api/system/**` 客户端均已移除；当前后台只包含冻结目标内的单管理员技术控制台页面。登录页不提供未纳入合同的自助密码找回或重置入口，相关 URL 按未知前端路由处理。菜单固定由前端冻结路由生成，不提供服务端菜单开关，旧 `/v1/auth/menu` 空占位端点已移除。未使用的 Arco/FAQ 外链菜单、通知与 Dashboard mock、编辑器、图片库、QQ 地图、品牌宣传、验证码输入和面包屑源码及其专用依赖或 locale 已从管理后台工程移除，不进入生产 bundle。
-- Project 创建、更新和凭据轮换保留一次性明文披露；轮换入口在请求期间全局互斥，凭据弹窗关闭时立即清除前端引用并卸载内容。Device 创建只提交允许字段，Simulator identity 由平台派生，名称/lifecycle 更新受后端状态机约束；Command action 来自 Device Type profile，创建 body 使用 `project_id`，只有 `queued` 可取消。
-- Provider acceptance 保持 Command 为 `sent` 时，worker 在完成 Attempt 并单调提升 Command confirmation/evidence 的同一事务内写 `command.evidence_updated` Event 及可选初始 Delivery；其 payload 固定包含 `status`、`attempt_id`、`outcome`、`confirmation_level` 和 `evidence_status`，稳定去重键绑定 Command、Attempt 与证据事实。`command.status_changed` 只用于 `from != to` 的真实状态迁移，数据库 migration 同步约束 Event 类型、payload 与关联。
-- 管理后台提供只读 Provider/Device Type 注册与 profile 诊断，以及可按 Project、Device、Command 和全部稳定类型（含 `command.evidence_updated`）筛选的独立 Event 列表/详情。Command 与 Webhook Attempt 仍在各自详情诊断，Audit 保持只读。页面没有将 Provider `integration_status`、Simulator 的 `provider_accepted/verified` 或 WWTIOT HTTP acceptance 展示为 Device ACK/final/success。
+以下仅为实施阶段保存的历史报告，不作为本次最终文件版本的独立验证：
 
-## 已有测试能证明什么
+- 专用隔离 PostgreSQL 数据库曾报告通过 Command worker、Result、Device、Project、Webhook worker、迁移/冻结合同和相关 HTTP 集成测试；这些结果早于最终文件版本。
+- Omni fake peer 测试曾报告覆盖 Bike/IoT 的 Q0/H0/S5/S6、分包/粘包、非法前缀、Q0-only binding、generation fencing、并发、清理和双 listener fatal。
+- ego-browser 曾在隔离的 `device_platform_acceptance` 数据库验证 Provider、Device、Command、Event 与 Audit 页面，并只对 simulator 下发 `query_status`；本次复审未启动服务或浏览器，也未复用该 acceptance 数据库。
+- 该历史 simulator Command 报告为 `provider_accepted/verified` Attempt，Result 为空，只产生 `command.created`、`command.status_changed` 与 `command.evidence_updated`；它不证明 Device ACK、`device_final` 或设备执行成功。
+- 所有阶段均未向真实 WWTIOT 或 Omni 设备执行 `query_status`、`unlock` 或 `lock`。
 
-- 现有 Go 与 PostgreSQL 测试充分覆盖 `.3` 的持久 Project/Device/Command、幂等、worker、Event/Webhook/Audit、安装恢复和并发语义；其中跨进程恢复仍断言 `unknown/provider_delivery_unknown`，Webhook 仍断言旧签名 wire。WWTIOT client 单元测试已覆盖 `unlock`、`lock`、`query_status` 三项 V2 请求/签名映射，已安装应用的持久端到端自动化目前用 `unlock` 覆盖 acceptance/timeout，并非真实设备测试。以上均不能证明 `.4` 新合同或真实服务/设备行为。
-- 前端 `type:check`、`i18n:check`、生产 build、ESLint 与 Stylelint 已通过。ego-browser 在桌面与 390px 移动视口验收 Dashboard、Project、Device、Provider/Device Type、Command、Event、Webhook、Audit 和 Simulator；Command、Event、Webhook 与 Device Type Drawer 以及 Project/Device Modal 均受视口宽度约束。Event 翻到第 2 页时实际请求 `page=2&page_size=10`；`command.evidence_updated` 筛选实际请求对应 `event_type` 并只返回该类型，详情展示五个必需 payload 字段，桌面与 390px 视口无全局横向溢出。含 106 个 Project 和单 Project 105 台 Device 的隔离数据验证两个引用选择器均实际请求 `page=2&page_size=100` 并显示末页选项。2 秒网络延迟下，一次 API Key 轮换期间当前页所有 API Key/Webhook secret 轮换入口都被禁用，只有目标入口显示 loading；凭据弹窗关闭后明文不再存在于 DOM。本地隔离数据库中的 Simulator Project/Device/Command 与 outcome 只产生和展示 Provider 层证据，未把它表述为设备成功。
-- 这些检查能证明持久 Command/Webhook worker、simulator 主链、并发和数据库恢复的代码行为，但不能证明某个外部业务 Webhook endpoint 可达、公开可信 callback、真实 WWTIOT 服务行为或真实智能锁最终执行；Command 创建的 `201`/幂等重放 `200` 仍只证明平台接受请求并持久化 `queued`，Simulator 与本地 HTTP 测试服务器都不能替代真实设备证据。
+## 当前安全边界
 
-## Unknown 与验证条件
+- 未使用或输出真实 Provider 凭据、真实 IMEI、raw frame 或未脱敏 socket error。
+- 未执行任何真实 `lock`、`unlock` 或 `query_status`，也没有自动重试真实写操作。
+- WWTIOT acceptance、Omni socket 写入和 simulator `verified` 都不会创建 Device ACK、device final 或 `success`。
+- Omni inbound 的 Audit `result=success` 只表示技术消息被接收并持久化，RawMessage 仍为 `unverified`。
+- Platform Core 不包含 WWTIOT/Omni 专用字段或按 Provider 分支的 action 语义；`provider_profile` 作为 opaque binding 传递，映射留在 adapter。
 
-| Unknown                                                                               | 验证条件                                                                                                                           |
-| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| 当前 WWTIOT 凭据与设备配置是否有效，以及生产响应含义                                  | V2 下行请求签名算法已与资料互证；仍需厂商确认、受控凭据和禁止泄密的联调环境验证真实服务行为。                                      |
-| 真实设备收到、执行、拒绝和延迟回执的行为                                              | 隔离测试设备、明确写操作授权和可观测的设备侧证据。                                                                                 |
-| V2 资料描述的设备信息 callback 在当前账号下是否可用，以及能否作为可关联的最终执行结果 | 厂商确认回调配置与签名规则，并用受控真实设备验证送达、关联、去重和结果终局性；详见 [WWTIOT Provider 合同](./providers/wwtiot.md)。 |
-| WWTIOT 实际可观测的最高 confirmation level，以及该层级是否足以支撑设备平台正式验收    | 厂商合同、受控真实设备端到端证据，以及产品所有者基于证据的验收决定。                                                               |
-| 生产网络、TLS、限流、配额和重试安全性                                                 | 目标部署网络与厂商限制说明。                                                                                                       |
+## 尚未关闭的阻塞
 
-## 当前完成判定
+| 阻塞 | 影响 | 解除条件 |
+| ---- | ---- | -------- |
+| Omni 目标设备与两个 profile 的对应关系 Unknown | 具体设备真实连接、派发和实机验收 | 厂商可追溯型号/固件/profile 对照，加受控只读握手证据 |
+| Omni TCP peer/IMEI/frame 无已冻结认证与防重放 | 可信 Result、DeviceState、online、生产安全 | 正式认证合同或受控网络身份方案，加冒充/重放/重连测试 |
+| Omni 物理 action 字段与 KEY 生命周期 Unknown，bike 无主动 lock | Omni `unlock`/`lock` 实施与三 action 实机矩阵 | 厂商书面映射、产品决定及受控故障矩阵；bike lock 需新协议/profile 或接受能力缺口 |
+| WWTIOT 响应验签、callback 签名/关联/防重放 Unknown | verified acceptance、可信 State/Result 和真实 final | 厂商正式规则与受控重复/迟到/关联验证 |
+| 两 Provider 的可信 online/final 能力与业务可接受性 Unknown | `online_only` 物理动作和共享单车正式验收 | 受控设备、现场观察/恢复方案、业务风险裁决和逐次明确授权 |
+| NATS Outbox/Inbox 尚未实现 | 目标异步架构与 Broker 故障/重投验收 | 实现 Publisher/Consumer/Recovery，并完成重复、Ack、redelivery 与故障测试 |
 
-- **Platform Core 技术实现：未完成。** 阻塞项是已确认的仓库内实施漂移：Command `unknown`/旧 Attempt outcomes、smart-lock revision 1、缺少 CommandResult/迟到 Event、幂等 effect fingerprint 未覆盖全部执行字段，以及 Webhook `.4` wire 未实现。这些不是外部 Unknown，可直接进入开发和自动化验证。
-- **真实业务验收：未通过。** WWTIOT callback/final result/实机行为、最高 confirmation level 与业务可接受性仍为 Unknown，必须完成受控真实设备矩阵并由产品所有者裁决。
-- **边界与实施合同冻结：不由本文决定。** 冻结结果记录在文档入口和对应合同；冻结不把上述实现缺口或 Unknown 改写成已完成。
-
-不在本文记录本机数据库内容、真实密钥或真实业务数据；它们既敏感，也不能作为长期实现事实。
+本地验证命令和安全运行方式见 [Local Development](./local-development.md)。真实设备验收必须逐 Provider、逐已证明 profile 完成 [smart-lock 验收矩阵](./device-types/smart-lock.md#真实设备验收矩阵)，不能由另一 Provider 或 simulator 代替。

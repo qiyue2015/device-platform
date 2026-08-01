@@ -1,14 +1,13 @@
 ---
-title: API 与生命周期合同
-created: 2026-05-16
-updated: 2026-07-31
-status: frozen-for-implementation
-freeze_revision: 2026-07-31.4
+title: API 合同
+updated: 2026-08-01
+status: product-decision-required
+contract_revision: 2026-08-01
 ---
 
-# API 与生命周期合同
+# API 合同
 
-本文定义服务当前真实目标所需的接口、认证和技术生命周期语义，从属于[平台边界合同](./platform-boundary-contract.md)、[当前目标合同](./platform-target-contract.md)与[领域模型合同](./domain-model-contract.md)。[当前实现状态](./current-state.md)记录代码是否已经满足本文；实现缺口不能降低合同语义。
+本文定义服务当前真实目标所需的 HTTP 路径、认证、请求/响应 DTO、幂等 wire 规则和错误码，从属于[平台边界合同](./platform-boundary-contract.md)、[当前目标合同](./platform-target-contract.md)与[领域模型合同](./domain-model-contract.md)。对象、不变量、状态机、事务和恢复只由 Domain Model 定义；本文只规定它们如何通过 HTTP 表达。
 
 ## 命名空间
 
@@ -41,7 +40,7 @@ JSON 响应使用统一 envelope：
 
 - `success` 表示本次 API 处理是否成功。
 - `status` 是 HTTP status code。
-- `code` 保留兼容性的数值结果码；成功为 `0`。
+- `code` 保留兼容性的数值结果码；成功为 `0`。失败时采用 HTTP status、固定非零值还是错误目录编号尚未由上级合同唯一裁决，按 [Platform Target 的产品裁决](./platform-target-contract.md#需要产品所有者裁决)保持阻塞；调用方当前只能以 HTTP status 和 `error_code` 分支，不得依赖失败 `code`，服务端也不得把任一候选冻结为稳定 wire。
 - `error_code` 是稳定、可供调用方判断的机器错误码。
 - `message` 面向人类诊断，不作为业务分支依据。
 - `data` 是资源数据，`meta` 承载分页等元信息。
@@ -58,7 +57,7 @@ JSON 响应使用统一 envelope：
 - 新建资源返回 `201`，普通读取/更新返回 `200`，无 response body 的成功操作返回 envelope 中的明确结果对象，不返回裸空 body。
 - 服务端为每个请求生成 UUID `request_id` 并返回 `X-Request-ID` header 与 envelope 字段；客户端提供的同名 header 只能作为独立 `client_request_id` 经长度与字符校验后记录，不能替代服务端 ID。
 
-Device 的 `connection_status` 只能是 `unknown`、`online`、`offline`；`lifecycle_status` 只能是 `active`、`disabled`、`deleted`。只有对应 Provider 合同允许并通过验证的上报才能改变 connection status，普通 Project、Device 更新请求和当前 simulator outcome 配置都不能直接写它。WWTIOT callback 仍失败关闭期间，WWTIOT Device 的 connection status 保持 `unknown`。
+Device 的 `connection_status` 只能是 `unknown`、`online`、`offline`；`lifecycle_status` 只能是 `active`、`disabled`、`deleted`。只有对应 Provider 合同允许并通过验证的上报才能改变 connection status，普通 Project、Device 更新请求和当前 simulator outcome 配置都不能直接写它。WWTIOT callback 失败关闭期间，WWTIOT Device 保持 `unknown`；Omni 设备身份/连接代际真实性 Unknown 关闭前，TCP accept、自报 IMEI、心跳或 socket 写入也不能把 Omni Device 提升为 `online`。
 
 ## 首次安装
 
@@ -71,9 +70,7 @@ POST /setup/test-redis
 POST /setup/install
 ```
 
-`GET /setup/status` 只返回 `needs_setup`、`installed` 和 `step="system"`，不返回路径、连接串或 secret。其余三个端点只在未安装时可用；安装完成后统一返回 `409 setup_completed`。install 固定按进程内锁、专用跨进程文件锁、目标 PostgreSQL 的 session-level advisory lock 顺序获取所有权；跨进程锁文件必须与持久完成标记使用不同文件，不能因完成标记的原子替换改变被锁 inode。获文件锁后重新检查完成标记，获数据库锁后再检查 users 表。文件锁从完成标记复查一直持有到持久副作用结束、运行时发布和响应决策完成；数据库锁从 migration 前一直持有到管理员补偿或完成标记写入并发布运行时。锁等待必须响应 request context；获取失败、等待中止或标记写入前确认锁所有权失败使用 `500 install_lock_failed`。
-
-数据库另以独立于 email 的约束强制 `users` 全表最多一行且该行必须 `is_admin=true`；空表检查与管理员写入位于同一短数据库事务。即使误配置的多主机没有共享文件锁，只要指向同一数据库，数据库锁与约束也不得允许创建第二个用户。同一运行配置目标或同一数据库上的两个并发安装请求至多一个成功。
+在没有待恢复副作用的正常分支，`GET /setup/status` 只返回 `needs_setup`、`installed` 和 `step="system"`，不返回路径、连接串或 secret。其余端点只在未安装时可用；安装完成后统一返回 `409 setup_completed`。同一持久配置或数据库上的并发安装至多一个成功，数据库必须独立强制仅有一个管理员。跨介质失败后的 status/install wire 在产品裁决前不属于已冻结分支。
 
 `test-db` 与 `test-redis` 分别只接受严格 object `{"url":"..."}`，连接 timeout 为 5 秒。Database URL 只接受 `postgres`/`postgresql`，Redis URL 必须能由目标 Redis client 解析。成功只返回 `reachable=true`；响应、日志和审计都不得回显含凭据 URL。
 
@@ -90,25 +87,11 @@ server.addr
 server.log_level
 ```
 
-所有字段必需；拒绝未知字段。email trim 后转小写并按 email address 校验，最大 254 字符；display name trim 后长度 `2..80`；password UTF-8 byte length `8..128` 且必须与 confirm 相同；server address 是 `:port` 或 `host:port`，log level 只能是 `debug|info|warn|error`。安装只允许空 users 表，创建唯一管理员，生成至少 32 byte 的 JWT secret 和 32 byte 的 Webhook secret encryption key，并以原子替换、权限 `0600` 的运行配置保存；响应只返回 `installed=true`。成功处理安装的进程可在原监听地址内热切换数据库、认证、领域服务和 worker；`server.addr` 与 `server.log_level` 只在下次进程启动时生效，安装响应不表示当前 listener 已重绑定或 logger 已重建。
+所有字段必需；拒绝未知字段。email trim 后转小写并按 email address 校验，最大 254 字符；display name trim 后长度 `2..80`；password UTF-8 byte length `8..128` 且必须与 confirm 相同；server address 是 `:port` 或 `host:port`，log level 只能是 `debug|info|warn|error`。安装只允许空管理员集合，创建唯一管理员，生成至少 32 byte 的 JWT secret 和独立的 32 byte Webhook secret encryption key；响应只返回 `installed=true`。
 
-数据库 migration 必须可重复执行。所有会返回 error 的数据库连接验证、认证、领域服务和 worker 构造必须在完成标记前结束，并组成一个可一次发布的完整运行时快照。安装完成的唯一持久权威是完成标记；运行配置中的 `DEVICE_PLATFORM_INSTALLED` 值不能单独证明安装完成。
+安装必须具有单一持久完成事实，并以可恢复方式协调运行配置、migration、唯一管理员和 secret。写入完成事实后不得回滚为“未安装”；恢复未闭合时服务保持 unready，且不得承载业务 API。完成事实写入前跨介质失败究竟 roll-forward、补偿还是 fail-stop，已进入 [Platform Target 的产品裁决](./platform-target-contract.md#需要产品所有者裁决)；裁决前不得实现或验收该崩溃分支，也不得从现有错误码猜测恢复策略。具体文件、锁、journal 或热切换机制在裁决后由 Runtime Architecture 细化，但不能降低上述不变量。
 
-在首次替换运行配置或提交管理员之前，install 必须先原子写入权限 `0600` 的持久 recovery journal，同时持久化它引用的本次请求唯一、权限 `0600` 的原配置备份。journal 只记录随机 `install_id`、固定阶段 `prepared|admin_pending|admin_reverted|config_reverted`、本次预生成的 `admin_id`、原配置是否存在、唯一备份路径及完整性摘要，不记录连接串、密码、secret 或原配置正文；journal、备份、运行配置和完成标记必须位于所有安装进程共享的同一持久目标。每次原子写入或阶段变更都必须在进入下一步前 fsync 文件及父目录。
-
-journal 落盘后的副作用顺序固定为：以唯一临时文件原子替换并持久化运行配置、将 journal 原子推进并持久化为 `admin_pending`、在短事务内检查空 users 表并插入该 `admin_id`、原子写入并持久化完成标记、清理 journal/备份、无错误地发布完整运行时快照。marker 后的清理失败按下文 fail-stop，不得先发布运行时或承载业务流量。
-
-完成标记写入前的正常失败或进程重启，都必须在文件锁内按 journal 幂等恢复。`prepared` 表示管理员事务尚不可能开始，可以直接恢复原配置。`admin_pending` 表示当前运行配置已经持久化目标 Database URL；恢复器必须先由该配置连接目标数据库、获取同一 advisory lock、仅删除与 journal `admin_id` 精确匹配的管理员，然后在仍保留当前目标配置时把 journal 原子推进并持久化为 `admin_reverted`。`prepared|admin_reverted` 恢复或删除本次运行配置并验证持久结果后，把 journal 原子推进并持久化为 `config_reverted`；从 `admin_reverted` 起不得再次要求目标 Database URL。`config_reverted` 只清理 journal、备份和本次临时文件，不再访问数据库或恢复配置。恢复未完成前不得开始新的安装副作用；下次进程启动和下次 install 都必须先重试同一恢复。恢复失败时，请求返回 `500 install_recovery_failed`，进程保持 unready 且不得提供业务 API。已提交 migration 不回滚，由下一次 install 安全重入。
-
-完成标记一旦存在，任何残留 journal 只代表待清理工件，绝不能再删除管理员或恢复旧配置；进程必须从已持久配置构造运行时并在 ready 前清理 journal/备份。标记写入后、运行时发布前崩溃时，该进程不得继续承担流量，并必须从已持久配置重启，不伪造一次新安装。完成标记是最后一个改变安装完成语义的持久副作用；其后的恢复工件清理不改变完成事实。
-
-原子写入、备份恢复和完成标记各使用本次请求唯一的临时文件，失败清理不得覆盖或删除其他安装请求的文件。安装请求中的连接串、密码和生成的 secret 不进入普通日志、Event 或 Audit。
-
-完成标记写入后发生的 recovery 工件清理、文件描述符关闭或锁释放故障不能把已经持久完成的安装响应成可重试的 `500`，也不能回滚完成标记；进程必须记录脱敏 fatal 诊断、保持 unready 并退出，由新进程从持久配置完成清理和恢复。正常释放按数据库锁、文件锁、进程内锁的逆序完成。
-
-多进程部署在首次安装前必须共享同一运行配置与完成标记目标，并只将安装入口暴露给受控管理网络。安装成功时，只有处理该请求的进程已热切换到安装后运行时；安装前已启动的其他进程的 `GET /setup/status` 继续返回该进程尚未发布运行时的 `installed=false`/`needs_setup=true`，而其他 setup POST 因共享完成标记返回 `409 setup_completed`。这是只允许于部署排程期的重启过渡态；该进程必须保持 unready、退出流量并从已生成配置重启，不得继续承担业务 API。
-
-`GET /healthz` 只证明进程存活并返回 `200`。`GET /readyz` 以本进程是否已发布完整运行时快照为权威：普通首次安装前返回 `503 setup_required`；journal 恢复或完成后清理尚未结束时返回 `503 setup_recovery_required`；发现共享完成标记但本进程仍未发布运行时时返回 `503 setup_restart_required`；只有完整快照发布且 recovery 工件已清理后返回 `200`。ready 响应不承诺实时探测所有外部依赖，但不得仅因磁盘已有完成标记或配置文件就返回 `200`。
+`GET /healthz` 只证明进程存活并返回 `200`。`GET /readyz` 只有在本进程已经发布完整可用运行时且无待恢复安装副作用时返回 `200`；未安装、恢复中或需要重启分别返回 `503 setup_required`、`503 setup_recovery_required`、`503 setup_restart_required`。
 
 Setup 失败码固定为：参数/schema 不合法 `400 invalid_install_request`；数据库或 Redis 连接失败分别为 `400 database_unavailable`、`400 redis_unavailable`；users 表不为空或管理员创建冲突为 `409 admin_creation_failed`；migration、运行配置、锁/完成标记、恢复或随机源失败分别为 `500 migration_failed`、`500 config_write_failed`、`500 install_lock_failed`、`500 install_recovery_failed`、`500 secret_generation_failed`。安装目标不可写为 `500 install_target_not_writable`。响应 message 必须脱敏，不包含连接串、SQL、文件内容或 secret。
 
@@ -124,7 +107,7 @@ Setup 失败码固定为：参数/schema 不合法 `400 invalid_install_request`
 - login 失败按规范化 email + 认证层确认的 client IP 限制为 15 分钟内 5 次，并按 client IP 限制为 15 分钟内 20 次；超过后返回 `429 rate_limited` 与整数 `Retry-After`。计数必须跨进程重启保存，成功登录只清除对应 email + IP 计数，不清除 IP 总量计数。
 - 限流状态存储不可用时 login 返回 `503 auth_dependency_unavailable`，不能绕过限流继续认证；已登录 API 的 JWT/session generation 数据库校验也失败关闭。
 
-首次安装完成后，除 `GET /setup/status` 外的 `/setup/...` endpoint 返回 `409 setup_completed`。安装事务只创建一个管理员；当前不提供管理员、员工、角色或权限 CRUD。
+首次安装完成后，除 `GET /setup/status` 外的 `/setup/...` endpoint 返回 `409 setup_completed`。安装只创建一个管理员；当前不提供管理员、员工、角色或权限 CRUD。
 
 ## Project 机器认证与隔离
 
@@ -140,8 +123,6 @@ X-API-Key: {project_api_key}
 - 认证后得到唯一 `project_id`，查询与写入都必须以它作为隔离条件。
 - 每个 Device 只属于一个 Project；传入其他 Project 的 `device_id` 应按不可见资源处理。
 - 不使用共享单车用户身份、订单身份或后台管理员 session 代替 Project 机器认证。
-
-当前实现是否满足 API Key、IP whitelist 与 Project 隔离要求，以 [Current State](./current-state.md) 的逐项证据为准；任何未满足项都不是本合同允许的行为。
 
 ## 当前 Open API
 
@@ -173,6 +154,8 @@ POST   /v1/open/device-commands/{command_id}/cancel
 | Audit       | `GET /v1/audit-logs`、`GET /v1/audit-logs/{id}`                                                                                                 | 只读技术审计。                                                                       |
 | Simulator   | `GET/PATCH /v1/simulator`                                                                                                                       | 管理显式 simulator Provider 的可重复行为；不建立平行命令域。                         |
 
+上表只冻结路由和领域效果。Project/Device PATCH、Command cancel、凭据 rotate、Webhook resend 与 simulator PATCH 的成功 `data` DTO 尚未由上级合同唯一裁决，候选口径、阻塞与关闭证据见 [Platform Target](./platform-target-contract.md#需要产品所有者裁决)。裁决前不得为这些 mutation 生成稳定 SDK 或通过 wire 验收；这不影响其只读资源 DTO 和失败响应合同。
+
 列表只接受以下资源过滤参数，均为 exact match；未列出的 query key 返回 `400 invalid_request`：
 
 | List route                 | 允许过滤参数                                                                               |
@@ -203,7 +186,7 @@ Admin 与 Open API 的同类资源使用相同排序。Device Type 与 Provider 
 
 Open API 的 Project scope 始终来自认证，不接受 `project_id` query。`GET /v1/open/projects/{project_id}` 的 path ID 必须等于认证得到的 Project ID；不相等时按不可见资源返回 `404 not_found`。枚举过滤值必须属于对应稳定枚举；UUID 过滤值必须合法，否则返回 `400`，不能静默产生空列表。
 
-Provider callback namespace 是 `POST /v1/provider-callbacks/{provider_code}`，不使用管理员或 Project 凭据，而由对应 Provider adapter 按厂商合同验证 UserID、签名、schema 与防重放条件。当前 `wwtiot` 路径固定返回 `503 provider_callback_unverified`，不读取或保存 body，也不更新 Device、Command、RawMessage 或 Event；其他未注册 provider code 返回 `404 not_found`。WWTIOT 只实现不挂接公开入口的无副作用 decoder/validator 组件与契约测试，签名顺序确认并重新冻结前不得改变 503 行为。
+HTTP Provider callback namespace 是 `POST /v1/provider-callbacks/{provider_code}`，不使用管理员或 Project 凭据，而由对应 Provider adapter 按厂商合同验证身份、schema 与防重放条件。当前 `wwtiot` 路径固定返回 `503 provider_callback_unverified`，不读取或保存 body，也不更新 Device、Command、RawMessage 或 Event；`omni` 是 direct-device TCP Provider，不暴露 HTTP callback，该路径返回 `404 not_found`；其他未注册 code 同样返回 `404`。WWTIOT 签名顺序确认并重新冻结前不得改变固定 503 行为。
 
 ### Simulator 配置
 
@@ -216,7 +199,7 @@ outcome:  required; provider_accepted | provider_rejected |
 delay_ms: required integer; 0..60000
 ```
 
-配置变更影响变更提交后新领取的 simulator Attempt，不改写已创建或已领取 Attempt。simulator Device 创建的 Command 必须经过与 WWTIOT 相同的 dispatcher、持久 CommandAttempt、Command 状态机、Event、Outbox/Webhook 和 Audit 链路；simulator 只替换 Provider adapter 的受控结果，不拥有平行 Command map 或状态机。
+配置变更影响变更提交后新领取的 simulator Attempt，不改写已创建或已领取 Attempt。simulator Device 创建的 Command 必须经过与 WWTIOT、Omni 相同的 dispatcher、持久 CommandAttempt、Command 状态机、Event、Outbox/Webhook 和 Audit 链路；simulator 只替换 Provider adapter 的受控结果，不拥有平行 Command map 或状态机。
 
 | simulator 配置模式            | 持久 Attempt outcome          | confirmation/evidence            | Command 结果                                                                  |
 | ----------------------------- | ----------------------------- | -------------------------------- | ----------------------------------------------------------------------------- |
@@ -242,14 +225,15 @@ Project 常规读取返回 `id`、`name`、`webhook_url`、`webhook_configured`�
 
 Device Type 读取返回 `code`、`revision`、`name` 和 actions；每个 action 至少包含 identifier、payload schema、risk level、delivery policy、dispatch deadline、provider request timeout、result observation timeout 与 retry/override flags。
 
-Provider 读取返回 `code`、`name`、`access_type`、`transport_protocol`、`adapter` 和 `integration_status=unconfigured|configured_unverified|verified`，不返回 endpoint、UserID、UserKey 或签名材料。当前 registry 固定为：
+Provider 读取返回 `code`、`name`、`access_type`、`transport_protocol`、`adapter`、`profiles` 和 `integration_status=unconfigured|configured_unverified|verified`，不返回 endpoint、UserID、UserKey、监听地址或签名材料。`profiles` 是只读 opaque identifier 列表；具体含义只来自 Provider 合同。当前 registry 固定为：
 
-| code        | name        | access_type | transport_protocol | adapter            |
-| ----------- | ----------- | ----------- | ------------------ | ------------------ |
-| `wwtiot`    | `WWTIOT`    | `cloud_api` | `http`             | `wwtiot_cloud_api` |
-| `simulator` | `Simulator` | `simulator` | `internal`         | `simulator`        |
+| code        | name        | access_type    | transport_protocol | adapter            | profiles                                                     |
+| ----------- | ----------- | -------------- | ------------------ | ------------------ | ------------------------------------------------------------ |
+| `wwtiot`    | `WWTIOT`    | `cloud_api`    | `http`             | `wwtiot_cloud_api` | `wwtiot-cloud-api-v2`                                        |
+| `omni`      | `Omni`      | `direct_device` | `tcp`             | `omni_direct_tcp`  | `omni-bike-tcp-v2.0.7`, `omni-iot-tcp-v1.3.5`                |
+| `simulator` | `Simulator` | `simulator`    | `internal`         | `simulator`        | `simulator-v1`                                               |
 
-WWTIOT 必需配置缺失或格式无效时为 `unconfigured`；配置完整但尚未取得已验证响应真实性的受控真实环境证据时为 `configured_unverified`。当前冻结合同没有定义保存或提升 WWTIOT `verified` 的权威状态，因此运行时在重新冻结该证据机制前最多返回 `configured_unverified`；真实联调记录本身不能通过隐式进程状态提升它。Simulator 是进程内受控 adapter，注册且配置可读写时为 `verified`。Provider `verified` 只评价 adapter 接入，不代表任何 Device 已执行命令或达到 Device final result。
+WWTIOT 必需配置缺失或格式无效时为 `unconfigured`；配置完整但尚未取得已验证响应真实性的受控真实环境证据时为 `configured_unverified`。Omni listener 配置缺失时为 `unconfigured`；配置完整但设备认证、profile 匹配和连接代际未验证时最多为 `configured_unverified`。当前合同没有定义自动提升 WWTIOT 或 Omni `verified` 的权威状态，真实联调记录不能通过隐式进程状态提升它。Simulator 是进程内受控 adapter，注册且配置可读写时为 `verified`。Provider `verified` 只评价 adapter 接入，不代表任何 Device 已执行命令或达到 Device final result。
 
 ### Device
 
@@ -259,24 +243,25 @@ WWTIOT 必需配置缺失或格式无效时为 `unconfigured`；配置完整但�
 project_id:         required for admin API
 name:               required, trimmed length 1..120
 device_type_code:   required; current value smart-lock
-provider_code:      required; current value wwtiot or simulator
-provider_device_id: required for wwtiot; forbidden for simulator
+provider_code:      required; current value wwtiot, omni or simulator
+provider_profile:   required; must belong to the selected Provider
+provider_device_id: required for wwtiot or omni; forbidden for simulator
 ```
 
-WWTIOT `provider_device_id` trim 后必须匹配平台约束 `[A-Za-z0-9._:-]{1,128}`；这是输入安全边界，不是对厂商 ID 格式的推断。simulator Device 的 `provider_device_id` 由平台固定为新建 Device UUID；它不是厂商标识。当前没有允许由调用方写入的 Device metadata key，因此创建和更新请求都拒绝 `metadata`。`access_type`、`transport_protocol` 和 `adapter` 由 Provider registry 推导；调用方不能写。新建 Device 固定以 `lifecycle_status=active`、`connection_status=unknown`、`current_state=null`、`last_seen_at=null` 开始；simulator 也不能仅因注册成功伪造连接或上报事实。PATCH 只允许更新 `name` 和 `lifecycle_status=active|disabled|deleted`；不允许改变 Project、Device Type 或 Provider identity。
+`provider_code` 当前只能是 `wwtiot|omni|simulator`。WWTIOT `provider_device_id` trim 后必须匹配平台约束 `[A-Za-z0-9._:-]{1,128}`；Omni 必须是 15 位十进制 IMEI；simulator Device 的 `provider_device_id` 由平台固定为新建 Device UUID。调用方必须显式提交 registry 中属于所选 Provider 的 `provider_profile`，不得让服务按 IMEI 或品牌猜测；simulator 固定为 `simulator-v1`。当前没有允许写入的 Device metadata key，因此创建和更新请求都拒绝 `metadata`。`access_type`、`transport_protocol` 和 `adapter` 由 Provider registry 推导；调用方不能写。新建 Device 固定以 `lifecycle_status=active`、`connection_status=unknown`、`current_state=null`、`last_seen_at=null` 开始。PATCH 只允许更新 `name` 和 lifecycle；Project、Device Type、Provider identity 与 profile 均不可更新。
 
-Device lifecycle 只允许 `active -> disabled|deleted` 与 `disabled -> active|deleted`。`deleted` 不可恢复、不可更新 name、不可接收新 Command，但 Admin 与所属 Project 的历史读取和审计关联仍保留，列表默认也不隐藏它。active/disabled Device 才能改名；同一 PATCH 同时提供 `name` 与目标 `lifecycle_status=deleted` 返回 `400 invalid_request`。每次 lifecycle 变化写 Audit 与 `device.lifecycle_changed` Event，其固定 `reason_code=admin_requested`；当前没有调用方可写的 lifecycle reason 字段。名称变化只写 `device.updated` Audit，不生成未冻结的 Event 或 Outbox；未发生值变化的 name-only PATCH 仍成功返回当前资源，但不写 Audit。
+Device lifecycle 迁移和终态只以 Domain Model 为准。API PATCH 只接受 `name` 和目标 `lifecycle_status=active|disabled|deleted`；同一请求同时提供 `name` 与目标 `deleted` 返回 `400 invalid_request`。列表默认不隐藏 `deleted`，Admin 与所属 Project 仍可读取历史。每次有效 lifecycle 变化写 Audit 与 `device.lifecycle_changed` Event，其固定 `reason_code=admin_requested`；名称变化只写 `device.updated` Audit。未发生值变化的 name-only PATCH 返回当前资源且不写 Audit。
 
-Device 注册允许选择当前 `integration_status=unconfigured` 的已注册 Provider；这只建立技术资源，不允许创建 Command，后者仍返回 `409 provider_not_configured`。未知 `project_id`、Device Type 或 Provider code 返回 `404 not_found`；非法/缺失/被禁止的字段及非法 Provider device ID 返回 `400 invalid_request`；非 `deleted` Provider identity 冲突返回 `409 provider_device_conflict`，identity 只在 Device 进入 `deleted` 后释放。
+Device 注册允许选择当前 `integration_status=unconfigured` 的已注册 Provider；这只建立技术资源，不允许创建 Command，后者仍返回 `409 provider_not_configured`。未知 `project_id`、Device Type、Provider code 或 Provider profile 返回 `404 not_found`；profile 不属于所选 Provider、非法/缺失/被禁止字段或非法 Provider device ID 返回 `400 invalid_request`；任何 lifecycle 的 Provider identity 冲突都返回 `409 provider_device_conflict`。profile 不参与放宽 identity 唯一性；`deleted` Device 永久保留 identity tombstone，当前 API 不提供释放或复用入口。
 
-Device 读取至少返回上述稳定 identity、派生接入字段、connection/lifecycle status、只读 `current_state`、`last_seen_at` 与时间戳。`current_state` 没有可信上报时为 `null`，不能用创建请求 metadata 伪造。
+Device 读取至少返回上述稳定 identity、`provider_profile`、派生接入字段、connection/lifecycle status、只读 `current_state`、`last_seen_at` 与时间戳。`current_state` 没有可信上报时为 `null`，不能用创建请求 metadata 伪造。对应 Provider 的在线真实性 Unknown 关闭前，`last_seen_at` 固定为 `null`；关闭时必须由 Provider 合同同时冻结哪些可信事实更新该字段、采用 Provider 时间还是平台观察时间以及重复/乱序消息的单调更新规则，不能由任意 RawMessage、TCP accept 或读取投影推断。
 
 ### Command
 
 Open API 创建请求字段见下文；管理员 API 额外要求 `project_id`。Command 读取至少返回：
 
 ```text
-id, project_id, device_id, command_type, payload,
+id, project_id, device_id, provider_code, provider_profile, command_type, payload,
 device_type_revision, delivery_policy, status, reason_code, reason_detail,
 confirmation_level, evidence_status, idempotency_key, queued_at,
 dispatch_deadline_at, sent_at, result_deadline_at,
@@ -291,7 +276,7 @@ Device 的 `current_state` 没有可信上报时为 `null`；存在时使用以�
 
 ```text
 state_id, schema_version=1, project_id, device_id,
-device_type_code, provider_code, reported_at|null, observed_at,
+device_type_code, provider_code, provider_profile, reported_at|null, observed_at,
 evidence_status, state
 ```
 
@@ -304,11 +289,11 @@ event_id, schema_version=1, event_type, project_id,
 device_id|null, command_id|null, occurred_at, source, payload
 ```
 
-当前稳定 Event 类型与 v1 payload 为：
+Event 类型由 Domain Model 冻结；HTTP 与 Webhook 的 v1 wire payload 必须按下表投影，不得新增另一套事件含义：
 
 | `event_type`                | 必需关联        | `payload` v1 必需字段                                                             |
 | --------------------------- | --------------- | --------------------------------------------------------------------------------- |
-| `device.created`            | Device          | `device_type_code`、`provider_code`、`lifecycle_status`                           |
+| `device.created`            | Device          | `device_type_code`、`provider_code`、`provider_profile`、`lifecycle_status`        |
 | `device.lifecycle_changed`  | Device          | `from`、`to`、`reason_code`                                                       |
 | `device.connection_changed` | Device          | `from`、`to`、`evidence_status`                                                   |
 | `device.state_updated`      | Device          | `state`、`observed_at`、`evidence_status`                                         |
@@ -319,13 +304,15 @@ device_id|null, command_id|null, occurred_at, source, payload
 
 `command.status_changed` 要求 `from != to`，只表达 Command 状态迁移。`command.evidence_updated` 要求 `status` 仍为当前 Command 状态，且关联 Attempt 已完成并实际改变 Command 的 confirmation level 或 evidence status；它与该聚合更新、Event 及初始 Delivery 在同一事务内按稳定 deduplication key 写入。`command.result_recorded` 对应一个不可变 CommandResult；`late=true` 时 Command 已是终态，Event 仍携带原终态且不得触发状态改写。confirmation level 严格按 `none < transport_sent < provider_accepted < device_acked < device_final` 单调提升。`none` 层的 evidence 必须保持 `none`；`transport_sent|provider_accepted` 的 evidence 可以是 `unverified|verified`；`device_acked|device_final` 必须是 `verified`。confirmation level 不变时只允许 `unverified -> verified`，`verified` 不得回退；confirmation level 提升到 `transport_sent|provider_accepted` 时，evidence 改为保守评价支撑新层级的决定性证据，因新证据未验签可以从较低层的 `verified` 变为新层的 `unverified`，这不是同层证据回退。Provider acceptance 使用 `command.evidence_updated`，不得用它暗示 Device ACK 或 final result。
 
-`source` 只能是 `admin`、`open_api`、`provider_callback`、`simulator` 或 `system`。不适用的 `reason_code` 使用 `null`，不能用空字符串代替。Event payload 可以在同一 schema version 内增加调用方必须忽略的可选字段，但不能删除、改名或改变上述字段语义；破坏性变化必须提升 schema version。
+`source` 只能是 `admin`、`open_api`、`provider_message`、`simulator` 或 `system`。不适用的 `reason_code` 使用 `null`，不能用空字符串代替。Event payload 可以在同一 schema version 内增加调用方必须忽略的可选字段，但不能删除、改名或改变上述字段语义；破坏性变化必须提升 schema version。
 
 Webhook Delivery 详情返回 `id`、`event_id`、`project_id`、target snapshot、配置 version、`status`、attempt count、next attempt time、`replay_of_delivery_id`、时间戳和按 attempt number 排序的独立 DeliveryAttempts；不返回 secret 或可重放签名。每个 DeliveryAttempt 返回 attempt number、开始/结束时间、HTTP status、截断脱敏 response 摘要和 error。
 
 Audit 读取固定返回 `id`、`actor_type`、`actor_id`、`project_id`、`action`、`result`、`resource_type`、`resource_id`、`ip_address`、`request_id`、脱敏 `metadata` 和 `occurred_at`。`actor_type` 只能是 `admin`、`project`、`provider` 或 `system`；`result` 只能是 `success` 或 `failure`。不适用的关联字段使用 `null`。
 
-当前稳定 Audit action 为 `auth.login`、`auth.refresh`、`auth.logout`、`project.created`、`project.updated`、`project.api_key_rotated`、`project.webhook_secret_rotated`、`project.webhook_secret_decryption_failed`、`device.created`、`device.updated`、`device.lifecycle_changed`、`command.created`、`command.cancelled`、`provider.callback_rejected`、`webhook.delivery_replayed` 和 `simulator.updated`。首次安装以完成标记作为唯一完成事实，不写无法与文件标记原子提交的 `setup.completed` Audit。`project.webhook_secret_decryption_failed` 固定使用 `actor_type=system`、`result=failure`，关联 Project，metadata 只含 `webhook_secret_version`、`encryption_key_version` 与固定 `error_code=secret_decryption_failed`；不得保存异常原文、ciphertext、nonce 或 key。`provider.callback_rejected` 固定使用 `actor_type=provider`、`actor_id=provider_code`、`result=failure`，metadata 只含 `provider_code` 与 decoder/validator 稳定 `error_code`，不能保存 callback body 或 sign；无法映射时 Project/Device 关联为 `null`。当前公开 WWTIOT callback 固定 503 且不读取 body，因此在该入口重新冻结并启用前不产生此审计。worker 的普通状态迁移只写 Attempt/Event，不重复写 Audit；新增人工或安全操作必须先增加稳定 action。
+当前稳定 Audit action 为 `auth.login`、`auth.refresh`、`auth.logout`、`project.created`、`project.updated`、`project.api_key_rotated`、`project.webhook_secret_rotated`、`project.webhook_secret_decryption_failed`、`device.created`、`device.updated`、`device.lifecycle_changed`、`command.created`、`command.cancelled`、`provider.message_received`、`provider.message_rejected`、`webhook.delivery_replayed` 和 `simulator.updated`。首次安装以完成标记作为唯一完成事实，不写无法与文件标记原子提交的 `setup.completed` Audit。`project.webhook_secret_decryption_failed` 的 metadata 规则保持不变。worker 的普通状态迁移只写 Attempt/Event，不重复写 Audit。
+
+Omni 上行 Audit 固定使用 `actor_type=provider`、`actor_id=omni`、`resource_type=device_raw_message` 和对应 RawMessage ID。通过 parser、显式 profile 与唯一当前 Device binding 校验的消息使用 `provider.message_received/result=success`，并关联已解析 Device 的 Project；该 success 只表示平台接收并持久化一条 `unverified` 技术消息，不表示真实性验证、Device ACK 或 final。schema、首报、identity、profile 或 lifecycle 校验失败时使用 `provider.message_rejected/result=failure`，无法映射时 Project/Device 关联为 `null`。两类 metadata 只允许 `provider_code`、`provider_profile`、`adapter`、平台生成的 `connection_id`、`frame_bytes`、`parse_status`、`evidence_status`、`duplicate`、`raw_message_id`，以及按分支适用的 `command`、`field_count`、稳定 `error_code`/`reject_code`；不得保存 IMEI、raw frame、socket error、secret 或认证材料。当前公开 WWTIOT callback 固定 503 且不读取 body，因此在该入口重新冻结并启用前不产生 Provider message Audit。
 
 ## 四层 API 责任
 
@@ -355,7 +342,7 @@ Project 范围来自认证结果，不接受调用方用 body 或 header 任意�
 
 当前 revision 2 的三个 action 均把缺失 payload 规范化为空 object，并拒绝调用方提供 `delivery_policy`、`expires_at`、deadline、retry 或 Provider 字段。`unlock`/`lock` 只在 Device `connection_status=online` 时允许创建，否则返回 `409 device_not_online`；`query_status` 不使用该门槛。Command 持久保存创建时采用的 `device_type_revision` 和全部派生执行参数；后续 profile 发布不能静默改变已创建 Command。
 
-创建前同步校验 Project、Device 归属、Device lifecycle、Device Type profile、action/payload、`online_only` 门槛、Provider 注册与配置。`device_disabled`、`device_not_online` 或 `provider_not_configured` 返回 `409`，不创建 Command；不支持的 capability 或 payload 返回 `422`，不创建 Command。Command 创建提交后才由持久 dispatcher 异步投递，因此创建响应不等待 Provider HTTP。
+首次使用新 idempotency key 创建前，同步校验 Project、Device 归属、Device lifecycle、Device Type profile、action/payload、`online_only` 门槛、Provider/profile action 映射、Provider 注册与配置。`device_disabled`、`device_not_online`、`provider_not_configured`、`provider_action_unsupported` 或 `provider_mapping_unknown` 返回 `409`，不创建 Command；最后一项表示厂商字段存在但当前证据不足以形成唯一安全映射，不能降级成未配置、设备拒绝或传输失败。Device Type 不支持的 capability 或 payload 返回 `422`，不创建 Command。Command 创建提交后才由持久 dispatcher 异步投递，因此创建响应不等待 Provider I/O。
 
 当前 wire field 继续使用 `command_type`，但它的合同含义是设备 capability/action identifier，不是 Core 全局固定命令枚举。具体允许值及 payload 由 Device 的最小 capability profile 决定。未来若重命名字段，应作为显式 API 变更处理，不能同时维护两套语义来源。
 
@@ -371,7 +358,7 @@ project_id + idempotency_key
 
 ```text
 sha256(canonical_json(
-  device_id, device_type_code, provider_code, provider_device_id,
+  device_id, device_type_code, provider_code, provider_profile, provider_device_id,
   command_type, normalized_payload,
   device_type_revision, delivery_policy, dispatch_deadline_ms,
   provider_request_timeout_ms, result_observation_timeout_ms,
@@ -379,107 +366,33 @@ sha256(canonical_json(
 ))
 ```
 
-服务器完成 capability payload 规范化并冻结所有派生执行参数后计算 hash。Project 已包含在幂等唯一范围内；hash 必须覆盖其余所有会影响执行对象、动作、Provider、payload、时限、投递和重试效果的字段。物理动作 `unlock`/`lock` 强制提供非空 `idempotency_key`；当前 API 对 `query_status` 也保持同一要求。相同 key 和相同 hash 返回既有 Command；相同 key 但任何影响执行的规范化或派生字段不同，返回 `409 idempotency_key_conflict`。幂等记录必须持久化并受唯一约束保护，不能只依赖单进程内存。
+服务器首次创建时完成 capability payload 规范化、冻结所有派生执行参数并计算 hash。Project 已包含在幂等唯一范围内；hash 覆盖其余所有影响执行对象、动作、Provider、payload、时限、投递和重试效果的字段。物理动作 `unlock`/`lock` 强制提供非空 `idempotency_key`；当前 API 对 `query_status` 也保持同一要求。幂等记录必须持久化并受唯一约束保护，不能只依赖单进程内存。
+
+重放必须先查询历史 Command，再执行任何当前 Device/Profile/Provider preflight。调用方 `device_id`、规范化 `command_type` 与 payload 和历史 Command 一致时返回该 Command 及其首次冻结的完整派生语义；不重新计算当前 hash，不创建 Attempt、Event、Audit 或新物理动作。任一调用方字段不一致返回 `409 idempotency_key_conflict`。并发首次请求必须通过持久唯一约束和事务锁收敛为一个 `201` 与其余 `200` replay。
 
 canonical JSON 使用 UTF-8、对象 key 词典序、无无意义空白，并在 capability 校验后使用规范化 scalar 与 UTC RFC3339 时间。新建 Command 返回 `201`；幂等重放返回 `200` 并携带 `meta.idempotent_replay=true`。两种响应都只表示平台接受了 API 请求，不表示 Provider 或设备成功。
 
 ## Command、Attempt 与 Result
 
-Command 状态：
+Command、Attempt、Result 的状态机、证据单调性、终态和 reason 映射以[领域模型合同](./domain-model-contract.md)为唯一权威。HTTP wire 必须使用其枚举全集：
 
 ```text
-queued
-sent
-acked
-success
-failed
-timeout
-cancelled
+Command.status: queued | sent | acked | success | failed | timeout | cancelled
+Attempt.phase: claimed | dispatching | completed
+Attempt.outcome: not_dispatched | invalid_request | provider_accepted |
+                 provider_rejected | transport_error_before_send | indeterminate
+Result.outcome: device_acked | device_succeeded | device_failed
+confirmation_level: none | transport_sent | provider_accepted | device_acked | device_final
+evidence_status: none | verified | unverified
 ```
 
-- Command 创建事务直接提交为 `queued`；不存在可被 API、worker 或数据库提交后观察到的 `created` 状态。
-- `sent` 表示已向 Gateway/Provider 发起投递。
-- `acked` 专指已有可信的 Device ACK，表示设备已收到并确认命令，但尚不等于最终执行成功。
-- `success` 表示已有可信的 Device 最终执行成功证据。
-- transport 或 Provider 返回的“请求已接受/命令已提交”只能记录为 Command Attempt 的 Provider acceptance；它既不能把 Command 推进到 `acked`，也不能直接推导 Device `success`。在设备 ACK 或最终结果到达前，Command 保持 `sent` 并受 timeout 管理。
-- 投递结果存在不可消除的歧义时，完成当前 Attempt 为 `outcome=indeterminate`，并以 Attempt `reason_code` 区分请求可能送达或响应无效；Command 保持 `sent` 直到观察期限后进入 `timeout`。`unknown` 不是 Command 状态。
-- `failed`、`timeout` 和 `cancelled` 必须保留 Command `reason_code`；诊断细节放入脱敏 `reason_detail`。
+`reason_code` 必须使用 Domain Model 的固定映射；Attempt 的投递歧义只使用 `provider_delivery_unknown|provider_response_invalid`。`reason_detail`、请求/响应摘要和 Result payload 必须经过 Provider allowlist 脱敏，不返回 secret、签名材料或原始 transport 错误。
 
-每次实际投递形成 Command Attempt，至少记录 phase、provider/gateway、开始与结束时间、`outcome`、稳定 `reason_code`、脱敏请求/响应摘要、Provider request key、错误、`confirmation_level` 和 `evidence_status`。三个概念严格正交：`Command.status` 只表达聚合生命周期；`Attempt.outcome` 只表达这一次投递观察到的结果；`confirmation_level` 只表达当前证据到达传输、Provider、Device ACK 或 Device final 的哪一层。confirmation level 只能为 `none`、`transport_sent`、`provider_accepted`、`device_acked`、`device_final`，并只能单调提升。Attempt 的 evidence status 为 `none|verified|unverified`，评价该 outcome 所依赖证据；Command 的同名字段保守继承支撑当前 status 与最高 confirmation 的证据。只有 `device_final + verified` 才能支持 Command `success`。敏感凭据不得进入 Attempt、日志、Event 或 API 响应。
-
-稳定 Attempt `outcome` 只包括 `not_dispatched`、`invalid_request`、`provider_accepted`、`provider_rejected`、`transport_error_before_send` 和 `indeterminate`。请求可能已发出但没有完整响应、HTTP/JSON/echo 不能形成可信结论，或 dispatching 崩溃无法判定外部结果时统一为 `indeterminate`；分别使用 `provider_delivery_unknown` 或 `provider_response_invalid` 作为 Attempt reason。`online_only` preflight 失败使用 `not_dispatched/device_not_online/none/none`。Device ACK/final result 只进入 Result outcome `device_acked|device_succeeded|device_failed`，不得覆盖已完成 Attempt 或变成额外 Command 状态。
-
-正交映射固定如下：
-
-| 已验证事实                           | Command status                    | Attempt outcome                                      | confirmation level   |
-| ------------------------------------ | --------------------------------- | ---------------------------------------------------- | -------------------- |
-| Provider `result=ok` / `cmd send ok` | `sent`                            | `provider_accepted`                                  | `provider_accepted`  |
-| 请求可能送达但响应不可判定           | 先保持 `sent`，到期 `timeout`     | `indeterminate`                                      | `transport_sent`     |
-| 可信 Device ACK                      | `acked`                           | 保留原投递 outcome；追加 Result `device_acked`       | `device_acked`       |
-| 可信 Device final success            | `success`，允许直接由 `sent` 进入 | 保留原投递 outcome；追加 Result `device_succeeded`   | `device_final`       |
-| 可信 Device final failure            | `failed`                          | 保留原投递 outcome；追加 Result `device_failed`      | `device_final`       |
-| 观察期限内无可信 final result        | 终态 `timeout`                    | 保留既有 outcome；若投递本身不明则为 `indeterminate` | 保留已达到的最高层级 |
-| 终态后的可信设备结果                 | 原终态不变                        | 保留既有 outcome；追加 `late=true` Result/Event      | 只允许单调提升       |
-
-当前稳定 Command `reason_code` 为：
-
-| `reason_code`                | 允许的 Command status | 条件                                                           |
-| ---------------------------- | --------------------- | -------------------------------------------------------------- |
-| `cancelled_by_request`       | `cancelled`           | 调用方在允许状态取消                                           |
-| `provider_not_configured`    | `failed`              | 创建后配置漂移，请求构造前失败                                 |
-| `provider_transport_error`   | `failed`              | 能证明请求未发送                                               |
-| `provider_rejected`          | `failed`              | Provider 明确拒绝；当前 WWTIOT 响应证据仍标 `unverified`       |
-| `device_reported_failure`    | `failed`              | 可信 Device final failure                                      |
-| `device_not_online`          | `failed`              | `online_only` Command 在派发前失去可信 online 状态，且未发请求 |
-| `dispatch_deadline_exceeded` | `timeout`             | Command 在进入 `sent` 前超过服务端派发期限                     |
-| `result_observation_timeout` | `timeout`             | `sent`/`acked` 后未在 profile 观察期限内取得可信 final result  |
-
-非终止状态的 `reason_code` 为 `null`。终止状态必须使用上表中与状态匹配的值；新增 reason 必须先修订合同，`reason_detail` 不能代替机器码。
-
-失败与重试权限固定如下：
-
-| 事实                                          | 自动重试                 | 后续权限                                                                                                                |
-| --------------------------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| `invalid_request` / `provider_not_configured` | 禁止                     | 修正配置或请求后以新 `idempotency_key` 创建新 Command；不得改写原记录。                                                 |
-| `transport_error_before_send`                 | 当前 smart-lock 全部禁止 | 只有确认未发送并由调用方重新授权后，才能以新 key 创建新 Command。                                                       |
-| `provider_rejected`                           | 禁止                     | 查明稳定拒绝原因并重新授权后创建新 Command。                                                                            |
-| `device_failed`                               | 禁止                     | 记录可信失败证据；物理动作必须先核验设备状态，再由业务应用决定是否新建 Command。                                        |
-| `indeterminate` 或 `timeout`                  | 禁止                     | `unlock`/`lock` 不得重放；先取得设备状态或人工处置证据。`query_status` 在重放安全性确认前也只允许显式新建，不自动重试。 |
-
-任何新建 Command 都形成新的生命周期；幂等重放只能返回原 Command，不能借相同 key 触发第二次物理效果。
-
-### 状态迁移
-
-当前通用生命周期只允许以下迁移：
-
-```text
-queued -> sent
-queued -> cancelled
-queued -> failed
-queued -> timeout
-sent -> acked
-sent -> success
-sent -> failed
-sent -> timeout
-acked -> success
-acked -> failed
-acked -> timeout
-```
-
-状态更新必须使用数据库条件更新或事务内等价的原子数据库语句。重复 worker、重复回执、晚到回执和重复事件不能产生重复最终效果。状态、Attempt、适用的 Result、Event，以及配置 endpoint 时的初始 Delivery 必须在同一数据库事务中保存；不得用提交后的补偿流程代替该事务边界。
-
-状态终止语义：
-
-- `success`、`failed`、`cancelled` 和 `timeout` 是终止状态，不再接受普通状态迁移。
-- `queued`、`sent`、`acked` 是处理中的非终止状态。
-- `timeout` 不得推导、补偿或纠正迁移为 `success|failed|acked`。晚到可信结果追加不可变 CommandResult 与 `command.result_recorded` Event，`late=true`；可以单调提升 confirmation/evidence 聚合字段，但原 `status`、`reason_code`、`finished_at` 和历史记录保持不变。
-- Provider acceptance 是 Command Attempt 事实，不是独立 Command 状态，也不改变上述终止语义。
-- 只有 `device_acked/verified` Result 可以执行 `sent -> acked`。可信 `device_succeeded/device_final/verified` Result 可以直接执行 `sent -> success`，无需伪造 `acked`；可信 `device_failed/device_final/verified` Result 可以执行 `sent|acked -> failed`。
-- 只有没有有效 dispatcher lease 的 `queued` Command 可以由调用方取消；取消时若已有过期 claimed Attempt，将其完成为 `not_dispatched`。有有效 lease 或已经进入 `sent` 时返回 `409 command_not_cancellable`，不得以取消响应暗示设备动作被撤回。
+HTTP 创建或幂等重放只表示平台持久接受请求。Provider acceptance 仍返回 Command `status=sent`；只有可信 Device Result 可以产生 `acked|success`。迟到结果在详情中作为 `late=true` 的不可变 Result 返回，原终态保持不变。
 
 ## Capability Profile 与 Delivery Policy
 
-Platform Core 只执行 capability profile 提供的通用 metadata，不固定某个设备 action 的 timeout、离线策略、重试次数、补偿窗口或默认 delivery policy。Core 的判断依据是 metadata，而不是具体 action identifier。当前 profile 使用的保守策略见 [smart-lock Device Type 合同](./device-types/smart-lock.md)。
+Platform Core 只执行 capability profile 提供的通用 metadata，不固定某个设备 action 的 timeout、离线策略、重试次数、补偿窗口或默认 delivery policy。Core 的判断依据是 metadata，而不是具体 action identifier。当前 profile 见 [smart-lock Device Type 合同](./device-types/smart-lock.md)。
 
 - 物理动作及其他高风险 action 没有可信 Device final result 时，不得重放或补偿为 `success`。
 - 厂商或设备自身的 timeout、离线行为、重试安全性和补偿语义在证据到齐前保持 Unknown。平台为防止永久悬挂采用的保守观察期限与禁重放策略由具体 Device Type profile 明确定义，不得表述为厂商事实。
@@ -489,13 +402,14 @@ Platform Core 只执行 capability profile 提供的通用 metadata，不固定�
 
 - timeout 从 Command 进入 `sent` 开始计算。
 - 当前 Command 创建后 30 秒内未进入 `sent` 时转为 `timeout`，reason 为 `dispatch_deadline_exceeded`；进入 `sent` 后按 profile 的结果观察期限处理。到期时 Command 为终态 `timeout/result_observation_timeout`，最终执行结果按 indeterminate 对待；既有 Attempt outcome 不被覆盖，也不伪造新的 Attempt。当前 profile 不提供离线排队、恢复投递、自动重试或晚到补偿。
+- Provider response 或可信 Device final 与 result deadline 并发时，截止判定点、事务优先级及冲突 verified final 的关闭规则按 [Platform Target 的产品裁决](./platform-target-contract.md#需要产品所有者裁决)保持阻塞；上条只冻结没有竞争结果事实时的顺序 timeout。
 - 无论采用何种实现，Command 都不能永久悬挂；处理进度必须持久化并能在进程重启后恢复，状态变化产生的 Event 不能丢失。
 - capability profile 标记的物理动作没有可信最终证据时不得在离线恢复或 timeout 后重放，也不得补偿为 `success`。
 - 晚到结果按当前合同追加 CommandResult/Event，并准确标注 confirmation level 与 `late=true`；它不重放动作，也不覆盖或伪造原结果。
 
 自动网络重试不是默认合同。只有 Provider 证明请求可安全重放、幂等边界明确，并经过受控验收后，才能为具体 action 配置重试。
 
-dispatcher、deadline scanner、callback handler 与 webhook dispatcher 的领取、事务和崩溃恢复责任以[领域模型合同](./domain-model-contract.md)为准。外部 HTTP 不得发生在持有领域数据库事务期间。
+dispatcher、deadline scanner、Provider message handler 与 webhook dispatcher 的领取、事务和崩溃恢复责任只以[领域模型合同](./domain-model-contract.md)为准。外部 HTTP 或 socket I/O 不得发生在持有领域数据库事务期间。
 
 ## Event、Outbox 与 Webhook
 
@@ -503,9 +417,9 @@ dispatcher、deadline scanner、callback handler 与 webhook dispatcher 的领�
 
 1. 状态变化产生 Event。
 2. Event、相关状态，以及 Project 当时配置了 endpoint 时的初始 Delivery，必须在同一数据库事务中提交；未配置 endpoint 时只提交 Event。不得提交后补建初始 Delivery。
-3. worker 领取待投递记录，发送签名 Webhook，并为每次实际 HTTP 请求追加独立的 Webhook Delivery Attempt。
+3. worker 领取待投递记录时创建独立 Webhook DeliveryAttempt，再尝试发送签名 Webhook；Attempt 必须区分尚未开始 HTTP、已写出和已完成，不能用记录存在推断接收方收到请求。
 4. 成功转为 `delivered`；失败在 Delivery 与 Attempt 中记录次数、错误与下次重试时间。
-5. 首次投递立即执行，失败后按 `1s, 5s, 30s, 2m` 调度，默认最多 5 次实际 HTTP Attempt；该值可由部署配置降低或延长间隔，但不能超过 5 次而无需重新修订合同。耗尽后转为 `dead`。
+5. 首次投递立即领取，失败后按 `1s, 5s, 30s, 2m` 调度，默认最多 5 个 DeliveryAttempt 预算；每次进入 `sending` 的领取都占用一次预算，即使在 HTTP 写出前崩溃。该值可由部署配置降低或延长间隔，但不能超过 5 次而无需重新修订合同。耗尽后转为 `dead`。Webhook secret 解密失败不发送 HTTP，但其是否创建/消耗 DeliveryAttempt、重试或立即 `dead` 仍由 [Domain Unknown](./domain-model-contract.md#domain-unknown) 阻塞。
 6. 管理员可对 `dead` 记录执行受审计的手动重发；重发要求 Project 当前有启用的 endpoint，使用重发时的当前 target/secret version 创建新 Delivery，并通过 `replay_of_delivery_id` 指向原记录。原 Delivery 的 snapshot、状态和 Attempt 历史保持不变；当前 endpoint 未配置时返回 `409 webhook_not_configured`。
 
 Webhook Delivery 状态：
@@ -518,7 +432,7 @@ failed
 dead
 ```
 
-状态迁移固定为 `pending -> sending -> delivered|failed`、`failed -> sending|dead`；`sending` lease 过期时先完成本次 DeliveryAttempt 为失败，再进入 `failed` 或在第 5 次后进入 `dead`。`delivered` 与 `dead` 是终止状态，manual resend 只创建新的 `pending` Delivery，不改变原状态。Attempt count 在进入 `sending` 的领取事务中递增，因此崩溃窗口也占用一次上限并允许 at-least-once 重试。
+Delivery 状态机、终态和崩溃恢复只以 Domain Model 为准。Attempt count 在进入 `sending` 的领取事务中递增，因此崩溃窗口也占用一次上限并允许 at-least-once 重试；manual resend 只创建新 Delivery。
 
 Webhook raw body 是对应 Event 的完整 v1 JSON envelope，不另造第二套 payload；每个 Delivery 创建时序列化并持久保存一次，同一 Delivery 的自动重试逐 byte 复用该 body。当前 wire version 固定为 `v1`，每次实际 Attempt 生成当时的 Unix 秒 `timestamp`，并使用该 Delivery snapshot 的正整数 `secret_version`。签名输入逐 byte 固定为 ASCII `v1.` + 十进制 `timestamp` + `.` + 十进制 `secret_version` + `.` + `raw_body`，签名值为 `v1=<hex(HMAC-SHA256(webhook_secret, signing_input))>`。
 
@@ -530,16 +444,16 @@ Command Attempt 与 Webhook Delivery Attempt 是两类独立技术记录，不�
 
 ## 技术审计
 
-以下行为至少应写入不可由普通业务调用覆盖的技术审计：管理员登录与安全变更、Project 凭据创建/轮换、Device 创建与生命周期变更、Command 创建/取消、Webhook 端点与 secret 变更、dead delivery 重发、Provider 配置或模拟模式变更。
+以下平台内可观察行为至少应写入不可由普通业务调用覆盖的技术审计：管理员登录与安全变更、Project 凭据创建/轮换、Device 创建与生命周期变更、Command 创建/取消、Webhook 端点与 secret 变更、dead delivery 重发和模拟模式变更。当前 Provider secret/config 只由部署环境提供，不存在平台内配置 mutation；其变更记录属于部署审计，在形成新的在线配置合同前不得让实现自行新增领域 Audit action。
 
 审计记录应包含 actor 类型与标识、Project/资源、动作、结果、来源 IP、request_id、发生时间和脱敏 metadata。技术审计不承载共享单车业务审计。
 
-## 实现一致性要求
+## 合同一致性要求
 
 - API DTO、数据库约束、领域状态机、Provider 映射和前端展示必须共享同一组合同语义。
 - 字段、枚举或路径漂移应显式修复，不得由前端推测转换后当作一致。
 - 列表数据增长后必须提供服务端分页，并在 `meta` 返回分页信息。
-- 当前未满足项统一记录在 [Current State](./current-state.md)，不在本文中把错误现状改写为允许行为。
+- 实现差距应在实现项目的验收记录中跟踪，不能写回本合同成为允许行为。
 
 ## 稳定错误码
 
@@ -550,7 +464,7 @@ Command Attempt 与 Webhook Delivery Attempt 是两类独立技术记录，不�
 | 403  | `forbidden`                                                                                                                                                                                                                                                                                           |
 | 404  | `not_found`                                                                                                                                                                                                                                                                                           |
 | 405  | `method_not_allowed`                                                                                                                                                                                                                                                                                  |
-| 409  | `setup_completed`、`admin_creation_failed`、`idempotency_key_conflict`、`invalid_state_transition`、`provider_device_conflict`、`device_disabled`、`device_deleted`、`device_not_online`、`provider_not_configured`、`command_not_cancellable`、`webhook_delivery_not_dead`、`webhook_not_configured` |
+| 409  | `setup_completed`、`admin_creation_failed`、`idempotency_key_conflict`、`invalid_state_transition`、`provider_device_conflict`、`device_disabled`、`device_deleted`、`device_not_online`、`provider_not_configured`、`provider_action_unsupported`、`provider_mapping_unknown`、`command_not_cancellable`、`webhook_delivery_not_dead`、`webhook_not_configured` |
 | 422  | `unsupported_capability`、`invalid_capability_payload`                                                                                                                                                                                                                                                |
 | 429  | `rate_limited`                                                                                                                                                                                                                                                                                        |
 | 503  | `setup_required`、`setup_recovery_required`、`setup_restart_required`、`auth_dependency_unavailable`、`provider_callback_unverified`                                                                                                                                                                  |
