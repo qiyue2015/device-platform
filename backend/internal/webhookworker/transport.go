@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-var ErrTargetRejected = errors.New("Webhook target rejected by egress policy")
+var ErrTargetRejected = errors.New("webhook target rejected by egress policy")
 
 var nonPublicAddressPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),

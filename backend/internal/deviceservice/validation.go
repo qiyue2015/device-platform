@@ -4,15 +4,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/netip"
-	"net/url"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/qiyue2015/device-platform/internal/domain"
 )
-
-var providerDeviceIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
 func normalizeName(value string) (string, error) {
 	value = strings.TrimSpace(value)
@@ -20,30 +16,6 @@ func normalizeName(value string) (string, error) {
 		return "", fmt.Errorf("%w: name must contain 1..120 characters", ErrInvalidRequest)
 	}
 	return value, nil
-}
-
-func normalizeProviderDeviceID(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if !providerDeviceIDPattern.MatchString(value) {
-		return "", fmt.Errorf("%w: provider_device_id is invalid", ErrInvalidRequest)
-	}
-	return value, nil
-}
-
-func validWWTIOTConfig(endpoint, userID, userKey string) bool {
-	rawEndpoint := strings.TrimSpace(endpoint)
-	parsed, err := url.Parse(rawEndpoint)
-	if err != nil || rawEndpoint == "" || !parsed.IsAbs() || parsed.Host == "" || parsed.Opaque != "" ||
-		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return false
-	}
-	scheme := strings.ToLower(parsed.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return false
-	}
-	trimmedUserID := strings.TrimSpace(userID)
-	return utf8.ValidString(trimmedUserID) && len([]byte(trimmedUserID)) >= 1 && len([]byte(trimmedUserID)) <= 128 &&
-		utf8.ValidString(userKey) && len([]byte(userKey)) >= 1 && len([]byte(userKey)) <= 512
 }
 
 func validateScope(scope Scope) (Scope, error) {

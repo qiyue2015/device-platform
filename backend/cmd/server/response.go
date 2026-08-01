@@ -28,10 +28,6 @@ func writeOK(w http.ResponseWriter, data interface{}) {
 	httpjson.OK(w, data)
 }
 
-func writeCreated(w http.ResponseWriter, data interface{}) {
-	httpjson.Created(w, data)
-}
-
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	httpjson.Error(w, status, code, message)
 }

@@ -3,12 +3,10 @@ package main
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -263,14 +261,6 @@ func mustHashDummyPassword() string {
 		panic(err)
 	}
 	return string(hash)
-}
-
-func generateSecretHex(byteLength int) (string, error) {
-	bytes := make([]byte, byteLength)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(bytes), nil
 }
 
 func createJWT(user currentUser, secret string, now time.Time) (string, error) {

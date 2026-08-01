@@ -6,21 +6,29 @@ const (
 	DeviceTypeSmartLock         = "smart-lock"
 	DeviceTypeSmartLockRevision = 2
 	ProviderCodeWWTIOT          = "wwtiot"
+	ProviderCodeOmni            = "omni"
 	ProviderCodeSimulator       = "simulator"
+	ProviderProfileWWTIOTV2     = "wwtiot-cloud-api-v2"
+	ProviderProfileOmniBikeV207 = "omni-bike-tcp-v2.0.7"
+	ProviderProfileOmniIoTV135  = "omni-iot-tcp-v1.3.5"
+	ProviderProfileSimulatorV1  = "simulator-v1"
+	ProviderProfileUnresolved   = "unresolved"
 	EventSchemaVersion          = 1
 )
 
 type AccessType string
 
 const (
-	AccessTypeCloudAPI  AccessType = "cloud_api"
-	AccessTypeSimulator AccessType = "simulator"
+	AccessTypeCloudAPI     AccessType = "cloud_api"
+	AccessTypeDirectDevice AccessType = "direct_device"
+	AccessTypeSimulator    AccessType = "simulator"
 )
 
 type TransportProtocol string
 
 const (
 	TransportProtocolHTTP     TransportProtocol = "http"
+	TransportProtocolTCP      TransportProtocol = "tcp"
 	TransportProtocolInternal TransportProtocol = "internal"
 )
 
@@ -28,7 +36,16 @@ type Adapter string
 
 const (
 	AdapterWWTIOTCloudAPI Adapter = "wwtiot_cloud_api"
+	AdapterOmniDirectTCP  Adapter = "omni_direct_tcp"
 	AdapterSimulator      Adapter = "simulator"
+)
+
+type ProviderActionAvailability string
+
+const (
+	ProviderActionSupported      ProviderActionAvailability = "supported"
+	ProviderActionUnsupported    ProviderActionAvailability = "unsupported"
+	ProviderActionMappingUnknown ProviderActionAvailability = "mapping_unknown"
 )
 
 type ProviderIntegrationStatus string
@@ -258,6 +275,8 @@ type Provider struct {
 	AccessType        AccessType
 	TransportProtocol TransportProtocol
 	Adapter           Adapter
+	Profiles          []string
+	ProfileActions    map[string]map[ActionIdentifier]ProviderActionAvailability
 	IntegrationStatus ProviderIntegrationStatus
 }
 
@@ -268,6 +287,7 @@ type Device struct {
 	DeviceTypeCode    string
 	Name              string
 	ProviderCode      string
+	ProviderProfile   string
 	ProviderDeviceID  string
 	AccessType        AccessType
 	TransportProtocol TransportProtocol
@@ -296,6 +316,7 @@ type Command struct {
 	DeviceTypeID       string
 	DeviceTypeCode     string
 	ProviderCode       string
+	ProviderProfile    string
 	ProviderDeviceID   string
 	Adapter            Adapter
 	CommandType        ActionIdentifier
@@ -369,11 +390,13 @@ type RawMessage struct {
 	ID                string
 	DeviceID          *string
 	ProviderCode      string
+	ProviderProfile   string
 	ProviderDeviceID  string
 	AccessType        AccessType
 	TransportProtocol TransportProtocol
 	Adapter           Adapter
 	Direction         RawMessageDirection
+	EvidenceStatus    EvidenceStatus
 	DeduplicationKey  string
 	Headers           map[string]any
 	Body              []byte

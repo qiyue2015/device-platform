@@ -20,6 +20,7 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	directomni "github.com/qiyue2015/device-platform/internal/directdevice/omni"
 	"github.com/qiyue2015/device-platform/internal/domain"
 	"github.com/qiyue2015/device-platform/internal/provideradapter"
 	simulatorruntime "github.com/qiyue2015/device-platform/internal/simulator"
@@ -31,6 +32,7 @@ const (
 	workerProjectID = "91000000-0000-4000-8000-000000000001"
 	workerDeviceID  = "92000000-0000-4000-8000-000000000001"
 	workerCommandID = "93000000-0000-4000-8000-000000000001"
+	workerOmniIMEI  = "123456789012345"
 )
 
 func TestPersistentWorkerWWTIOTResultMatrix(t *testing.T) {
@@ -146,6 +148,149 @@ func TestPersistentWorkerWWTIOTResultMatrix(t *testing.T) {
 	}
 }
 
+func TestPersistentWorkerOmniQueryStatusMainlineAndTimeout(t *testing.T) {
+	withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
+		seedOmniWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), true)
+		registry := directomni.NewRegistry()
+		var wire bytes.Buffer
+		if _, err := registry.Register(
+			domain.ProviderProfileOmniIoTV135, workerOmniIMEI, workerDeviceID, workerProjectID, "omni-mainline", &wire,
+		); err != nil {
+			t.Fatal(err)
+		}
+		adapter := directomni.NewAdapter(registry, directomni.AdapterConfig{Configured: true})
+		worker := newOmniWorker(t, store, adapter, Config{WorkerID: "omni-mainline-worker"})
+
+		worked, err := worker.DispatchNext(context.Background())
+		if err != nil || !worked {
+			t.Fatalf("DispatchNext worked=%v err=%v", worked, err)
+		}
+		wantFrame := []byte("\xff\xff*SCOS,OM," + workerOmniIMEI + ",S6#\n")
+		if !bytes.Equal(wire.Bytes(), wantFrame) {
+			t.Fatalf("Omni wire frame=%q, want %q", wire.Bytes(), wantFrame)
+		}
+		command, err := store.Commands().Get(context.Background(), workerCommandID)
+		if err != nil || command.Status != domain.CommandStatusSent ||
+			command.ConfirmationLevel != domain.ConfirmationTransportSent || command.EvidenceStatus != domain.EvidenceVerified {
+			t.Fatalf("Omni sent Command=%+v err=%v", command, err)
+		}
+		attempts, err := store.Commands().ListAttempts(context.Background(), workerCommandID)
+		if err != nil || len(attempts) != 1 || attempts[0].Outcome == nil ||
+			*attempts[0].Outcome != domain.AttemptOutcomeIndeterminate ||
+			pointerValue(attempts[0].ReasonCode) != "provider_delivery_unknown" {
+			t.Fatalf("Omni Attempt=%+v err=%v", attempts, err)
+		}
+		if _, err := db.Exec(`
+			UPDATE device_commands
+			SET queued_at = now() - interval '3 seconds',
+				dispatch_deadline_at = now() - interval '3 seconds' + dispatch_deadline_ms * interval '1 millisecond',
+				sent_at = now() - interval '2 seconds',
+				result_deadline_at = now() - interval '1 second'
+			WHERE id = $1
+		`, workerCommandID); err != nil {
+			t.Fatal(err)
+		}
+		expired, err := worker.ExpireNextResultObservation(context.Background())
+		if err != nil || !expired {
+			t.Fatalf("ExpireNextResultObservation expired=%v err=%v", expired, err)
+		}
+		command, err = store.Commands().Get(context.Background(), workerCommandID)
+		if err != nil || command.Status != domain.CommandStatusTimeout || pointerValue(command.ReasonCode) != "result_observation_timeout" ||
+			command.ConfirmationLevel != domain.ConfirmationTransportSent || command.EvidenceStatus != domain.EvidenceVerified {
+			t.Fatalf("Omni timeout Command=%+v err=%v", command, err)
+		}
+		events, err := store.Events().ListByCommand(context.Background(), workerCommandID)
+		if err != nil || len(events) != 3 || events[0].EventType != domain.EventTypeCommandStatusChanged ||
+			events[1].EventType != domain.EventTypeCommandEvidenceUpdated || events[2].Payload["to"] != "timeout" {
+			t.Fatalf("Omni Events=%+v err=%v", events, err)
+		}
+		results, err := store.Commands().ListResults(context.Background(), workerCommandID)
+		if err != nil || len(results) != 0 {
+			t.Fatalf("unverified Omni input fabricated Results=%+v err=%v", results, err)
+		}
+		assertWorkerTableCount(t, db, "webhook_deliveries", 3)
+		worked, err = worker.DispatchNext(context.Background())
+		if err != nil || worked || !bytes.Equal(wire.Bytes(), wantFrame) {
+			t.Fatalf("terminal Omni Command replayed: worked=%v wire=%q err=%v", worked, wire.Bytes(), err)
+		}
+	})
+}
+
+func TestPersistentWorkerOmniRejectsMissingSessionBeforeSend(t *testing.T) {
+	withWorkerDatabase(t, func(_ *sql.DB, store *repository.PostgresStore) {
+		seedOmniWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
+		adapter := directomni.NewAdapter(directomni.NewRegistry(), directomni.AdapterConfig{Configured: true})
+		worker := newOmniWorker(t, store, adapter, Config{WorkerID: "omni-no-session-worker"})
+		worked, err := worker.DispatchNext(context.Background())
+		if err != nil || !worked {
+			t.Fatalf("DispatchNext worked=%v err=%v", worked, err)
+		}
+		command, err := store.Commands().Get(context.Background(), workerCommandID)
+		if err != nil || command.Status != domain.CommandStatusFailed ||
+			pointerValue(command.ReasonCode) != "provider_session_unavailable" ||
+			command.ConfirmationLevel != domain.ConfirmationNone || command.EvidenceStatus != domain.EvidenceNone {
+			t.Fatalf("Omni rejected Command=%+v err=%v", command, err)
+		}
+		attempts, err := store.Commands().ListAttempts(context.Background(), workerCommandID)
+		if err != nil || len(attempts) != 1 || attempts[0].DispatchingAt != nil || attempts[0].Outcome == nil ||
+			*attempts[0].Outcome != domain.AttemptOutcomeInvalidRequest {
+			t.Fatalf("Omni rejected Attempt=%+v err=%v", attempts, err)
+		}
+	})
+}
+
+func TestPersistentWorkerOmniRecoveryDoesNotRewriteSocket(t *testing.T) {
+	withWorkerDatabase(t, func(_ *sql.DB, store *repository.PostgresStore) {
+		seedOmniWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
+		registry := directomni.NewRegistry()
+		var wire bytes.Buffer
+		if _, err := registry.Register(
+			domain.ProviderProfileOmniIoTV135, workerOmniIMEI, workerDeviceID, workerProjectID, "omni-recovery", &wire,
+		); err != nil {
+			t.Fatal(err)
+		}
+		adapter := directomni.NewAdapter(registry, directomni.AdapterConfig{Configured: true})
+		crashed := newOmniWorker(t, store, adapter, Config{WorkerID: "omni-crashed", LeaseDuration: time.Second})
+		registration := crashed.adapters[0]
+		command, attempt, claimed, err := crashed.claimNext(context.Background(), registration)
+		if err != nil || !claimed {
+			t.Fatalf("claimNext claimed=%v err=%v", claimed, err)
+		}
+		prepared, err := adapter.Prepare(provideradapter.DispatchRequest{
+			ProjectID: command.ProjectID, DeviceID: command.DeviceID,
+			ProviderDeviceID: command.ProviderDeviceID, ProviderProfile: command.ProviderProfile,
+			Action: command.CommandType, Payload: command.Payload, ProviderRequestKey: attempt.ProviderRequestKey,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		dispatched, err := crashed.commitDispatch(
+			context.Background(), command, attempt, domain.EventSourceSystem, 20*time.Millisecond, prepared.RequestSummary(),
+		)
+		if err != nil || !dispatched {
+			t.Fatalf("commitDispatch dispatched=%v err=%v", dispatched, err)
+		}
+		time.Sleep(25 * time.Millisecond)
+		restarted := newOmniWorker(t, store, adapter, Config{WorkerID: "omni-restarted"})
+		recovered, err := restarted.RecoverNext(context.Background())
+		if err != nil || !recovered {
+			t.Fatalf("RecoverNext recovered=%v err=%v", recovered, err)
+		}
+		if wire.Len() != 0 {
+			t.Fatalf("Omni recovery wrote %d socket bytes", wire.Len())
+		}
+		current, err := store.Commands().Get(context.Background(), workerCommandID)
+		if err != nil || current.Status != domain.CommandStatusSent ||
+			current.ConfirmationLevel != domain.ConfirmationTransportSent || current.EvidenceStatus != domain.EvidenceUnverified {
+			t.Fatalf("recovered Omni Command=%+v err=%v", current, err)
+		}
+		worked, err := restarted.DispatchNext(context.Background())
+		if err != nil || worked || wire.Len() != 0 {
+			t.Fatalf("recovered Omni Command replayed: worked=%v bytes=%d err=%v", worked, wire.Len(), err)
+		}
+	})
+}
+
 func TestPersistentWorkerSimulatorResultMatrix(t *testing.T) {
 	tests := []struct {
 		outcome       domain.SimulatorOutcome
@@ -166,8 +311,7 @@ func TestPersistentWorkerSimulatorResultMatrix(t *testing.T) {
 		t.Run(string(test.outcome), func(t *testing.T) {
 			withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
 				setSimulatorConfig(t, store, test.outcome, 0)
-				seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), true)
-				makeWorkerDeviceSimulator(t, db)
+				seedSimulatorWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), true)
 				worker := newSimulatorWorker(t, store, Config{WorkerID: "simulator-matrix-worker"})
 				worked, err := worker.DispatchNext(context.Background())
 				if err != nil || !worked {
@@ -219,8 +363,7 @@ func TestPersistentWorkerSimulatorResultMatrix(t *testing.T) {
 func TestPersistentWorkerSimulatorClaimSnapshotSurvivesConfigChangeAndReclaim(t *testing.T) {
 	withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
 		setSimulatorConfig(t, store, domain.SimulatorOutcomeProviderRejected, 0)
-		seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
-		makeWorkerDeviceSimulator(t, db)
+		seedSimulatorWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
 		first := newSimulatorWorker(t, store, Config{WorkerID: "simulator-first", LeaseDuration: time.Second})
 		registration := first.adapters[0]
 		command, attempt, claimed, err := first.claimNext(context.Background(), registration)
@@ -259,8 +402,7 @@ func TestPersistentWorkerSimulatorClaimSnapshotSurvivesConfigChangeAndReclaim(t 
 func TestPersistentWorkerSimulatorUsesFrozenTimeoutInsteadOfFutureProfile(t *testing.T) {
 	withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
 		setSimulatorConfig(t, store, domain.SimulatorOutcomeTransportErrorBeforeSend, 100*time.Millisecond)
-		seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
-		makeWorkerDeviceSimulator(t, db)
+		seedSimulatorWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
 		timeoutStore := &providerTimeoutStore{PostgresStore: store, timeout: time.Millisecond}
 		worker := newSimulatorWorker(t, timeoutStore, Config{WorkerID: "simulator-timeout-worker"})
 		worked, err := worker.DispatchNext(context.Background())
@@ -281,8 +423,7 @@ func TestPersistentWorkerSimulatorSnapshotLockOrdersClaimAndConfigCommit(t *test
 	t.Run("claim lock commits before config update", func(t *testing.T) {
 		withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
 			setSimulatorConfig(t, store, domain.SimulatorOutcomeProviderRejected, 0)
-			seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
-			makeWorkerDeviceSimulator(t, db)
+			seedSimulatorWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
 			locked, release := make(chan struct{}), make(chan struct{})
 			defer closeIfOpen(release)
 			worker := newSimulatorWorkerWithSnapshot(t, store, Config{WorkerID: "claim-lock-worker"}, func(ctx context.Context, tx repository.CommandTx) (map[string]any, error) {
@@ -321,8 +462,7 @@ func TestPersistentWorkerSimulatorSnapshotLockOrdersClaimAndConfigCommit(t *test
 
 	t.Run("config lock commits before claim snapshot", func(t *testing.T) {
 		withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
-			seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
-			makeWorkerDeviceSimulator(t, db)
+			seedSimulatorWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
 			updateLocked, releaseUpdate, updateDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 			defer closeIfOpen(releaseUpdate)
 			go func() {
@@ -471,11 +611,16 @@ func TestPersistentWorkerRetriesProviderRequestKeyConflict(t *testing.T) {
 
 func TestPersistentWorkerFailsClosedBeforeDispatch(t *testing.T) {
 	tests := []struct {
-		name    string
-		adapter *fakeAdapter
+		name       string
+		adapter    *fakeAdapter
+		wantReason string
 	}{
-		{name: "configuration drift", adapter: &fakeAdapter{configured: false}},
-		{name: "prepare failure", adapter: &fakeAdapter{configured: true, prepareErr: errors.New("adapter preflight failed")}},
+		{name: "configuration drift", adapter: &fakeAdapter{configured: false}, wantReason: "provider_not_configured"},
+		{name: "untyped prepare failure", adapter: &fakeAdapter{configured: true, prepareErr: errors.New("adapter preflight failed")}, wantReason: "provider_request_invalid"},
+		{name: "unsupported action", adapter: &fakeAdapter{configured: true, prepareErr: provideradapter.NewPrepareError(provideradapter.PrepareActionUnsupported, "unsupported")}, wantReason: "provider_action_unsupported"},
+		{name: "mapping unknown", adapter: &fakeAdapter{configured: true, prepareErr: provideradapter.NewPrepareError(provideradapter.PrepareMappingUnknown, "unknown mapping")}, wantReason: "provider_mapping_unknown"},
+		{name: "session unavailable", adapter: &fakeAdapter{configured: true, prepareErr: provideradapter.NewPrepareError(provideradapter.PrepareSessionUnavailable, "no session")}, wantReason: "provider_session_unavailable"},
+		{name: "request invalid", adapter: &fakeAdapter{configured: true, prepareErr: provideradapter.NewPrepareError(provideradapter.PrepareRequestInvalid, "invalid")}, wantReason: "provider_request_invalid"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -486,7 +631,7 @@ func TestPersistentWorkerFailsClosedBeforeDispatch(t *testing.T) {
 				if err != nil || !worked {
 					t.Fatalf("DispatchNext worked=%v err=%v", worked, err)
 				}
-				assertCommandStatus(t, store, domain.CommandStatusFailed, "provider_not_configured")
+				assertCommandStatus(t, store, domain.CommandStatusFailed, test.wantReason)
 				attempts, err := store.Commands().ListAttempts(context.Background(), workerCommandID)
 				if err != nil || len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != domain.AttemptOutcomeInvalidRequest || attempts[0].DispatchingAt != nil {
 					t.Fatalf("preflight Attempt=%+v err=%v", attempts, err)
@@ -501,8 +646,7 @@ func TestPersistentWorkerFailsClosedBeforeDispatch(t *testing.T) {
 
 func TestPersistentWorkerFailsClosedForInvalidSimulatorClaimSnapshot(t *testing.T) {
 	withWorkerDatabase(t, func(db *sql.DB, store *repository.PostgresStore) {
-		seedWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
-		makeWorkerDeviceSimulator(t, db)
+		seedSimulatorWorkerCommand(t, store, time.Now().UTC().Add(30*time.Second), false)
 		worker := newSimulatorWorker(t, store, Config{WorkerID: "invalid-simulator-snapshot"})
 		registration := worker.adapters[0]
 
@@ -518,7 +662,7 @@ func TestPersistentWorkerFailsClosedForInvalidSimulatorClaimSnapshot(t *testing.
 		if err := worker.dispatchClaimed(context.Background(), registration, command, attempt); err != nil {
 			t.Fatalf("dispatchClaimed: %v", err)
 		}
-		assertCommandStatus(t, store, domain.CommandStatusFailed, "provider_not_configured")
+		assertCommandStatus(t, store, domain.CommandStatusFailed, "provider_request_invalid")
 		attempts, err := store.Commands().ListAttempts(context.Background(), workerCommandID)
 		if err != nil || len(attempts) != 1 || attempts[0].Phase != domain.AttemptPhaseCompleted ||
 			attempts[0].Outcome == nil || *attempts[0].Outcome != domain.AttemptOutcomeInvalidRequest || attempts[0].DispatchingAt != nil {
@@ -638,7 +782,7 @@ func TestPersistentWorkerCrashAfterSentCommitDoesNotDispatch(t *testing.T) {
 			t.Fatalf("claimNext=%v err=%v", claimed, err)
 		}
 		prepared, err := adapter.Prepare(provideradapter.DispatchRequest{
-			ProviderDeviceID: "LOCK-WORKER-1", Action: command.CommandType,
+			ProviderDeviceID: "LOCK-WORKER-1", ProviderProfile: command.ProviderProfile, Action: command.CommandType,
 			Payload: command.Payload, ProviderRequestKey: attempt.ProviderRequestKey,
 		})
 		if err != nil {
@@ -700,7 +844,7 @@ func TestPersistentWorkerRunResumesQueuedAndExpiredDispatching(t *testing.T) {
 				t.Fatalf("claimNext=%v err=%v", claimed, err)
 			}
 			prepared, err := adapter.Prepare(provideradapter.DispatchRequest{
-				ProviderDeviceID: "LOCK-WORKER-1", Action: command.CommandType,
+				ProviderDeviceID: "LOCK-WORKER-1", ProviderProfile: command.ProviderProfile, Action: command.CommandType,
 				Payload: command.Payload, ProviderRequestKey: attempt.ProviderRequestKey,
 			})
 			if err != nil {
@@ -1015,6 +1159,9 @@ func (a *fakeAdapter) Prepare(request provideradapter.DispatchRequest) (provider
 	if a.prepareErr != nil {
 		return nil, a.prepareErr
 	}
+	if request.ProviderProfile != domain.ProviderProfileWWTIOTV2 {
+		return nil, provideradapter.NewPrepareError(provideradapter.PrepareRequestInvalid, "unexpected Provider profile")
+	}
 	return &fakePrepared{adapter: a, summary: map[string]any{
 		"cmd": "open", "deviceid": request.ProviderDeviceID, "serialnum": request.ProviderRequestKey,
 	}}, nil
@@ -1106,6 +1253,19 @@ func newSimulatorWorkerWithSnapshot(t *testing.T, store Store, config Config, sn
 	return worker
 }
 
+func newOmniWorker(t *testing.T, store Store, adapter provideradapter.Adapter, config Config) *Worker {
+	t.Helper()
+	config.Adapters = []AdapterRegistration{{
+		ProviderCode: domain.ProviderCodeOmni, AdapterCode: domain.AdapterOmniDirectTCP,
+		Adapter: adapter, ResultSource: domain.EventSourceSystem,
+	}}
+	worker, err := New(store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return worker
+}
+
 func setSimulatorConfig(t *testing.T, store *repository.PostgresStore, outcome domain.SimulatorOutcome, delay time.Duration) {
 	t.Helper()
 	if err := updateSimulatorConfig(store, outcome, delay); err != nil {
@@ -1150,6 +1310,7 @@ func seedFairnessCommands(t *testing.T, store *repository.PostgresStore) {
 	simulatorCommand.ID = "93000000-0000-4000-8000-000000000003"
 	simulatorCommand.DeviceID = "92000000-0000-4000-8000-000000000003"
 	simulatorCommand.ProviderCode = domain.ProviderCodeSimulator
+	simulatorCommand.ProviderProfile = domain.ProviderProfileSimulatorV1
 	simulatorCommand.ProviderDeviceID = simulatorCommand.DeviceID
 	simulatorCommand.Adapter = domain.AdapterSimulator
 	simulatorCommand.IdempotencyKey = "worker-key-3"
@@ -1161,7 +1322,8 @@ func seedFairnessCommands(t *testing.T, store *repository.PostgresStore) {
 	if err := store.TransactCommand(ctx, func(tx repository.CommandTx) error {
 		if err := tx.Devices().Create(ctx, domain.Device{
 			ID: simulatorCommand.DeviceID, ProjectID: workerProjectID, DeviceTypeID: first.DeviceTypeID,
-			Name: "Fair Simulator", ProviderCode: domain.ProviderCodeSimulator, ProviderDeviceID: simulatorCommand.DeviceID,
+			Name: "Fair Simulator", ProviderCode: domain.ProviderCodeSimulator,
+			ProviderProfile: domain.ProviderProfileSimulatorV1, ProviderDeviceID: simulatorCommand.DeviceID,
 			AccessType: domain.AccessTypeSimulator, TransportProtocol: domain.TransportProtocolInternal,
 			Adapter: domain.AdapterSimulator, ConnectionStatus: domain.ConnectionStatusUnknown,
 			LifecycleStatus: domain.LifecycleStatusActive, CreatedAt: first.CreatedAt, UpdatedAt: first.UpdatedAt,
@@ -1209,25 +1371,6 @@ func closeIfOpen(channel chan struct{}) {
 	}
 }
 
-func makeWorkerDeviceSimulator(t *testing.T, db *sql.DB) {
-	t.Helper()
-	if _, err := db.Exec(`
-		UPDATE devices
-		SET provider_code = 'simulator', provider_device_id = id::text,
-			access_type = 'simulator', transport_protocol = 'internal', adapter = 'simulator'
-		WHERE id = $1
-	`, workerDeviceID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`
-		UPDATE device_commands
-		SET provider_code = 'simulator', provider_device_id = device_id::text, adapter = 'simulator'
-		WHERE device_id = $1
-	`, workerDeviceID); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func runWorkerUntil(t *testing.T, worker *Worker, done func() bool) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1258,6 +1401,52 @@ func runWorkerUntil(t *testing.T, worker *Worker, done func() bool) {
 }
 
 func seedWorkerCommand(t *testing.T, store *repository.PostgresStore, dispatchDeadline time.Time, withWebhook bool) {
+	seedWorkerCommandWithBinding(t, store, dispatchDeadline, withWebhook, workerProviderBinding{
+		providerCode: domain.ProviderCodeWWTIOT, providerProfile: domain.ProviderProfileWWTIOTV2,
+		providerDeviceID: "LOCK-WORKER-1", accessType: domain.AccessTypeCloudAPI,
+		transportProtocol: domain.TransportProtocolHTTP, adapter: domain.AdapterWWTIOTCloudAPI,
+		commandType: "unlock", deliveryPolicy: domain.DeliveryPolicyDispatchOnce, deviceTypeRevision: 1,
+	})
+}
+
+func seedSimulatorWorkerCommand(t *testing.T, store *repository.PostgresStore, dispatchDeadline time.Time, withWebhook bool) {
+	seedWorkerCommandWithBinding(t, store, dispatchDeadline, withWebhook, workerProviderBinding{
+		providerCode: domain.ProviderCodeSimulator, providerProfile: domain.ProviderProfileSimulatorV1,
+		providerDeviceID: workerDeviceID, accessType: domain.AccessTypeSimulator,
+		transportProtocol: domain.TransportProtocolInternal, adapter: domain.AdapterSimulator,
+		commandType: "unlock", deliveryPolicy: domain.DeliveryPolicyDispatchOnce, deviceTypeRevision: 1,
+	})
+}
+
+func seedOmniWorkerCommand(t *testing.T, store *repository.PostgresStore, dispatchDeadline time.Time, withWebhook bool) {
+	seedWorkerCommandWithBinding(t, store, dispatchDeadline, withWebhook, workerProviderBinding{
+		providerCode: domain.ProviderCodeOmni, providerProfile: domain.ProviderProfileOmniIoTV135,
+		providerDeviceID: workerOmniIMEI, accessType: domain.AccessTypeDirectDevice,
+		transportProtocol: domain.TransportProtocolTCP, adapter: domain.AdapterOmniDirectTCP,
+		commandType: "query_status", deliveryPolicy: domain.DeliveryPolicyDispatchOnce,
+		deviceTypeRevision: domain.DeviceTypeSmartLockRevision,
+	})
+}
+
+type workerProviderBinding struct {
+	providerCode       string
+	providerProfile    string
+	providerDeviceID   string
+	accessType         domain.AccessType
+	transportProtocol  domain.TransportProtocol
+	adapter            domain.Adapter
+	commandType        domain.ActionIdentifier
+	deliveryPolicy     domain.DeliveryPolicy
+	deviceTypeRevision int
+}
+
+func seedWorkerCommandWithBinding(
+	t *testing.T,
+	store *repository.PostgresStore,
+	dispatchDeadline time.Time,
+	withWebhook bool,
+	binding workerProviderBinding,
+) {
 	t.Helper()
 	ctx := context.Background()
 	deviceType, err := store.DeviceTypes().GetByCode(ctx, domain.DeviceTypeSmartLock)
@@ -1291,19 +1480,20 @@ func seedWorkerCommand(t *testing.T, store *repository.PostgresStore, dispatchDe
 		}
 		if err := tx.Devices().Create(ctx, domain.Device{
 			ID: workerDeviceID, ProjectID: workerProjectID, DeviceTypeID: deviceType.ID,
-			Name: "Worker Lock", ProviderCode: domain.ProviderCodeWWTIOT, ProviderDeviceID: "LOCK-WORKER-1",
-			AccessType: domain.AccessTypeCloudAPI, TransportProtocol: domain.TransportProtocolHTTP,
-			Adapter: domain.AdapterWWTIOTCloudAPI, ConnectionStatus: domain.ConnectionStatusUnknown,
+			Name: "Worker Lock", ProviderCode: binding.providerCode,
+			ProviderProfile: binding.providerProfile, ProviderDeviceID: binding.providerDeviceID,
+			AccessType: binding.accessType, TransportProtocol: binding.transportProtocol,
+			Adapter: binding.adapter, ConnectionStatus: domain.ConnectionStatusUnknown,
 			LifecycleStatus: domain.LifecycleStatusActive, CreatedAt: now, UpdatedAt: now,
 		}); err != nil {
 			return err
 		}
 		return tx.Commands().Create(ctx, domain.Command{
 			ID: workerCommandID, ProjectID: workerProjectID, DeviceID: workerDeviceID, DeviceTypeID: deviceType.ID,
-			DeviceTypeCode: domain.DeviceTypeSmartLock, ProviderCode: domain.ProviderCodeWWTIOT,
-			ProviderDeviceID: "LOCK-WORKER-1", Adapter: domain.AdapterWWTIOTCloudAPI,
-			CommandType: "unlock", Payload: map[string]any{}, DeviceTypeRevision: 1,
-			DeliveryPolicy: domain.DeliveryPolicyDispatchOnce, Status: domain.CommandStatusQueued,
+			DeviceTypeCode: domain.DeviceTypeSmartLock, ProviderCode: binding.providerCode,
+			ProviderProfile: binding.providerProfile, ProviderDeviceID: binding.providerDeviceID, Adapter: binding.adapter,
+			CommandType: binding.commandType, Payload: map[string]any{}, DeviceTypeRevision: binding.deviceTypeRevision,
+			DeliveryPolicy: binding.deliveryPolicy, Status: domain.CommandStatusQueued,
 			DispatchDeadline: dispatchDeadline.Sub(now), ProviderTimeout: 3 * time.Second,
 			ResultTimeout: time.Minute, RetryAllowed: false,
 			ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone,

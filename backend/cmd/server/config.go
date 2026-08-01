@@ -30,6 +30,11 @@ type config struct {
 	WWTIOTAPIURL               string
 	WWTIOTUserID               string
 	WWTIOTUserKey              string
+	OmniBikeListenAddr         string
+	OmniIoTListenAddr          string
+	OmniMaxFrameBytes          int
+	OmniMaxConnections         int
+	OmniReadTimeout            time.Duration
 }
 
 func loadConfig(envFiles ...string) (config, error) {
@@ -64,6 +69,23 @@ func loadConfig(envFiles ...string) (config, error) {
 	if _, err := webhookworker.ParseEgressAllowlist(webhookEgressAllowlist); err != nil {
 		return config{}, fmt.Errorf("WEBHOOK_EGRESS_ALLOWLIST is invalid: %w", err)
 	}
+	omniMaxFrameBytes, err := strictIntRange("OMNI_MAX_FRAME_BYTES", 4096, 64, 1024*1024)
+	if err != nil {
+		return config{}, err
+	}
+	omniMaxConnections, err := strictIntRange("OMNI_MAX_CONNECTIONS", 256, 1, 100000)
+	if err != nil {
+		return config{}, err
+	}
+	omniReadTimeout, err := strictPositiveDuration("OMNI_READ_TIMEOUT", 5*time.Minute)
+	if err != nil {
+		return config{}, err
+	}
+	omniBikeListenAddr := strings.TrimSpace(os.Getenv("OMNI_BIKE_LISTEN_ADDR"))
+	omniIoTListenAddr := strings.TrimSpace(os.Getenv("OMNI_IOT_LISTEN_ADDR"))
+	if (omniBikeListenAddr == "") != (omniIoTListenAddr == "") {
+		return config{}, fmt.Errorf("OMNI_BIKE_LISTEN_ADDR and OMNI_IOT_LISTEN_ADDR must be configured together")
+	}
 
 	cfg := config{
 		ServerAddr:             envDefault("SERVER_ADDR", ":8080"),
@@ -82,6 +104,11 @@ func loadConfig(envFiles ...string) (config, error) {
 		WWTIOTAPIURL:           envDefault("WWTIOT_API_URL", "http://gps.wwtiot.com/api/"),
 		WWTIOTUserID:           strings.TrimSpace(os.Getenv("WWTIOT_USER_ID")),
 		WWTIOTUserKey:          os.Getenv("WWTIOT_USER_KEY"),
+		OmniBikeListenAddr:     omniBikeListenAddr,
+		OmniIoTListenAddr:      omniIoTListenAddr,
+		OmniMaxFrameBytes:      omniMaxFrameBytes,
+		OmniMaxConnections:     omniMaxConnections,
+		OmniReadTimeout:        omniReadTimeout,
 	}
 	webhookEncryptionKey, err := decodeWebhookEncryptionKey(os.Getenv("WEBHOOK_SECRET_ENCRYPTION_KEY"))
 	if err != nil {
@@ -245,21 +272,6 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return value
-}
-
-func envBool(key string, fallback bool) bool {
-	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
-	if raw == "" {
-		return fallback
-	}
-	switch raw {
-	case "1", "true", "yes", "y", "on":
-		return true
-	case "0", "false", "no", "n", "off":
-		return false
-	default:
-		return fallback
-	}
 }
 
 func stripInlineEnvComment(value string) string {

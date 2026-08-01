@@ -358,7 +358,8 @@ func validAuditAction(value string) bool {
 	case "auth.login", "auth.refresh", "auth.logout",
 		"project.created", "project.updated", "project.api_key_rotated", "project.webhook_secret_rotated",
 		"project.webhook_secret_decryption_failed", "device.created", "device.updated", "device.lifecycle_changed",
-		"command.created", "command.cancelled", "provider.callback_rejected", "webhook.delivery_replayed", "simulator.updated":
+		"command.created", "command.cancelled", "provider.callback_rejected", "provider.message_received",
+		"provider.message_rejected", "webhook.delivery_replayed", "simulator.updated":
 		return true
 	default:
 		return false

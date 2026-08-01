@@ -105,6 +105,17 @@ func TestValidEventTypeIncludesFrozenEvidenceEvent(t *testing.T) {
 	}
 }
 
+func TestValidAuditActionIncludesProviderMessageActions(t *testing.T) {
+	for _, action := range []string{"provider.message_received", "provider.message_rejected"} {
+		if !validAuditAction(action) {
+			t.Fatalf("%s must be accepted by Audit queries", action)
+		}
+	}
+	if validAuditAction("provider.message_promoted") {
+		t.Fatal("unknown Provider message action must remain invalid")
+	}
+}
+
 func TestPersistentDeliveryDTOIsSafeAndDistinguishesDetailAttempts(t *testing.T) {
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	secretVersion := 7

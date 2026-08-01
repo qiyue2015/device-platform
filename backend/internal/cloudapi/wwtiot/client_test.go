@@ -40,6 +40,21 @@ func TestConfigValidationAndFixedTimeout(t *testing.T) {
 	}
 }
 
+func TestNormalizeDeviceIdentity(t *testing.T) {
+	valid := "LOCK.alpha_1:zone-2"
+	if got, err := NormalizeDeviceIdentity(&valid, "ignored"); err != nil || got != valid {
+		t.Fatalf("valid identity = %q, %v", got, err)
+	}
+	if _, err := NormalizeDeviceIdentity(nil, "ignored"); err == nil {
+		t.Fatal("accepted missing identity")
+	}
+	for _, invalid := range []string{"", "with space", string(make([]byte, 129))} {
+		if _, err := NormalizeDeviceIdentity(&invalid, "ignored"); err == nil {
+			t.Fatalf("accepted invalid identity %q", invalid)
+		}
+	}
+}
+
 func TestDispatchBuildsExactV2Requests(t *testing.T) {
 	tests := []struct {
 		action domain.ActionIdentifier
@@ -253,7 +268,7 @@ func testClient(apiURL string) *Client {
 }
 
 func dispatchRequest(action domain.ActionIdentifier) DispatchRequest {
-	return DispatchRequest{ProviderDeviceID: "768901037824", Action: action, Payload: map[string]any{}, ProviderRequestKey: "123456789"}
+	return DispatchRequest{ProviderDeviceID: "768901037824", ProviderProfile: domain.ProviderProfileWWTIOTV2, Action: action, Payload: map[string]any{}, ProviderRequestKey: "123456789"}
 }
 
 func assertResult(t *testing.T, result DispatchResult, outcome domain.AttemptOutcome, confirmation domain.ConfirmationLevel, evidence domain.EvidenceStatus) {

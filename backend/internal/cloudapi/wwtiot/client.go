@@ -41,6 +41,17 @@ type Config struct {
 	UserKey string
 }
 
+func NormalizeDeviceIdentity(requested *string, _ string) (string, error) {
+	if requested == nil {
+		return "", fmt.Errorf("provider_device_id is required")
+	}
+	value := strings.TrimSpace(*requested)
+	if !providerDeviceIDPattern.MatchString(value) {
+		return "", fmt.Errorf("provider_device_id is invalid")
+	}
+	return value, nil
+}
+
 func (cfg Config) Configured() bool {
 	_, _, _, ok := normalizeConfig(cfg)
 	return ok
@@ -89,7 +100,10 @@ func (c *Client) Configured() bool {
 
 func (c *Client) Prepare(request DispatchRequest) (provideradapter.PreparedDispatch, error) {
 	if !c.Configured() {
-		return nil, fmt.Errorf("WWTIOT Provider is not configured")
+		return nil, provideradapter.NewPrepareError(provideradapter.PrepareRequestInvalid, "WWTIOT Provider is not configured")
+	}
+	if request.ProviderProfile != domain.ProviderProfileWWTIOTV2 {
+		return nil, provideradapter.NewPrepareError(provideradapter.PrepareRequestInvalid, "WWTIOT provider_profile is invalid")
 	}
 	body, summary, err := c.buildRequest(request)
 	if err != nil {
@@ -181,19 +195,20 @@ func normalizeConfig(cfg Config) (string, string, string, bool) {
 }
 
 func (c *Client) buildRequest(request DispatchRequest) (map[string]any, map[string]any, error) {
-	deviceID := strings.TrimSpace(request.ProviderDeviceID)
-	if !providerDeviceIDPattern.MatchString(deviceID) {
-		return nil, nil, fmt.Errorf("provider_device_id is invalid")
+	requestedDeviceID := request.ProviderDeviceID
+	deviceID, err := NormalizeDeviceIdentity(&requestedDeviceID, "")
+	if err != nil {
+		return nil, nil, provideradapter.NewPrepareError(provideradapter.PrepareRequestInvalid, err.Error())
 	}
 	if !requestKeyPattern.MatchString(request.ProviderRequestKey) {
-		return nil, nil, fmt.Errorf("provider_request_key is invalid")
+		return nil, nil, provideradapter.NewPrepareError(provideradapter.PrepareRequestInvalid, "provider_request_key is invalid")
 	}
 	if len(request.Payload) != 0 {
-		return nil, nil, fmt.Errorf("smart-lock payload must be an empty object")
+		return nil, nil, provideradapter.NewPrepareError(provideradapter.PrepareRequestInvalid, "smart-lock payload must be an empty object")
 	}
 	serial, err := strconv.ParseInt(request.ProviderRequestKey, 10, 64)
 	if err != nil {
-		return nil, nil, fmt.Errorf("provider_request_key is invalid")
+		return nil, nil, provideradapter.NewPrepareError(provideradapter.PrepareRequestInvalid, "provider_request_key is invalid")
 	}
 
 	var body map[string]any
@@ -209,7 +224,7 @@ func (c *Client) buildRequest(request DispatchRequest) (map[string]any, map[stri
 		}
 		body["sign"] = md5Sign(c.userID, "control", int64(23), int64(4), deviceID, serial, c.userKey)
 	default:
-		return nil, nil, fmt.Errorf("unsupported smart-lock action")
+		return nil, nil, provideradapter.NewPrepareError(provideradapter.PrepareActionUnsupported, "unsupported smart-lock action")
 	}
 	return body, requestSummary(body), nil
 }

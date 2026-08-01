@@ -383,15 +383,6 @@ func clientIP(r *http.Request) string {
 	return strings.TrimSpace(r.RemoteAddr)
 }
 
-func decodeWebhookJSON(w http.ResponseWriter, r *http.Request, out any) bool {
-	defer r.Body.Close()
-	if err := httpjson.DecodeStrict(r.Body, out); err != nil {
-		writeWebhookError(w, http.StatusBadRequest, "invalid_json", "invalid JSON body")
-		return false
-	}
-	return true
-}
-
 func writeWebhookJSON(w http.ResponseWriter, status int, message string, value any) {
 	httpjson.Write(w, status, message, value)
 }

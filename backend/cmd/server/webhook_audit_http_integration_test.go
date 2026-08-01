@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -62,6 +61,13 @@ func TestWebhookAuditHTTPPostgresReadReplayAndRestart(t *testing.T) {
 		auditDetail := responseDataObject(t, assertEnvelope(t, doRequest(t, server, http.MethodGet, "/v1/audit-logs/"+auditID, "", admin), http.StatusOK, true))
 		if auditDetail["result"] != "success" || auditDetail["occurred_at"] == nil {
 			t.Fatalf("Audit DTO = %+v", auditDetail)
+		}
+		providerAudits := assertPaginatedEnvelope(t, doRequest(t, server, http.MethodGet,
+			"/v1/audit-logs?project_id="+fixture.projectID+"&actor_type=provider&action=provider.message_received&result=success&page=1&page_size=10", "", admin),
+			http.StatusOK, 1, 10, 1)
+		providerAuditItems := responseDataObject(t, providerAudits)["items"].([]interface{})
+		if providerAuditItems[0].(map[string]interface{})["actor_id"] != "omni" {
+			t.Fatalf("Provider message Audit DTO = %+v", providerAuditItems[0])
 		}
 
 		assertWebhookAuditStrictHTTP(t, server, admin, fixture)
@@ -177,7 +183,7 @@ func createWebhookAuditHTTPFixture(t *testing.T, db *sql.DB, server http.Handler
 	t.Helper()
 	project := createPersistentProjectForDeviceTest(t, server, admin, suffix+" Project", "https://hooks.example.test/current-v1")
 	created := responseDataObject(t, assertEnvelope(t, doRequest(t, server, http.MethodPost, "/v1/devices", `{
-		"project_id":"`+project.ID+`","name":"`+suffix+` Device","device_type_code":"smart-lock","provider_code":"simulator"
+		"project_id":"`+project.ID+`","name":"`+suffix+` Device","device_type_code":"smart-lock","provider_code":"simulator","provider_profile":"simulator-v1"
 	}`, admin), http.StatusCreated, true))
 	deviceID := requiredStringField(t, created, "id")
 	var eventID, deliveryID string
@@ -216,6 +222,17 @@ func createWebhookAuditHTTPFixture(t *testing.T, db *sql.DB, server http.Handler
 			}); err != nil {
 				return err
 			}
+		}
+		providerActorID := domain.ProviderCodeOmni
+		providerResourceID := "86000000-0000-0000-0000-000000000001"
+		projectID := project.ID
+		if err := tx.Audits().Create(context.Background(), domain.AuditLog{
+			ID: "85000000-0000-0000-0000-000000000003", ActorType: domain.ActorTypeProvider,
+			ActorID: &providerActorID, ProjectID: &projectID, Action: "provider.message_received",
+			Result: domain.AuditResultSuccess, ResourceType: "device_raw_message", ResourceID: &providerResourceID,
+			Metadata: map[string]any{"provider_code": "omni", "evidence_status": "unverified"}, OccurredAt: fixedTime,
+		}); err != nil {
+			return err
 		}
 		return nil
 	}); err != nil {
@@ -319,15 +336,4 @@ func replayCounts(t *testing.T, db *sql.DB, originalID string) (int, int) {
 		t.Fatal(err)
 	}
 	return deliveries, audits
-}
-
-func decodeWebhookAuditData(t *testing.T, recorder *httptest.ResponseRecorder) map[string]interface{} {
-	t.Helper()
-	var envelope struct {
-		Data map[string]interface{} `json:"data"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
-		t.Fatal(err)
-	}
-	return envelope.Data
 }

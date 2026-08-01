@@ -453,6 +453,7 @@ func createWebhookWorkerFixture(t *testing.T, store *repository.PostgresStore, e
 		return tx.Devices().Create(context.Background(), domain.Device{
 			ID: webhookWorkerDeviceID, ProjectID: created.Project.ID, DeviceTypeID: deviceType.ID,
 			Name: "Webhook Worker Lock", ProviderCode: domain.ProviderCodeSimulator,
+			ProviderProfile:  domain.ProviderProfileSimulatorV1,
 			ProviderDeviceID: webhookWorkerDeviceID, AccessType: domain.AccessTypeSimulator,
 			TransportProtocol: domain.TransportProtocolInternal, Adapter: domain.AdapterSimulator,
 			ConnectionStatus: domain.ConnectionStatusUnknown, LifecycleStatus: domain.LifecycleStatusActive,

@@ -122,6 +122,32 @@ func TestPlatformCoreV4MigrationMatchesFrozenContract(t *testing.T) {
 	}
 }
 
+func TestDualProviderMigrationDoesNotUpgradeHistoricalWWTIOTEvidence(t *testing.T) {
+	content, err := embeddedMigrations.ReadFile("migrations/009_dual_provider_smart_lock.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlText := string(content)
+	for _, marker := range []string{
+		"cannot preserve Provider identity tombstones while historical identities are reused",
+		"uq_devices_provider_identity",
+		"WHEN 'simulator' THEN 'verified'",
+		"ELSE 'unverified'",
+		"evidence_status IN ('verified', 'unverified')",
+		"provider_profile IN ('omni-bike-tcp-v2.0.7', 'omni-iot-tcp-v1.3.5', 'unresolved')",
+		"fk_device_commands_provider_binding",
+		"fk_command_attempts_provider_binding",
+		"fk_raw_messages_provider_binding",
+	} {
+		if !strings.Contains(sqlText, marker) {
+			t.Errorf("dual Provider migration is missing %q", marker)
+		}
+	}
+	if strings.Contains(sqlText, "evidence_status = 'verified';") {
+		t.Error("dual Provider migration must not unconditionally upgrade historical RawMessage evidence")
+	}
+}
+
 func TestInstallationSingletonMigrationMatchesFrozenContract(t *testing.T) {
 	content, err := embeddedMigrations.ReadFile("migrations/006_installation_single_admin.up.sql")
 	if err != nil {

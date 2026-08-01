@@ -26,7 +26,7 @@ func normalizeWebhookURL(value *string) (*string, error) {
 	}
 	raw := strings.TrimSpace(*value)
 	parsed, err := url.Parse(raw)
-	if err != nil || raw == "" || parsed.IsAbs() == false || parsed.Host == "" || parsed.Opaque != "" || parsed.User != nil || parsed.Fragment != "" {
+	if err != nil || raw == "" || !parsed.IsAbs() || parsed.Host == "" || parsed.Opaque != "" || parsed.User != nil || parsed.Fragment != "" {
 		return nil, fmt.Errorf("%w: webhook_url is invalid", ErrInvalidRequest)
 	}
 	host := strings.ToLower(parsed.Hostname())

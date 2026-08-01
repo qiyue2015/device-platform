@@ -8,7 +8,7 @@ import (
 	"github.com/qiyue2015/device-platform/internal/projectservice"
 )
 
-var errProjectServiceUnavailable = errors.New("Project service unavailable")
+var errProjectServiceUnavailable = errors.New("project service unavailable")
 
 type appProjectService struct {
 	app *app

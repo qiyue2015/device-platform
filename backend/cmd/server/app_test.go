@@ -17,6 +17,8 @@ import (
 
 	"github.com/qiyue2015/device-platform/internal/commandworker"
 	"github.com/qiyue2015/device-platform/internal/devicecore"
+	"github.com/qiyue2015/device-platform/internal/directdevice/omni"
+	"github.com/qiyue2015/device-platform/internal/domain"
 	"github.com/qiyue2015/device-platform/internal/httpjson"
 	"github.com/qiyue2015/device-platform/internal/webhookaudit"
 	"github.com/qiyue2015/device-platform/internal/webhookworker"
@@ -43,6 +45,13 @@ type lifecycleWebhookWorker struct {
 	stopped chan struct{}
 }
 
+type failingOmniRuntime struct {
+	started chan struct{}
+	fail    chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+}
+
 func (w *lifecycleCommandWorker) Run(ctx context.Context, _ commandworker.ErrorReporter) {
 	close(w.started)
 	<-ctx.Done()
@@ -53,6 +62,23 @@ func (w *lifecycleWebhookWorker) Run(ctx context.Context, _ webhookworker.ErrorR
 	close(w.started)
 	<-ctx.Done()
 	close(w.stopped)
+}
+
+func (r *failingOmniRuntime) Configured() bool { return true }
+
+func (r *failingOmniRuntime) Run(ctx context.Context, _ func(error)) error {
+	close(r.started)
+	select {
+	case <-r.fail:
+		return errors.Join(omni.ErrRuntimeDegraded, omni.ErrListenerAccept)
+	case <-ctx.Done():
+		return nil
+	}
+}
+
+func (r *failingOmniRuntime) Close() error {
+	r.once.Do(func() { close(r.closed) })
+	return nil
 }
 
 func (r *readTrap) Read([]byte) (int, error) {
@@ -150,6 +176,40 @@ func TestAppWebhookWorkerReplacementStopsPreviousWorker(t *testing.T) {
 	}
 }
 
+func TestOmniRuntimeFailureSignalsFatalAndMakesAppUnready(t *testing.T) {
+	useSetupDirectory(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	application := newAppWithServices(
+		config{Installed: true}, logger, nil, nil, nil, nil, nil, newCloudProviderRegistry(config{}), nil, nil,
+	)
+	runtime := &failingOmniRuntime{
+		started: make(chan struct{}), fail: make(chan struct{}), closed: make(chan struct{}),
+	}
+	application.replaceOmniRuntime(runtime)
+	defer application.replaceOmniRuntime(nil)
+	<-runtime.started
+
+	close(runtime.fail)
+	select {
+	case err := <-application.fatalErrors():
+		if !errors.Is(err, omni.ErrRuntimeDegraded) || !errors.Is(err, omni.ErrListenerAccept) {
+			t.Fatalf("fatal error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Omni runtime failure was only logged and did not signal fatal shutdown")
+	}
+
+	server := application.routes()
+	ready := doRequest(t, server, http.MethodGet, "/readyz", "", nil)
+	if envelope := assertEnvelope(t, ready, http.StatusServiceUnavailable, false); envelope.ErrorCode != "provider_runtime_unavailable" {
+		t.Fatalf("ready error_code = %q", envelope.ErrorCode)
+	}
+	business := doRequest(t, server, http.MethodGet, "/v1/projects", "", nil)
+	if envelope := assertEnvelope(t, business, http.StatusServiceUnavailable, false); envelope.ErrorCode != "provider_runtime_unavailable" {
+		t.Fatalf("business API error_code = %q", envelope.ErrorCode)
+	}
+}
+
 func TestAppCloseWaitsForCommandAndWebhookWorkers(t *testing.T) {
 	application := &app{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	command := &lifecycleCommandWorker{started: make(chan struct{}), stopped: make(chan struct{})}
@@ -220,7 +280,12 @@ func TestUninstalledAppDoesNotPublishLegacyRuntimeServices(t *testing.T) {
 }
 
 func TestLoadConfigLoadsEnvFilesWithoutOverridingProcessEnv(t *testing.T) {
-	unsetEnvForTest(t, "DATABASE_URL", "REDIS_URL", "JWT_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY", "LOG_LEVEL", "READ_HEADER_TIMEOUT", "DEVICE_PLATFORM_INSTALLED")
+	unsetEnvForTest(t,
+		"DATABASE_URL", "REDIS_URL", "JWT_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY",
+		"LOG_LEVEL", "READ_HEADER_TIMEOUT", "DEVICE_PLATFORM_INSTALLED",
+		"OMNI_BIKE_LISTEN_ADDR", "OMNI_IOT_LISTEN_ADDR", "OMNI_MAX_FRAME_BYTES",
+		"OMNI_MAX_CONNECTIONS", "OMNI_READ_TIMEOUT",
+	)
 	t.Setenv("SERVER_ADDR", ":9090")
 	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
 
@@ -236,6 +301,11 @@ LOG_LEVEL=debug
 READ_HEADER_TIMEOUT=3s
 WWTIOT_USER_ID=env-user
 WWTIOT_USER_KEY=env-key
+OMNI_BIKE_LISTEN_ADDR=127.0.0.1:19001
+OMNI_IOT_LISTEN_ADDR=127.0.0.1:19002
+OMNI_MAX_FRAME_BYTES=8192
+OMNI_MAX_CONNECTIONS=128
+OMNI_READ_TIMEOUT=45s
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -257,9 +327,14 @@ WWTIOT_USER_KEY=env-key
 	if cfg.WWTIOTUserID != "env-user" || cfg.WWTIOTUserKey != "env-key" {
 		t.Fatal("expected WWTIOT credentials from env file")
 	}
+	if cfg.OmniBikeListenAddr != "127.0.0.1:19001" || cfg.OmniIoTListenAddr != "127.0.0.1:19002" ||
+		cfg.OmniMaxFrameBytes != 8192 || cfg.OmniMaxConnections != 128 || cfg.OmniReadTimeout != 45*time.Second {
+		t.Fatalf("expected Omni runtime fields from env file, got %+v", cfg)
+	}
 }
 
 func TestLoadConfigPreservesWWTIOTUserKeyBytes(t *testing.T) {
+	unsetOmniEnvForTest(t)
 	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
 	t.Setenv("DEVICE_PLATFORM_INSTALLED", "false")
 	t.Setenv("WWTIOT_USER_KEY", " key-with-significant-spaces ")
@@ -385,7 +460,77 @@ func unsetEnvForTest(t *testing.T, keys ...string) {
 func useFreshSetupConfigForTest(t *testing.T) {
 	t.Helper()
 	unsetEnvForTest(t, "DATABASE_URL", "REDIS_URL", "JWT_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY", "DEVICE_PLATFORM_INSTALLED")
+	unsetOmniEnvForTest(t)
 	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
+}
+
+func unsetOmniEnvForTest(t *testing.T) {
+	t.Helper()
+	unsetEnvForTest(t,
+		"OMNI_BIKE_LISTEN_ADDR", "OMNI_IOT_LISTEN_ADDR", "OMNI_MAX_FRAME_BYTES",
+		"OMNI_MAX_CONNECTIONS", "OMNI_READ_TIMEOUT",
+	)
+}
+
+func TestLoadConfigRequiresOmniProfileAddressesTogether(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		bike string
+		iot  string
+	}{
+		{name: "bike only", bike: "127.0.0.1:19001"},
+		{name: "IoT only", iot: "127.0.0.1:19002"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			useFreshSetupConfigForTest(t)
+			t.Setenv("OMNI_BIKE_LISTEN_ADDR", test.bike)
+			t.Setenv("OMNI_IOT_LISTEN_ADDR", test.iot)
+			if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "must be configured together") {
+				t.Fatalf("loadConfig error=%v, want paired Omni address error", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigAcceptsOmniRuntimeLimits(t *testing.T) {
+	useFreshSetupConfigForTest(t)
+	t.Setenv("OMNI_BIKE_LISTEN_ADDR", " 127.0.0.1:19001 ")
+	t.Setenv("OMNI_IOT_LISTEN_ADDR", " 127.0.0.1:19002 ")
+	t.Setenv("OMNI_MAX_FRAME_BYTES", "8192")
+	t.Setenv("OMNI_MAX_CONNECTIONS", "128")
+	t.Setenv("OMNI_READ_TIMEOUT", "45s")
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OmniBikeListenAddr != "127.0.0.1:19001" || cfg.OmniIoTListenAddr != "127.0.0.1:19002" ||
+		cfg.OmniMaxFrameBytes != 8192 || cfg.OmniMaxConnections != 128 || cfg.OmniReadTimeout != 45*time.Second {
+		t.Fatalf("Omni runtime config=%+v", cfg)
+	}
+}
+
+func TestLoadConfigRejectsInvalidOmniRuntimeLimits(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "frame bytes below minimum", key: "OMNI_MAX_FRAME_BYTES", value: "63"},
+		{name: "frame bytes above maximum", key: "OMNI_MAX_FRAME_BYTES", value: "1048577"},
+		{name: "connections below minimum", key: "OMNI_MAX_CONNECTIONS", value: "0"},
+		{name: "connections above maximum", key: "OMNI_MAX_CONNECTIONS", value: "100001"},
+		{name: "read timeout invalid", key: "OMNI_READ_TIMEOUT", value: "invalid"},
+		{name: "read timeout non-positive", key: "OMNI_READ_TIMEOUT", value: "0s"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			useFreshSetupConfigForTest(t)
+			t.Setenv(test.key, test.value)
+			if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), test.key) {
+				t.Fatalf("loadConfig error=%v, want %s", err, test.key)
+			}
+		})
+	}
 }
 
 func TestLoadConfigRequiresRuntimeFieldsAfterInstall(t *testing.T) {
@@ -472,6 +617,7 @@ func TestLoadConfigAcceptsLowerWebhookAttemptLimitAndExtendedSchedule(t *testing
 
 func TestExampleConfigAllowsFreshSetupWithoutWebhookEncryptionKey(t *testing.T) {
 	unsetEnvForTest(t, "DATABASE_URL", "REDIS_URL", "JWT_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY", "DEVICE_PLATFORM_INSTALLED")
+	unsetOmniEnvForTest(t)
 	t.Setenv("INSTALL_LOCK_PATH", filepath.Join(t.TempDir(), ".installed"))
 
 	cfg, err := loadConfig(filepath.Join("..", "..", ".env.example"))
@@ -990,20 +1136,22 @@ func TestCreateDeviceRejectsDuplicateProviderIdentity(t *testing.T) {
 
 func TestCloudProviderEndpointExposesConfigMetadataOnly(t *testing.T) {
 	cfg := config{
-		ServerAddr:        ":0",
-		LogLevel:          "error",
-		JWTSecret:         testJWTSecret,
-		Installed:         true,
-		ReadHeaderTimeout: 5 * time.Second,
-		WWTIOTAPIURL:      "https://example.invalid/api",
-		WWTIOTUserID:      "test-user",
-		WWTIOTUserKey:     "secret-key",
+		ServerAddr:         ":0",
+		LogLevel:           "error",
+		JWTSecret:          testJWTSecret,
+		Installed:          true,
+		ReadHeaderTimeout:  5 * time.Second,
+		WWTIOTAPIURL:       "https://example.invalid/api",
+		WWTIOTUserID:       "test-user",
+		WWTIOTUserKey:      "secret-key",
+		OmniBikeListenAddr: "127.0.0.1:19001",
+		OmniIoTListenAddr:  "127.0.0.1:19002",
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := newAppWithDeviceService(cfg, logger, devicecore.NewService()).routes()
 
 	rec := doRequest(t, server, http.MethodGet, "/v1/cloud-providers?page=1&page_size=1", "", map[string]string{"Authorization": "Bearer " + testAdminToken(t)})
-	envelope := assertPaginatedEnvelope(t, rec, http.StatusOK, 1, 1, 2)
+	envelope := assertPaginatedEnvelope(t, rec, http.StatusOK, 1, 1, 3)
 	data, ok := envelope.Data.(map[string]interface{})
 	if !ok {
 		t.Fatalf("Provider data = %T, want object", envelope.Data)
@@ -1020,19 +1168,29 @@ func TestCloudProviderEndpointExposesConfigMetadataOnly(t *testing.T) {
 		t.Fatalf("decode providers: %v", err)
 	}
 	if len(providers) != 1 || providers[0]["code"] != "simulator" ||
-		providers[0]["integration_status"] != "verified" {
+		providers[0]["integration_status"] != "verified" ||
+		len(providers[0]["profiles"].([]interface{})) != 1 || providers[0]["profiles"].([]interface{})[0] != domain.ProviderProfileSimulatorV1 {
 		t.Fatalf("unexpected providers: %+v", providers)
 	}
 	second := doRequest(t, server, http.MethodGet, "/v1/cloud-providers?page=2&page_size=1", "", map[string]string{"Authorization": "Bearer " + testAdminToken(t)})
-	secondEnvelope := assertPaginatedEnvelope(t, second, http.StatusOK, 2, 1, 2)
+	secondEnvelope := assertPaginatedEnvelope(t, second, http.StatusOK, 2, 1, 3)
 	secondData, ok := secondEnvelope.Data.(map[string]interface{})
 	if !ok {
 		t.Fatalf("Provider data = %T, want object", secondEnvelope.Data)
 	}
 	secondItems := secondData["items"].([]interface{})
-	wwtiot := secondItems[0].(map[string]interface{})
+	omni := secondItems[0].(map[string]interface{})
+	if omni["code"] != "omni" || omni["adapter"] != string(domain.AdapterOmniDirectTCP) ||
+		omni["integration_status"] != "configured_unverified" || len(omni["profiles"].([]interface{})) != 2 {
+		t.Fatalf("unexpected Omni Provider: %+v", omni)
+	}
+	third := doRequest(t, server, http.MethodGet, "/v1/cloud-providers?page=3&page_size=1", "", map[string]string{"Authorization": "Bearer " + testAdminToken(t)})
+	thirdEnvelope := assertPaginatedEnvelope(t, third, http.StatusOK, 3, 1, 3)
+	thirdData := thirdEnvelope.Data.(map[string]interface{})
+	wwtiot := thirdData["items"].([]interface{})[0].(map[string]interface{})
 	if wwtiot["code"] != "wwtiot" || wwtiot["adapter"] != devicecore.AdapterWWTIOTCloudAPI ||
-		wwtiot["integration_status"] != "configured_unverified" {
+		wwtiot["integration_status"] != "configured_unverified" ||
+		len(wwtiot["profiles"].([]interface{})) != 1 || wwtiot["profiles"].([]interface{})[0] != domain.ProviderProfileWWTIOTV2 {
 		t.Fatalf("unexpected WWTIOT Provider: %+v", wwtiot)
 	}
 	for _, query := range []string{"?configured=true", "?page=", "?page=1&page=2", "?page_size=101"} {
@@ -1364,33 +1522,6 @@ func newTestServerWithDeviceService(service *devicecore.Service) http.Handler {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return newAppWithDeviceService(cfg, logger, service).routes()
-}
-
-type webhookDeliveryListForTest struct {
-	Items []map[string]interface{} `json:"items"`
-}
-
-func waitForWebhookDelivery(t *testing.T, server http.Handler) webhookDeliveryListForTest {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	var last webhookDeliveryListForTest
-	for {
-		deliveries := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/v1/webhook-deliveries", nil)
-		setAdminBearer(req)
-		server.ServeHTTP(deliveries, req)
-		if deliveries.Code != http.StatusOK {
-			t.Fatalf("expected deliveries 200, got %d", deliveries.Code)
-		}
-		decodeResponseData(t, deliveries, &last)
-		if len(last.Items) > 0 {
-			return last
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for webhook delivery, got %+v", last.Items)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
 }
 
 func createProjectForTest(t *testing.T, server http.Handler) string {

@@ -8,6 +8,7 @@ import (
 
 func TestAttemptTransitionMatches(t *testing.T) {
 	providerNotConfigured := "provider_not_configured"
+	providerSessionUnavailable := "provider_session_unavailable"
 	providerTransportError := "provider_transport_error"
 	providerRejected := "provider_rejected"
 	providerDeliveryUnknown := "provider_delivery_unknown"
@@ -23,6 +24,14 @@ func TestAttemptTransitionMatches(t *testing.T) {
 			outcome: domain.AttemptOutcomeInvalidRequest,
 			transition: CommandStatusTransition{
 				From: domain.CommandStatusQueued, To: domain.CommandStatusFailed, ReasonCode: &providerNotConfigured,
+			},
+			want: true,
+		},
+		{
+			name:    "session unavailable before dispatch",
+			outcome: domain.AttemptOutcomeInvalidRequest,
+			transition: CommandStatusTransition{
+				From: domain.CommandStatusQueued, To: domain.CommandStatusFailed, ReasonCode: &providerSessionUnavailable,
 			},
 			want: true,
 		},
@@ -169,6 +178,8 @@ func TestEvidenceProgresses(t *testing.T) {
 
 func TestAttemptCompletionAllowed(t *testing.T) {
 	providerNotConfigured := "provider_not_configured"
+	providerDeliveryUnknown := "provider_delivery_unknown"
+	providerSessionUnavailable := "provider_session_unavailable"
 	providerRejected := "provider_rejected"
 	tests := []struct {
 		name     string
@@ -212,6 +223,18 @@ func TestAttemptCompletionAllowed(t *testing.T) {
 		{
 			name: "simulator invalid request is pre-dispatch only", provider: domain.ProviderCodeSimulator, phase: domain.AttemptPhaseClaimed,
 			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeInvalidRequest, ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone, ReasonCode: &providerNotConfigured}, want: true,
+		},
+		{
+			name: "Omni session rejection is pre-dispatch only", provider: domain.ProviderCodeOmni, phase: domain.AttemptPhaseClaimed,
+			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeInvalidRequest, ConfirmationLevel: domain.ConfirmationNone, EvidenceStatus: domain.EvidenceNone, ReasonCode: &providerSessionUnavailable}, want: true,
+		},
+		{
+			name: "Omni complete write remains indeterminate", provider: domain.ProviderCodeOmni, phase: domain.AttemptPhaseDispatching,
+			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeIndeterminate, ConfirmationLevel: domain.ConfirmationTransportSent, EvidenceStatus: domain.EvidenceVerified, ReasonCode: &providerDeliveryUnknown}, want: true,
+		},
+		{
+			name: "Omni cannot produce Provider acceptance", provider: domain.ProviderCodeOmni, phase: domain.AttemptPhaseDispatching,
+			request: CompleteCommandAttemptRequest{Outcome: domain.AttemptOutcomeProviderAccepted, ConfirmationLevel: domain.ConfirmationProviderAccepted, EvidenceStatus: domain.EvidenceUnverified}, want: false,
 		},
 	}
 	for _, test := range tests {

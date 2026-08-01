@@ -628,8 +628,3 @@ func randomUUID() (string, error) {
 		bytes[10:16],
 	), nil
 }
-
-func isSetupError(err error) bool {
-	var apiErr apiError
-	return errors.As(err, &apiErr)
-}

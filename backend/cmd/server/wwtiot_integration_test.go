@@ -58,7 +58,7 @@ func TestInstalledAppWWTIOTClientPersistentWorkerAcceptanceAndTimeout(t *testing
 		serverURL := server.URL
 		projectID := processCreateProject(t, serverURL, token, "")
 		deviceID := createWWTIOTProcessDevice(t, serverURL, token, projectID, "768901037824")
-		commandID := createWWTIOTProcessCommand(t, serverURL, token, projectID, deviceID, "unlock", "wwtiot-acceptance")
+		commandID := createWWTIOTProcessCommand(t, serverURL, token, projectID, deviceID, "query_status", "wwtiot-acceptance")
 
 		store := repository.NewPostgresStore(db)
 		waitForProcessState(t, 15*time.Second, func() (bool, error) {
@@ -74,7 +74,7 @@ func TestInstalledAppWWTIOTClientPersistentWorkerAcceptanceAndTimeout(t *testing
 		case <-time.After(time.Second):
 			t.Fatal("local WWTIOT endpoint did not receive a request")
 		}
-		assertExactWWTIOTOpenRequest(t, sent, "768901037824")
+		assertExactWWTIOTStatusRequest(t, sent, "768901037824")
 
 		attempts, err := store.Commands().ListAttempts(context.Background(), commandID)
 		if err != nil || len(attempts) != 1 {
@@ -85,7 +85,8 @@ func TestInstalledAppWWTIOTClientPersistentWorkerAcceptanceAndTimeout(t *testing
 			*attempt.Outcome != domain.AttemptOutcomeProviderAccepted ||
 			attempt.ConfirmationLevel != domain.ConfirmationProviderAccepted ||
 			attempt.EvidenceStatus != domain.EvidenceUnverified ||
-			attempt.RequestSummary["cmd"] != "open" || attempt.ResponseSummary["result"] != "ok" {
+			attempt.RequestSummary["cmd"] != "control" || attempt.RequestSummary["type"] != float64(23) ||
+			attempt.RequestSummary["value"] != float64(4) || attempt.ResponseSummary["result"] != "ok" {
 			t.Fatalf("WWTIOT persisted Attempt=%+v", attempt)
 		}
 		assertJSONOmits(t, attempt, vendor.URL, wwtiotTestUserID, wwtiotTestUserKey, "sign", "unverified-response-sign")
@@ -101,6 +102,7 @@ func TestInstalledAppWWTIOTClientPersistentWorkerAcceptanceAndTimeout(t *testing
 		if _, err := db.Exec(`
 			UPDATE device_commands
 			SET queued_at = now() - interval '3 seconds',
+				dispatch_deadline_at = now() - interval '3 seconds' + dispatch_deadline_ms * interval '1 millisecond',
 				sent_at = now() - interval '2 seconds',
 				result_deadline_at = now() - interval '1 second'
 			WHERE id = $1
@@ -148,7 +150,7 @@ func TestInstalledAppWWTIOTTransportFailureIsRedactedFromPersistentAPI(t *testin
 		serverURL := server.URL
 		projectID := processCreateProject(t, serverURL, token, "")
 		deviceID := createWWTIOTProcessDevice(t, serverURL, token, projectID, "768901037825")
-		commandID := createWWTIOTProcessCommand(t, serverURL, token, projectID, deviceID, "unlock", "wwtiot-redaction")
+		commandID := createWWTIOTProcessCommand(t, serverURL, token, projectID, deviceID, "query_status", "wwtiot-redaction")
 		store := repository.NewPostgresStore(db)
 		waitForProcessState(t, 15*time.Second, func() (bool, error) {
 			command, err := store.Commands().Get(context.Background(), commandID)
@@ -200,7 +202,7 @@ func createWWTIOTProcessDevice(t *testing.T, baseURL, token, projectID, provider
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
 		"project_id": projectID, "name": "WWTIOT Contract Lock", "device_type_code": "smart-lock",
-		"provider_code": "wwtiot", "provider_device_id": providerDeviceID,
+		"provider_code": "wwtiot", "provider_profile": "wwtiot-cloud-api-v2", "provider_device_id": providerDeviceID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -234,10 +236,10 @@ func createWWTIOTProcessCommand(t *testing.T, baseURL, token, projectID, deviceI
 	return command.ID
 }
 
-func assertExactWWTIOTOpenRequest(t *testing.T, request map[string]any, providerDeviceID string) {
+func assertExactWWTIOTStatusRequest(t *testing.T, request map[string]any, providerDeviceID string) {
 	t.Helper()
-	if len(request) != 5 || request["userid"] != wwtiotTestUserID || request["cmd"] != "open" ||
-		request["deviceid"] != providerDeviceID {
+	if len(request) != 7 || request["userid"] != wwtiotTestUserID || request["cmd"] != "control" ||
+		request["type"] != float64(23) || request["value"] != float64(4) || request["deviceid"] != providerDeviceID {
 		t.Fatalf("WWTIOT request=%+v", request)
 	}
 	serialFloat, ok := request["serialnum"].(float64)
@@ -245,7 +247,7 @@ func assertExactWWTIOTOpenRequest(t *testing.T, request map[string]any, provider
 		t.Fatalf("WWTIOT serialnum=%#v", request["serialnum"])
 	}
 	serial := strconv.FormatInt(int64(serialFloat), 10)
-	digest := md5.Sum([]byte(wwtiotTestUserID + "open" + providerDeviceID + serial + wwtiotTestUserKey))
+	digest := md5.Sum([]byte(wwtiotTestUserID + "control" + "23" + "4" + providerDeviceID + serial + wwtiotTestUserKey))
 	if request["sign"] != hex.EncodeToString(digest[:]) {
 		t.Fatalf("WWTIOT sign=%v, want exact V2 digest", request["sign"])
 	}

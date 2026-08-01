@@ -67,6 +67,7 @@ type ProviderResponse struct {
 	AccessType        domain.AccessType                `json:"access_type"`
 	TransportProtocol domain.TransportProtocol         `json:"transport_protocol"`
 	Adapter           domain.Adapter                   `json:"adapter"`
+	Profiles          []string                         `json:"profiles"`
 	IntegrationStatus domain.ProviderIntegrationStatus `json:"integration_status"`
 }
 
@@ -83,6 +84,7 @@ type DeviceResponse struct {
 	DeviceTypeCode    string                   `json:"device_type_code"`
 	Name              string                   `json:"name"`
 	ProviderCode      string                   `json:"provider_code"`
+	ProviderProfile   string                   `json:"provider_profile"`
 	ProviderDeviceID  string                   `json:"provider_device_id"`
 	AccessType        domain.AccessType        `json:"access_type"`
 	TransportProtocol domain.TransportProtocol `json:"transport_protocol"`
@@ -100,6 +102,7 @@ type CreateDeviceRequest struct {
 	Name             string  `json:"name"`
 	DeviceTypeCode   string  `json:"device_type_code"`
 	ProviderCode     string  `json:"provider_code"`
+	ProviderProfile  string  `json:"provider_profile"`
 	ProviderDeviceID *string `json:"provider_device_id,omitempty"`
 }
 
@@ -176,6 +179,8 @@ type CommandResponse struct {
 	ID                 string                   `json:"id"`
 	ProjectID          string                   `json:"project_id"`
 	DeviceID           string                   `json:"device_id"`
+	ProviderCode       string                   `json:"provider_code"`
+	ProviderProfile    string                   `json:"provider_profile"`
 	CommandType        domain.ActionIdentifier  `json:"command_type"`
 	Payload            map[string]any           `json:"payload"`
 	DeviceTypeRevision int                      `json:"device_type_revision"`

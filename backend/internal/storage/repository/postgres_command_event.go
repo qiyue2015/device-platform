@@ -113,7 +113,7 @@ func (r *postgresCommandRepository) Create(ctx context.Context, command domain.C
 	_, err = r.exec.ExecContext(ctx, `
 			INSERT INTO device_commands (
 				id, project_id, device_id, device_type_id, device_type_code, provider_code,
-				provider_device_id, adapter, command_type, payload,
+				provider_profile, provider_device_id, adapter, command_type, payload,
 				device_type_revision, delivery_policy, dispatch_deadline_ms,
 				provider_request_timeout_ms, result_observation_timeout_ms, retry_allowed,
 				status, reason_code, reason_detail,
@@ -121,9 +121,9 @@ func (r *postgresCommandRepository) Create(ctx context.Context, command domain.C
 				queued_at, dispatch_deadline_at, sent_at, result_deadline_at,
 				finished_at, created_at, updated_at
 			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-				$11, $12, $13, $14, $15, $16, $17, $18, $19,
-				$20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+				$12, $13, $14, $15, $16, $17, $18, $19, $20,
+				$21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
 			)
 	`,
 		command.ID,
@@ -132,6 +132,7 @@ func (r *postgresCommandRepository) Create(ctx context.Context, command domain.C
 		command.DeviceTypeID,
 		command.DeviceTypeCode,
 		command.ProviderCode,
+		command.ProviderProfile,
 		command.ProviderDeviceID,
 		command.Adapter,
 		command.CommandType,
@@ -874,11 +875,21 @@ func evidenceDoesNotRegress(currentLevel domain.ConfirmationLevel, currentEviden
 
 func attemptCompletionAllowed(providerCode string, phase domain.AttemptPhase, request CompleteCommandAttemptRequest) bool {
 	if request.Outcome == domain.AttemptOutcomeInvalidRequest || request.Outcome == domain.AttemptOutcomeNotDispatched {
-		return (providerCode == domain.ProviderCodeWWTIOT || providerCode == domain.ProviderCodeSimulator) &&
-			phase == domain.AttemptPhaseClaimed &&
-			request.ConfirmationLevel == domain.ConfirmationNone && request.EvidenceStatus == domain.EvidenceNone &&
-			request.ReasonCode != nil && (request.Outcome == domain.AttemptOutcomeInvalidRequest && *request.ReasonCode == "provider_not_configured" ||
-			request.Outcome == domain.AttemptOutcomeNotDispatched && *request.ReasonCode == "device_not_online")
+		if providerCode != domain.ProviderCodeWWTIOT && providerCode != domain.ProviderCodeOmni && providerCode != domain.ProviderCodeSimulator ||
+			phase != domain.AttemptPhaseClaimed || request.ConfirmationLevel != domain.ConfirmationNone ||
+			request.EvidenceStatus != domain.EvidenceNone || request.ReasonCode == nil {
+			return false
+		}
+		if request.Outcome == domain.AttemptOutcomeNotDispatched {
+			return *request.ReasonCode == "device_not_online"
+		}
+		switch *request.ReasonCode {
+		case "provider_not_configured", "provider_action_unsupported", "provider_mapping_unknown",
+			"provider_session_unavailable", "provider_request_invalid":
+			return true
+		default:
+			return false
+		}
 	}
 	if phase != domain.AttemptPhaseDispatching {
 		return false
@@ -919,6 +930,16 @@ func attemptCompletionAllowed(providerCode string, phase domain.AttemptPhase, re
 		default:
 			return false
 		}
+	case domain.ProviderCodeOmni:
+		switch request.Outcome {
+		case domain.AttemptOutcomeTransportErrorBeforeSend:
+			return request.ConfirmationLevel == domain.ConfirmationNone && request.EvidenceStatus == domain.EvidenceNone
+		case domain.AttemptOutcomeIndeterminate:
+			return request.ConfirmationLevel == domain.ConfirmationTransportSent && request.EvidenceStatus == domain.EvidenceVerified &&
+				reason == "provider_delivery_unknown"
+		default:
+			return false
+		}
 	default:
 		return false
 	}
@@ -931,7 +952,16 @@ func attemptTransitionMatches(outcome domain.AttemptOutcome, transition CommandS
 	}
 	switch outcome {
 	case domain.AttemptOutcomeInvalidRequest:
-		return transition.From == domain.CommandStatusQueued && transition.To == domain.CommandStatusFailed && reason == "provider_not_configured"
+		if transition.From != domain.CommandStatusQueued || transition.To != domain.CommandStatusFailed {
+			return false
+		}
+		switch reason {
+		case "provider_not_configured", "provider_action_unsupported", "provider_mapping_unknown",
+			"provider_session_unavailable", "provider_request_invalid":
+			return true
+		default:
+			return false
+		}
 	case domain.AttemptOutcomeTransportErrorBeforeSend:
 		return transition.From == domain.CommandStatusSent && transition.To == domain.CommandStatusFailed && reason == "provider_transport_error"
 	case domain.AttemptOutcomeProviderRejected:
@@ -949,7 +979,7 @@ func (r *postgresCommandRepository) getAttempt(ctx context.Context, id string) (
 
 const commandSelect = `
 	SELECT id::text, project_id::text, device_id::text, device_type_id::text,
-		device_type_code, provider_code, provider_device_id, adapter,
+		device_type_code, provider_code, provider_profile, provider_device_id, adapter,
 		command_type, payload, device_type_revision, delivery_policy,
 		dispatch_deadline_ms, provider_request_timeout_ms, result_observation_timeout_ms, retry_allowed, status,
 		reason_code, reason_detail, confirmation_level, evidence_status,
@@ -970,6 +1000,7 @@ func scanCommand(row rowScanner) (domain.Command, error) {
 		&command.DeviceTypeID,
 		&command.DeviceTypeCode,
 		&command.ProviderCode,
+		&command.ProviderProfile,
 		&command.ProviderDeviceID,
 		&command.Adapter,
 		&command.CommandType,
@@ -1139,20 +1170,22 @@ func (r *postgresRawMessageRepository) Create(ctx context.Context, message domai
 	}
 	_, err = r.exec.ExecContext(ctx, `
 		INSERT INTO device_raw_messages (
-			id, device_id, provider_code, provider_device_id, access_type,
+			id, device_id, provider_code, provider_profile, provider_device_id, access_type,
 			transport_protocol, adapter, direction, deduplication_key,
-			headers, body, received_at, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			evidence_status, headers, body, received_at, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 	`,
 		message.ID,
 		nullableString(message.DeviceID),
 		message.ProviderCode,
+		message.ProviderProfile,
 		message.ProviderDeviceID,
 		message.AccessType,
 		message.TransportProtocol,
 		message.Adapter,
 		message.Direction,
 		message.DeduplicationKey,
+		message.EvidenceStatus,
 		headers,
 		message.Body,
 		message.ReceivedAt,
@@ -1162,9 +1195,9 @@ func (r *postgresRawMessageRepository) Create(ctx context.Context, message domai
 }
 
 const rawMessageSelect = `
-	SELECT id::text, device_id::text, provider_code, provider_device_id,
+	SELECT id::text, device_id::text, provider_code, provider_profile, provider_device_id,
 		access_type, transport_protocol, adapter, direction, deduplication_key,
-		headers, body, received_at, created_at
+		evidence_status, headers, body, received_at, created_at
 	FROM device_raw_messages`
 
 func scanRawMessage(row rowScanner) (domain.RawMessage, error) {
@@ -1175,12 +1208,14 @@ func scanRawMessage(row rowScanner) (domain.RawMessage, error) {
 		&message.ID,
 		&deviceID,
 		&message.ProviderCode,
+		&message.ProviderProfile,
 		&message.ProviderDeviceID,
 		&message.AccessType,
 		&message.TransportProtocol,
 		&message.Adapter,
 		&message.Direction,
 		&message.DeduplicationKey,
+		&message.EvidenceStatus,
 		&headers,
 		&message.Body,
 		&message.ReceivedAt,

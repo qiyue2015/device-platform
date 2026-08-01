@@ -21,7 +21,7 @@ const updateAttempts = 8
 var (
 	ErrInvalidRequest  = errors.New("invalid Simulator request")
 	ErrConcurrentWrite = errors.New("concurrent Simulator update")
-	errVersionChanged  = errors.New("Simulator version changed")
+	errVersionChanged  = errors.New("simulator version changed")
 )
 
 type Service struct {

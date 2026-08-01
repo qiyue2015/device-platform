@@ -9,15 +9,16 @@ import (
 )
 
 var (
-	ErrInvalidRequest         = errors.New("invalid Device request")
-	ErrProjectNotFound        = errors.New("Project not found")
-	ErrDeviceTypeNotFound     = errors.New("Device Type not found")
-	ErrProviderNotFound       = errors.New("Provider not found")
-	ErrDeviceNotFound         = errors.New("Device not found")
-	ErrProviderDeviceConflict = errors.New("non-deleted Provider identity already exists")
-	ErrDeviceImmutable        = errors.New("deleted Device is immutable")
-	ErrLifecycleTransition    = errors.New("Device lifecycle transition is not allowed")
-	ErrIdentifierGeneration   = errors.New("Device identifier generation failed")
+	ErrInvalidRequest          = errors.New("invalid Device request")
+	ErrProjectNotFound         = errors.New("project not found")
+	ErrDeviceTypeNotFound      = errors.New("device type not found")
+	ErrProviderNotFound        = errors.New("provider not found")
+	ErrProviderProfileNotFound = errors.New("provider profile not found")
+	ErrDeviceNotFound          = errors.New("device not found")
+	ErrProviderDeviceConflict  = errors.New("provider identity already exists")
+	ErrDeviceImmutable         = errors.New("deleted device is immutable")
+	ErrLifecycleTransition     = errors.New("device lifecycle transition is not allowed")
+	ErrIdentifierGeneration    = errors.New("device identifier generation failed")
 )
 
 type Clock interface {
@@ -25,11 +26,19 @@ type Clock interface {
 }
 
 type Config struct {
-	WWTIOTEndpoint string
-	WWTIOTUserID   string
-	WWTIOTUserKey  string
-	Random         io.Reader
-	Clock          Clock
+	Providers []ProviderRegistration
+	Random    io.Reader
+	Clock     Clock
+}
+
+type DeviceIdentityPolicy interface {
+	NormalizeDeviceIdentity(requested *string, platformDeviceID string) (string, error)
+}
+
+type DeviceIdentityPolicyFunc func(requested *string, platformDeviceID string) (string, error)
+
+func (policy DeviceIdentityPolicyFunc) NormalizeDeviceIdentity(requested *string, platformDeviceID string) (string, error) {
+	return policy(requested, platformDeviceID)
 }
 
 type ScopeKind string
@@ -82,7 +91,14 @@ type Provider struct {
 	AccessType        domain.AccessType
 	TransportProtocol domain.TransportProtocol
 	Adapter           domain.Adapter
+	Profiles          []string
+	ProfileActions    map[string]map[domain.ActionIdentifier]domain.ProviderActionAvailability
 	IntegrationStatus domain.ProviderIntegrationStatus
+}
+
+type ProviderRegistration struct {
+	Provider       Provider
+	IdentityPolicy DeviceIdentityPolicy
 }
 
 type DeviceState struct {
@@ -98,6 +114,7 @@ type Device struct {
 	DeviceTypeCode    string
 	Name              string
 	ProviderCode      string
+	ProviderProfile   string
 	ProviderDeviceID  string
 	AccessType        domain.AccessType
 	TransportProtocol domain.TransportProtocol
@@ -115,6 +132,7 @@ type CreateRequest struct {
 	Name             string
 	DeviceTypeCode   string
 	ProviderCode     string
+	ProviderProfile  string
 	ProviderDeviceID *string
 }
 

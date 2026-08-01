@@ -22,10 +22,11 @@ type realClock struct{}
 func (realClock) Now() time.Time { return time.Now().UTC() }
 
 type Service struct {
-	store     repository.DeviceStore
-	providers map[string]Provider
-	random    io.Reader
-	clock     Clock
+	store         repository.DeviceStore
+	providers     map[string]ProviderRegistration
+	providerOrder []string
+	random        io.Reader
+	clock         Clock
 }
 
 func New(store repository.DeviceStore, config Config) (*Service, error) {
@@ -40,27 +41,41 @@ func New(store repository.DeviceStore, config Config) (*Service, error) {
 	if clock == nil {
 		clock = realClock{}
 	}
-	wwtiotStatus := domain.ProviderIntegrationUnconfigured
-	if validWWTIOTConfig(config.WWTIOTEndpoint, config.WWTIOTUserID, config.WWTIOTUserKey) {
-		wwtiotStatus = domain.ProviderIntegrationConfiguredUnverified
+	providers := make(map[string]ProviderRegistration, len(config.Providers))
+	providerOrder := make([]string, 0, len(config.Providers))
+	for _, registration := range config.Providers {
+		provider := cloneProvider(registration.Provider)
+		provider.Code = strings.TrimSpace(provider.Code)
+		if provider.Code == "" || registration.IdentityPolicy == nil || len(provider.Profiles) == 0 {
+			return nil, fmt.Errorf("%w: Provider registration is incomplete", ErrInvalidRequest)
+		}
+		if _, exists := providers[provider.Code]; exists {
+			return nil, fmt.Errorf("%w: Provider registration is duplicated", ErrInvalidRequest)
+		}
+		for _, profile := range provider.Profiles {
+			if strings.TrimSpace(profile) == "" {
+				return nil, fmt.Errorf("%w: Provider profile is invalid", ErrInvalidRequest)
+			}
+			if _, exists := provider.ProfileActions[profile]; !exists {
+				return nil, fmt.Errorf("%w: Provider profile actions are missing", ErrInvalidRequest)
+			}
+		}
+		registration.Provider = provider
+		providers[provider.Code] = registration
+		providerOrder = append(providerOrder, provider.Code)
 	}
-	providers := map[string]Provider{
-		domain.ProviderCodeWWTIOT: {
-			Code: domain.ProviderCodeWWTIOT, Name: "WWTIOT", AccessType: domain.AccessTypeCloudAPI,
-			TransportProtocol: domain.TransportProtocolHTTP, Adapter: domain.AdapterWWTIOTCloudAPI,
-			IntegrationStatus: wwtiotStatus,
-		},
-		domain.ProviderCodeSimulator: {
-			Code: domain.ProviderCodeSimulator, Name: "Simulator", AccessType: domain.AccessTypeSimulator,
-			TransportProtocol: domain.TransportProtocolInternal, Adapter: domain.AdapterSimulator,
-			IntegrationStatus: domain.ProviderIntegrationVerified,
-		},
+	if len(providers) == 0 {
+		return nil, fmt.Errorf("%w: at least one Provider registration is required", ErrInvalidRequest)
 	}
-	return &Service{store: store, providers: providers, random: random, clock: clock}, nil
+	return &Service{store: store, providers: providers, providerOrder: providerOrder, random: random, clock: clock}, nil
 }
 
 func (s *Service) ListProviders() []Provider {
-	return []Provider{s.providers[domain.ProviderCodeSimulator], s.providers[domain.ProviderCodeWWTIOT]}
+	providers := make([]Provider, 0, len(s.providerOrder))
+	for _, code := range s.providerOrder {
+		providers = append(providers, cloneProvider(s.providers[code].Provider))
+	}
+	return providers
 }
 
 func (s *Service) ListDeviceTypes(ctx context.Context) ([]DeviceType, error) {
@@ -127,21 +142,29 @@ func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest
 	if providerCode == "" {
 		return Device{}, fmt.Errorf("%w: provider_code is required", ErrInvalidRequest)
 	}
-	provider, exists := s.providers[providerCode]
+	registration, exists := s.providers[providerCode]
 	if !exists {
 		return Device{}, ErrProviderNotFound
+	}
+	provider := registration.Provider
+	providerProfile := strings.TrimSpace(request.ProviderProfile)
+	if providerProfile == "" {
+		return Device{}, fmt.Errorf("%w: provider_profile is required", ErrInvalidRequest)
+	}
+	if _, exists := provider.ProfileActions[providerProfile]; !exists {
+		return Device{}, ErrProviderProfileNotFound
 	}
 	deviceID, err := randomUUID(s.random)
 	if err != nil {
 		return Device{}, err
 	}
-	providerDeviceID, err := providerIdentity(providerCode, request.ProviderDeviceID, deviceID)
+	providerDeviceID, err := registration.IdentityPolicy.NormalizeDeviceIdentity(request.ProviderDeviceID, deviceID)
 	if err != nil {
-		return Device{}, err
+		return Device{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
 	now := s.clock.Now().UTC()
 	device := domain.Device{
-		ID: deviceID, ProjectID: projectID, Name: name, ProviderCode: provider.Code,
+		ID: deviceID, ProjectID: projectID, Name: name, ProviderCode: provider.Code, ProviderProfile: providerProfile,
 		ProviderDeviceID: providerDeviceID, AccessType: provider.AccessType,
 		TransportProtocol: provider.TransportProtocol, Adapter: provider.Adapter,
 		ConnectionStatus: domain.ConnectionStatusUnknown, LifecycleStatus: domain.LifecycleStatusActive,
@@ -173,6 +196,7 @@ func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest
 		if eventErr := s.createDeviceEvent(ctx, tx, metadata, device, domain.EventTypeDeviceCreated, map[string]any{
 			"device_type_code": device.DeviceTypeCode,
 			"provider_code":    device.ProviderCode,
+			"provider_profile": device.ProviderProfile,
 			"lifecycle_status": device.LifecycleStatus,
 		}); eventErr != nil {
 			return eventErr
@@ -180,6 +204,7 @@ func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest
 		return s.createAudit(ctx, tx, metadata, device, "device.created", map[string]any{
 			"device_type_code": device.DeviceTypeCode,
 			"provider_code":    device.ProviderCode,
+			"provider_profile": device.ProviderProfile,
 		})
 	})
 	if err != nil {
@@ -213,7 +238,7 @@ func (s *Service) List(ctx context.Context, scope Scope, request ListRequest) (L
 	if err != nil {
 		return ListResult{}, err
 	}
-	request, err = validateListRequest(scope, request)
+	request, err = s.validateListRequest(scope, request)
 	if err != nil {
 		return ListResult{}, err
 	}
@@ -434,20 +459,7 @@ func projectForCreate(scope Scope, requested string) (string, error) {
 	return requested, nil
 }
 
-func providerIdentity(providerCode string, requested *string, deviceID string) (string, error) {
-	if providerCode == domain.ProviderCodeSimulator {
-		if requested != nil {
-			return "", fmt.Errorf("%w: provider_device_id is forbidden for simulator", ErrInvalidRequest)
-		}
-		return deviceID, nil
-	}
-	if requested == nil {
-		return "", fmt.Errorf("%w: provider_device_id is required for WWTIOT", ErrInvalidRequest)
-	}
-	return normalizeProviderDeviceID(*requested)
-}
-
-func validateListRequest(scope Scope, request ListRequest) (ListRequest, error) {
+func (s *Service) validateListRequest(scope Scope, request ListRequest) (ListRequest, error) {
 	if request.Page == 0 {
 		request.Page = 1
 	}
@@ -469,8 +481,12 @@ func validateListRequest(scope Scope, request ListRequest) (ListRequest, error) 
 	if request.DeviceTypeCode != nil && *request.DeviceTypeCode != domain.DeviceTypeSmartLock {
 		return ListRequest{}, fmt.Errorf("%w: device_type_code filter is invalid", ErrInvalidRequest)
 	}
-	if request.ProviderCode != nil && *request.ProviderCode != domain.ProviderCodeWWTIOT && *request.ProviderCode != domain.ProviderCodeSimulator {
-		return ListRequest{}, fmt.Errorf("%w: provider_code filter is invalid", ErrInvalidRequest)
+	if request.ProviderCode != nil {
+		providerCode := strings.TrimSpace(*request.ProviderCode)
+		if _, exists := s.providers[providerCode]; !exists {
+			return ListRequest{}, fmt.Errorf("%w: provider_code filter is invalid", ErrInvalidRequest)
+		}
+		request.ProviderCode = &providerCode
 	}
 	if request.ConnectionStatus != nil && !validConnectionStatus(*request.ConnectionStatus) {
 		return ListRequest{}, fmt.Errorf("%w: connection_status filter is invalid", ErrInvalidRequest)
@@ -484,8 +500,9 @@ func validateListRequest(scope Scope, request ListRequest) (ListRequest, error) 
 func safeDevice(device domain.Device, state *domain.DeviceState) Device {
 	result := Device{
 		ID: device.ID, ProjectID: device.ProjectID, DeviceTypeCode: device.DeviceTypeCode,
-		Name: device.Name, ProviderCode: device.ProviderCode, ProviderDeviceID: device.ProviderDeviceID,
-		AccessType: device.AccessType, TransportProtocol: device.TransportProtocol, Adapter: device.Adapter,
+		Name: device.Name, ProviderCode: device.ProviderCode, ProviderProfile: device.ProviderProfile,
+		ProviderDeviceID: device.ProviderDeviceID,
+		AccessType:       device.AccessType, TransportProtocol: device.TransportProtocol, Adapter: device.Adapter,
 		ConnectionStatus: device.ConnectionStatus, LifecycleStatus: device.LifecycleStatus,
 		CreatedAt: device.CreatedAt, UpdatedAt: device.UpdatedAt,
 	}
@@ -505,6 +522,20 @@ func safeDevice(device domain.Device, state *domain.DeviceState) Device {
 		result.LastSeenAt = &lastSeen
 	}
 	return result
+}
+
+func cloneProvider(provider Provider) Provider {
+	provider.Profiles = append([]string(nil), provider.Profiles...)
+	clonedActions := make(map[string]map[domain.ActionIdentifier]domain.ProviderActionAvailability, len(provider.ProfileActions))
+	for profile, actions := range provider.ProfileActions {
+		cloned := make(map[domain.ActionIdentifier]domain.ProviderActionAvailability, len(actions))
+		for action, availability := range actions {
+			cloned[action] = availability
+		}
+		clonedActions[profile] = cloned
+	}
+	provider.ProfileActions = clonedActions
+	return provider
 }
 
 func cloneMap(value map[string]any) map[string]any {
@@ -528,7 +559,10 @@ func optionalString(value string) *string {
 
 func providerIdentityConflict(err error) bool {
 	var pqError *pq.Error
-	return errors.As(err, &pqError) && pqError.Constraint == "uq_devices_active_provider_identity"
+	if !errors.As(err, &pqError) {
+		return false
+	}
+	return pqError.Constraint == "uq_devices_provider_identity" || pqError.Constraint == "uq_devices_active_provider_identity"
 }
 
 func randomUUID(reader io.Reader) (string, error) {

@@ -61,6 +61,16 @@ type WebhookAuditStore interface {
 	TransactWebhookAudit(ctx context.Context, fn func(WebhookAuditTx) error) error
 }
 
+type ProviderMessageStore interface {
+	TransactProviderMessage(ctx context.Context, fn func(ProviderMessageTx) error) error
+}
+
+type ProviderMessageTx interface {
+	Devices() DeviceRepository
+	Messages() RawMessageRepository
+	Audits() AuditRepository
+}
+
 type WebhookAuditTx interface {
 	Webhooks() WebhookRepository
 	Audits() AuditRepository

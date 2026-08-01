@@ -10,7 +10,7 @@ import (
 
 var (
 	ErrInvalidResult  = errors.New("invalid CommandResult")
-	ErrCommandMissing = errors.New("Command not found")
+	ErrCommandMissing = errors.New("command not found")
 	ErrResultConflict = errors.New("CommandResult deduplication conflict")
 )
 

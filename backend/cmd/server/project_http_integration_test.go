@@ -198,7 +198,7 @@ func newProjectHTTPTestServer(t *testing.T, db *sql.DB) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	devices, err := deviceservice.New(repository.NewPostgresStore(db), deviceservice.Config{})
+	devices, err := deviceservice.New(repository.NewPostgresStore(db), deviceServiceConfig(config{}))
 	if err != nil {
 		t.Fatal(err)
 	}

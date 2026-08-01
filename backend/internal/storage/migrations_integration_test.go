@@ -26,7 +26,7 @@ func TestFrozenContractMigrationOnPostgres(t *testing.T) {
 			t.Fatalf("repeat migrations: %v", err)
 		}
 		var count int
-		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 8 {
+		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 9 {
 			t.Fatalf("migration count = %d, err = %v", count, err)
 		}
 		var profileHash string
@@ -42,7 +42,132 @@ func TestFrozenContractMigrationOnPostgres(t *testing.T) {
 		if _, err := db.Exec(`UPDATE device_type_profiles SET profile = '{}' WHERE revision = 2`); err == nil {
 			t.Fatal("published Device Type profile must be immutable")
 		}
+		rollbackDualProviderMigration(t, ctx, db)
 		assertFrozenSchemaBehavior(t, db)
+	})
+}
+
+func TestDualProviderMigrationDoesNotUpgradeHistoricalWWTIOTRawMessageEvidence(t *testing.T) {
+	baseURL := requireMigrationTestDatabase(t)
+	withIsolatedSchema(t, baseURL, func(db *sql.DB) {
+		ctx := context.Background()
+		if err := ApplyMigrations(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+		rollbackDualProviderMigration(t, ctx, db)
+
+		const (
+			projectID         = "10000000-0000-0000-0000-000000000099"
+			wwtiotDeviceID    = "20000000-0000-0000-0000-000000000099"
+			simulatorDeviceID = "20000000-0000-0000-0000-000000000100"
+			wwtiotRawID       = "61000000-0000-0000-0000-000000000099"
+			simulatorRawID    = "61000000-0000-0000-0000-000000000100"
+		)
+		if _, err := db.Exec(`
+			INSERT INTO projects (id, name, api_key_hash)
+			VALUES ($1, 'historical raw message migration', decode(repeat('99', 32), 'hex'))
+		`, projectID); err != nil {
+			t.Fatalf("seed Project before 009: %v", err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO devices (
+				id, project_id, device_type_id, name, provider_code, provider_device_id,
+				access_type, transport_protocol, adapter
+			) VALUES
+				($2, $1, '00000000-0000-0000-0000-000000000001', 'historical WWTIOT lock',
+				 'wwtiot', 'MIGRATION-099', 'cloud_api', 'http', 'wwtiot_cloud_api'),
+				($3::uuid, $1, '00000000-0000-0000-0000-000000000001', 'historical simulator lock',
+				 'simulator', $3::text, 'simulator', 'internal', 'simulator')
+		`, projectID, wwtiotDeviceID, simulatorDeviceID); err != nil {
+			t.Fatalf("seed Devices before 009: %v", err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO device_raw_messages (
+				id, device_id, provider_code, provider_device_id, access_type,
+				transport_protocol, adapter, direction, deduplication_key, body
+			) VALUES
+				($3, $1, 'wwtiot', 'MIGRATION-099', 'cloud_api', 'http',
+				 'wwtiot_cloud_api', 'inbound', 'historical-wwtiot-raw-099', 'wwtiot-history'),
+				($4, $2::uuid, 'simulator', $2::text, 'simulator', 'internal',
+				 'simulator', 'inbound', 'historical-simulator-raw-100', 'simulator-history')
+		`, wwtiotDeviceID, simulatorDeviceID, wwtiotRawID, simulatorRawID); err != nil {
+			t.Fatalf("seed historical RawMessages before 009: %v", err)
+		}
+
+		if err := ApplyMigrations(ctx, db); err != nil {
+			t.Fatalf("reapply 009 with historical RawMessages: %v", err)
+		}
+		for _, test := range []struct {
+			name                string
+			rawMessageID        string
+			wantProviderProfile string
+			wantEvidenceStatus  string
+		}{
+			{
+				name:                "WWTIOT remains unverified",
+				rawMessageID:        wwtiotRawID,
+				wantProviderProfile: "wwtiot-cloud-api-v2",
+				wantEvidenceStatus:  "unverified",
+			},
+			{
+				name:                "simulator is verifiable by construction",
+				rawMessageID:        simulatorRawID,
+				wantProviderProfile: "simulator-v1",
+				wantEvidenceStatus:  "verified",
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				var providerProfile, evidenceStatus string
+				if err := db.QueryRow(`
+					SELECT provider_profile, evidence_status
+					FROM device_raw_messages
+					WHERE id = $1
+				`, test.rawMessageID).Scan(&providerProfile, &evidenceStatus); err != nil {
+					t.Fatal(err)
+				}
+				if providerProfile != test.wantProviderProfile || evidenceStatus != test.wantEvidenceStatus {
+					t.Fatalf("historical RawMessage profile/evidence = %s/%s, want %s/%s",
+						providerProfile, evidenceStatus, test.wantProviderProfile, test.wantEvidenceStatus)
+				}
+			})
+		}
+	})
+}
+
+func TestDualProviderMigrationRejectsHistoricalIdentityReuse(t *testing.T) {
+	baseURL := requireMigrationTestDatabase(t)
+	withIsolatedSchema(t, baseURL, func(db *sql.DB) {
+		ctx := context.Background()
+		if err := ApplyMigrations(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+		rollbackDualProviderMigration(t, ctx, db)
+		if _, err := db.Exec(`
+			INSERT INTO projects (id, name, api_key_hash)
+			VALUES ('10000000-0000-0000-0000-000000000097', 'identity tombstone migration', decode(repeat('97', 32), 'hex'));
+			INSERT INTO devices (
+				id, project_id, device_type_id, name, provider_code, provider_device_id,
+				access_type, transport_protocol, adapter, lifecycle_status
+			) VALUES
+				('20000000-0000-0000-0000-000000000097', '10000000-0000-0000-0000-000000000097',
+				 '00000000-0000-0000-0000-000000000001', 'deleted identity owner', 'wwtiot', 'REUSED-IDENTITY-097',
+				 'cloud_api', 'http', 'wwtiot_cloud_api', 'deleted'),
+				('20000000-0000-0000-0000-000000000096', '10000000-0000-0000-0000-000000000097',
+				 '00000000-0000-0000-0000-000000000001', 'active identity owner', 'wwtiot', 'REUSED-IDENTITY-097',
+				 'cloud_api', 'http', 'wwtiot_cloud_api', 'active')
+		`); err != nil {
+			t.Fatalf("seed reused Provider identity before 009: %v", err)
+		}
+
+		err := ApplyMigrations(ctx, db)
+		if err == nil || !strings.Contains(err.Error(), "cannot preserve Provider identity tombstones while historical identities are reused") {
+			t.Fatalf("expected identity tombstone migration failure, got %v", err)
+		}
+		assertMigrationNotApplied(t, db, "009_dual_provider_smart_lock")
+		var preserved int
+		if err := db.QueryRow(`SELECT count(*) FROM devices WHERE provider_device_id = 'REUSED-IDENTITY-097'`).Scan(&preserved); err != nil || preserved != 2 {
+			t.Fatalf("failed migration changed historical identities: count=%d err=%v", preserved, err)
+		}
 	})
 }
 
@@ -143,6 +268,7 @@ func TestPlatformCoreV4MigrationDownFailsClosed(t *testing.T) {
 				if err := ApplyMigrations(ctx, db); err != nil {
 					t.Fatal(err)
 				}
+				rollbackDualProviderMigration(t, ctx, db)
 				seedPlatformCoreV4Command(t, db)
 				if test.seedResult {
 					if _, err := db.Exec(`
@@ -941,6 +1067,7 @@ func rollbackCommandEvidenceEventMigration(t *testing.T, ctx context.Context, db
 
 func rollbackPlatformCoreV4Migration(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
+	rollbackDualProviderMigration(t, ctx, db)
 	var applied bool
 	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '008_platform_core_v4')`).Scan(&applied); err != nil {
 		t.Fatal(err)
@@ -952,6 +1079,21 @@ func rollbackPlatformCoreV4Migration(t *testing.T, ctx context.Context, db *sql.
 		t.Fatalf("rollback 008: %v", err)
 	}
 	assertMigrationNotApplied(t, db, "008_platform_core_v4")
+}
+
+func rollbackDualProviderMigration(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	var applied bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '009_dual_provider_smart_lock')`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		return
+	}
+	if err := RollbackLastMigration(ctx, db); err != nil {
+		t.Fatalf("rollback 009: %v", err)
+	}
+	assertMigrationNotApplied(t, db, "009_dual_provider_smart_lock")
 }
 
 func seedPlatformCoreV3Command(t *testing.T, db *sql.DB, status string) {

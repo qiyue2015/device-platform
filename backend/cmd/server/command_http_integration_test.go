@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/qiyue2015/device-platform/internal/domain"
 	"github.com/qiyue2015/device-platform/internal/storage/repository"
 )
 
@@ -125,6 +127,45 @@ func TestCommandHTTPPostgresLifecycleIsolationAndValidation(t *testing.T) {
 	})
 }
 
+func TestCommandHTTPIdempotencyReplayUsesHistoricalCommandBeforeCurrentState(t *testing.T) {
+	withAuthTestDatabase(t, func(db *sql.DB) {
+		server := newProjectHTTPTestServer(t, db)
+		admin := map[string]string{"Authorization": "Bearer " + loginProjectHTTPTestAdmin(t, server)}
+		project := createPersistentProjectForDeviceTest(t, server, admin, "Historical Replay Project", "")
+		deviceID := createPersistentDeviceForCommandTest(t, server, admin, project.ID, "simulator", "")
+		body := commandCreateBody(project.ID, deviceID, "query_status", "historical-replay-key", "")
+		created := responseDataObject(t, assertEnvelope(
+			t, doRequest(t, server, http.MethodPost, "/v1/device-commands", body, admin), http.StatusCreated, true,
+		))
+		commandID := requiredStringField(t, created, "id")
+		beforeReplay := readCommandAggregateTotals(t, db)
+
+		assertEnvelope(t, doRequest(
+			t, server, http.MethodPatch, "/v1/devices/"+deviceID, `{"lifecycle_status":"disabled"}`, admin,
+		), http.StatusOK, true)
+		assertIdempotentReplay(t, doRequest(
+			t, server, http.MethodPost, "/v1/device-commands",
+			commandCreateBody(project.ID, deviceID, "query_status", "historical-replay-key", `{}`), admin,
+		), commandID)
+		assertErrorCode(t, doRequest(
+			t, server, http.MethodPost, "/v1/device-commands",
+			commandCreateBody(project.ID, deviceID, "lock", "historical-replay-key", ""), admin,
+		), http.StatusConflict, "idempotency_key_conflict")
+
+		assertCommandAggregateTotals(t, db, beforeReplay)
+		var attempts, commands int
+		if err := db.QueryRow(`SELECT count(*) FROM device_command_attempts WHERE command_id = $1`, commandID).Scan(&attempts); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRow(`SELECT count(*) FROM device_commands WHERE project_id = $1 AND idempotency_key = 'historical-replay-key'`, project.ID).Scan(&commands); err != nil {
+			t.Fatal(err)
+		}
+		if attempts != 0 || commands != 1 {
+			t.Fatalf("historical replay effects: attempts=%d commands=%d", attempts, commands)
+		}
+	})
+}
+
 func TestCommandHTTPPostgresCreationRollsBackAtomically(t *testing.T) {
 	withAuthTestDatabase(t, func(db *sql.DB) {
 		server := newProjectHTTPTestServer(t, db)
@@ -182,6 +223,14 @@ func createPersistentDeviceForCommandTest(t *testing.T, server http.Handler, adm
 	t.Helper()
 	body := map[string]any{
 		"project_id": projectID, "name": "Command Lock", "device_type_code": "smart-lock", "provider_code": providerCode,
+	}
+	switch providerCode {
+	case domain.ProviderCodeSimulator:
+		body["provider_profile"] = domain.ProviderProfileSimulatorV1
+	case domain.ProviderCodeWWTIOT:
+		body["provider_profile"] = domain.ProviderProfileWWTIOTV2
+	default:
+		t.Fatalf("unsupported fixture Provider %q", providerCode)
 	}
 	if providerDeviceID != "" {
 		body["provider_device_id"] = providerDeviceID
@@ -338,7 +387,7 @@ func assertStableCommandOrdering(t *testing.T, db *sql.DB, server http.Handler, 
 			t.Fatalf("stable Command order = %#v, want %v", items, ids)
 		}
 	}
-	if _, _, err := repository.NewPostgresStore(db).Commands().List(t.Context(), repository.ListCommandsRequest{Limit: 101}); !errors.Is(err, repository.ErrInvalidRepositoryRequest) {
+	if _, _, err := repository.NewPostgresStore(db).Commands().List(context.Background(), repository.ListCommandsRequest{Limit: 101}); !errors.Is(err, repository.ErrInvalidRepositoryRequest) {
 		t.Fatalf("repository page-size error = %v", err)
 	}
 }

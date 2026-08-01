@@ -498,7 +498,8 @@ func (r *Router) handleDevices(w http.ResponseWriter, req *http.Request) {
 		}
 		device, err := r.devices.Create(req.Context(), deviceservice.AdminScope(), deviceservice.CreateRequest{
 			ProjectID: body.ProjectID, Name: body.Name, DeviceTypeCode: body.DeviceTypeCode,
-			ProviderCode: body.ProviderCode, ProviderDeviceID: body.ProviderDeviceID.Value,
+			ProviderCode: body.ProviderCode, ProviderProfile: body.ProviderProfile,
+			ProviderDeviceID: body.ProviderDeviceID.Value,
 		}, r.deviceMetadata(req))
 		if err != nil {
 			writeDeviceError(w, err)
@@ -963,6 +964,7 @@ type deviceCreateBody struct {
 	Name             string                 `json:"name"`
 	DeviceTypeCode   string                 `json:"device_type_code"`
 	ProviderCode     string                 `json:"provider_code"`
+	ProviderProfile  string                 `json:"provider_profile"`
 	ProviderDeviceID optionalNullableString `json:"provider_device_id"`
 }
 
@@ -1227,7 +1229,8 @@ func deviceResponse(device deviceservice.Device) v1.DeviceResponse {
 	}
 	return v1.DeviceResponse{
 		ID: device.ID, ProjectID: device.ProjectID, DeviceTypeCode: device.DeviceTypeCode, Name: device.Name,
-		ProviderCode: device.ProviderCode, ProviderDeviceID: device.ProviderDeviceID, AccessType: device.AccessType,
+		ProviderCode: device.ProviderCode, ProviderProfile: device.ProviderProfile,
+		ProviderDeviceID: device.ProviderDeviceID, AccessType: device.AccessType,
 		TransportProtocol: device.TransportProtocol, Adapter: device.Adapter, ConnectionStatus: device.ConnectionStatus,
 		LifecycleStatus: device.LifecycleStatus, CurrentState: currentState, LastSeenAt: device.LastSeenAt,
 		CreatedAt: device.CreatedAt, UpdatedAt: device.UpdatedAt,
@@ -1249,7 +1252,8 @@ func writeDeviceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, deviceservice.ErrInvalidRequest):
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid request")
 	case errors.Is(err, deviceservice.ErrProjectNotFound), errors.Is(err, deviceservice.ErrDeviceTypeNotFound),
-		errors.Is(err, deviceservice.ErrProviderNotFound), errors.Is(err, deviceservice.ErrDeviceNotFound):
+		errors.Is(err, deviceservice.ErrProviderNotFound), errors.Is(err, deviceservice.ErrProviderProfileNotFound),
+		errors.Is(err, deviceservice.ErrDeviceNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, deviceservice.ErrProviderDeviceConflict):
 		writeError(w, http.StatusConflict, "provider_device_conflict", "Provider Device identity already exists")
@@ -1264,7 +1268,8 @@ func writeDeviceError(w http.ResponseWriter, err error) {
 
 func commandResponse(command domain.Command) v1.CommandResponse {
 	return v1.CommandResponse{
-		ID: command.ID, ProjectID: command.ProjectID, DeviceID: command.DeviceID, CommandType: command.CommandType,
+		ID: command.ID, ProjectID: command.ProjectID, DeviceID: command.DeviceID,
+		ProviderCode: command.ProviderCode, ProviderProfile: command.ProviderProfile, CommandType: command.CommandType,
 		Payload: command.Payload, DeviceTypeRevision: command.DeviceTypeRevision, DeliveryPolicy: command.DeliveryPolicy,
 		Status: command.Status, ReasonCode: command.ReasonCode, ReasonDetail: command.ReasonDetail,
 		ConfirmationLevel: command.ConfirmationLevel, EvidenceStatus: command.EvidenceStatus,
@@ -1337,6 +1342,10 @@ func writeCommandError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "device_not_online", "Device is not online")
 	case errors.Is(err, commandservice.ErrProviderNotConfigured):
 		writeError(w, http.StatusConflict, "provider_not_configured", "Provider is not configured")
+	case errors.Is(err, commandservice.ErrProviderActionUnsupported):
+		writeError(w, http.StatusConflict, "provider_action_unsupported", "Provider does not support this action")
+	case errors.Is(err, commandservice.ErrProviderMappingUnknown):
+		writeError(w, http.StatusConflict, "provider_mapping_unknown", "Provider action mapping is not proven")
 	case errors.Is(err, commandservice.ErrIdempotencyKeyConflict):
 		writeError(w, http.StatusConflict, "idempotency_key_conflict", "idempotency key conflicts with another request")
 	case errors.Is(err, commandservice.ErrCommandNotCancellable):

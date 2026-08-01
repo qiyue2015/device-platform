@@ -11,10 +11,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qiyue2015/device-platform/internal/cloudapi/wwtiot"
 	"github.com/qiyue2015/device-platform/internal/commandservice"
 	"github.com/qiyue2015/device-platform/internal/commandworker"
 	"github.com/qiyue2015/device-platform/internal/devicecore"
 	"github.com/qiyue2015/device-platform/internal/deviceservice"
+	"github.com/qiyue2015/device-platform/internal/directdevice/omni"
 	"github.com/qiyue2015/device-platform/internal/domain"
 	"github.com/qiyue2015/device-platform/internal/gateway"
 	"github.com/qiyue2015/device-platform/internal/httpapi"
@@ -31,6 +33,7 @@ type app struct {
 	runtimeMu      sync.RWMutex
 	cfg            config
 	recoveryNeeded bool
+	runtimeFailed  bool
 	logger         *slog.Logger
 	fatal          chan error
 	db             *sql.DB
@@ -50,6 +53,9 @@ type app struct {
 	commandDone    chan struct{}
 	webhookCancel  context.CancelFunc
 	webhookDone    chan struct{}
+	omniRuntime    omniRuntimeRunner
+	omniCancel     context.CancelFunc
+	omniDone       chan struct{}
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request) error
@@ -60,6 +66,12 @@ type commandWorkerRunner interface {
 
 type webhookWorkerRunner interface {
 	Run(context.Context, webhookworker.ErrorReporter)
+}
+
+type omniRuntimeRunner interface {
+	Configured() bool
+	Run(context.Context, func(error)) error
+	Close() error
 }
 
 type runtimeSnapshot struct {
@@ -74,6 +86,7 @@ type runtimeSnapshot struct {
 	cloudProviders cloudProviderRegistry
 	commandWorker  commandWorkerRunner
 	webhookWorker  webhookWorkerRunner
+	omniRuntime    omniRuntimeRunner
 }
 
 func newApp(cfg config, logger *slog.Logger) (*app, error) {
@@ -118,16 +131,24 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 	application.commands = commands
 	if db != nil {
 		store := repository.NewPostgresStore(db)
-		worker, err := newPersistentCommandWorker(store, cloudProviders)
+		omniRuntime, err := newOmniRuntime(store, cfg)
 		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("initialize Omni runtime: %w", err)
+		}
+		worker, err := newPersistentCommandWorker(store, cloudProviders, omniRuntime.Adapter())
+		if err != nil {
+			_ = omniRuntime.Close()
 			_ = db.Close()
 			return nil, fmt.Errorf("initialize Command worker: %w", err)
 		}
 		webhookWorker, err := newPersistentWebhookWorker(store, projects, cfg)
 		if err != nil {
+			_ = omniRuntime.Close()
 			_ = db.Close()
 			return nil, fmt.Errorf("initialize Webhook worker: %w", err)
 		}
+		application.replaceOmniRuntime(omniRuntime)
 		application.replaceCommandWorker(worker)
 		application.replaceWebhookWorker(webhookWorker)
 	}
@@ -277,6 +298,7 @@ func (a *app) runtimeUnavailableError() error {
 	a.runtimeMu.RLock()
 	installed := a.cfg.Installed
 	recoveryNeeded := a.recoveryNeeded
+	runtimeFailed := a.runtimeFailed
 	a.runtimeMu.RUnlock()
 	if recoveryNeeded || installRecoveryExists() {
 		return newAPIError(http.StatusServiceUnavailable, "setup_recovery_required", "installation recovery is required")
@@ -285,6 +307,9 @@ func (a *app) runtimeUnavailableError() error {
 		return newAPIError(http.StatusServiceUnavailable, "setup_restart_required", "process restart is required")
 	}
 	if installed {
+		if runtimeFailed {
+			return newAPIError(http.StatusServiceUnavailable, "provider_runtime_unavailable", "required Provider runtime is unavailable")
+		}
 		return nil
 	}
 	return newAPIError(http.StatusServiceUnavailable, "setup_required", "system setup is required")
@@ -298,6 +323,16 @@ func (a *app) setRecoveryNeeded(value bool) {
 
 func (a *app) signalFatal(err error) {
 	a.setRecoveryNeeded(true)
+	select {
+	case a.fatal <- err:
+	default:
+	}
+}
+
+func (a *app) signalRuntimeFatal(err error) {
+	a.runtimeMu.Lock()
+	a.runtimeFailed = true
+	a.runtimeMu.Unlock()
 	select {
 	case a.fatal <- err:
 	default:
@@ -357,28 +392,38 @@ func (a *app) buildInstallRuntime(result installResult, db *sql.DB) (runtimeSnap
 	if err != nil {
 		return runtimeSnapshot{}, fmt.Errorf("initialize Command service: %w", err)
 	}
-	commandWorker, err := newPersistentCommandWorker(store, cloudProviders)
+	omniRuntime, err := newOmniRuntime(store, cfg)
 	if err != nil {
+		return runtimeSnapshot{}, fmt.Errorf("initialize Omni runtime: %w", err)
+	}
+	commandWorker, err := newPersistentCommandWorker(store, cloudProviders, omniRuntime.Adapter())
+	if err != nil {
+		_ = omniRuntime.Close()
 		return runtimeSnapshot{}, fmt.Errorf("initialize Command worker: %w", err)
 	}
 	webhookWorker, err := newPersistentWebhookWorker(store, projects, cfg)
 	if err != nil {
+		_ = omniRuntime.Close()
 		return runtimeSnapshot{}, fmt.Errorf("initialize Webhook worker: %w", err)
 	}
 	return runtimeSnapshot{
 		cfg: cfg, db: db, auth: newDBAuthenticator(db, result.JWTSecret), projects: projects, devices: devices, commands: commands,
 		simulator: simulatorruntime.NewService(store, nil), webhookAudit: webhookaudit.NewPersistentService(store),
 		cloudProviders: cloudProviders, commandWorker: commandWorker, webhookWorker: webhookWorker,
+		omniRuntime: omniRuntime,
 	}, nil
 }
 
 func (a *app) publishRuntimeSnapshot(snapshot runtimeSnapshot) (*sql.DB, func()) {
 	a.workerMu.Lock()
-	a.runtimeMu.Lock()
 	stopWorker(a.commandCancel, a.commandDone)
 	stopWorker(a.webhookCancel, a.webhookDone)
+	stopOmniRuntime(a.omniCancel, a.omniDone, a.omniRuntime)
+
+	a.runtimeMu.Lock()
 	a.commandCancel, a.commandDone = nil, nil
 	a.webhookCancel, a.webhookDone = nil, nil
+	a.omniCancel, a.omniDone = nil, nil
 
 	previousDB := a.db
 	a.cfg = snapshot.cfg
@@ -390,7 +435,9 @@ func (a *app) publishRuntimeSnapshot(snapshot runtimeSnapshot) (*sql.DB, func())
 	a.simulator = snapshot.simulator
 	a.webhookAudit = snapshot.webhookAudit
 	a.cloudProviders = snapshot.cloudProviders
+	a.omniRuntime = snapshot.omniRuntime
 	a.recoveryNeeded = true
+	a.runtimeFailed = false
 	a.runtimeMu.Unlock()
 	a.workerMu.Unlock()
 
@@ -399,6 +446,7 @@ func (a *app) publishRuntimeSnapshot(snapshot runtimeSnapshot) (*sql.DB, func())
 		defer a.workerMu.Unlock()
 		a.runtimeMu.Lock()
 		defer a.runtimeMu.Unlock()
+		a.omniCancel, a.omniDone = startOmniRuntime(a.logger, snapshot.omniRuntime, a.signalRuntimeFatal)
 		a.commandCancel, a.commandDone = startCommandWorker(a.logger, snapshot.commandWorker)
 		a.webhookCancel, a.webhookDone = startWebhookWorker(a.logger, snapshot.webhookWorker)
 		a.recoveryNeeded = false
@@ -457,10 +505,10 @@ func (a *app) persistentWebhookAuditService() *webhookaudit.PersistentService {
 	return a.webhookAudit
 }
 
-func newPersistentCommandWorker(store commandworker.Store, providers cloudProviderRegistry) (*commandworker.Worker, error) {
+func newPersistentCommandWorker(store commandworker.Store, providers cloudProviderRegistry, omniAdapter *omni.Adapter) (*commandworker.Worker, error) {
 	client, ok := providers.WWTIOTClient(domain.ProviderCodeWWTIOT)
 	if !ok {
-		return nil, fmt.Errorf("WWTIOT adapter is not registered")
+		return nil, fmt.Errorf("wwtiot adapter is not registered")
 	}
 	return commandworker.New(store, commandworker.Config{Adapters: []commandworker.AdapterRegistration{
 		{
@@ -472,13 +520,17 @@ func newPersistentCommandWorker(store commandworker.Store, providers cloudProvid
 			Adapter: simulatorruntime.NewAdapter(), ResultSource: domain.EventSourceSimulator,
 			ClaimSnapshot: simulatorruntime.ClaimSnapshot,
 		},
+		{
+			ProviderCode: domain.ProviderCodeOmni, AdapterCode: domain.AdapterOmniDirectTCP,
+			Adapter: omniAdapter, ResultSource: domain.EventSourceSystem,
+		},
 	}})
 }
 
 func newPersistentWebhookWorker(store webhookworker.Store, projects httpapi.ProjectService, cfg config) (*webhookworker.Worker, error) {
 	resolver, ok := projects.(webhookworker.SecretResolver)
 	if !ok {
-		return nil, fmt.Errorf("Project service cannot resolve Webhook secret versions")
+		return nil, fmt.Errorf("project service cannot resolve webhook secret versions")
 	}
 	allowlist, err := webhookworker.ParseEgressAllowlist(cfg.WebhookEgressAllowlist)
 	if err != nil {
@@ -556,9 +608,56 @@ func (a *app) replaceWebhookWorker(worker webhookWorkerRunner) {
 	}()
 }
 
+func newOmniRuntime(store repository.ProviderMessageStore, cfg config) (*omni.Runtime, error) {
+	return omni.OpenRuntime(store, omni.RuntimeConfig{
+		BikeAddress: cfg.OmniBikeListenAddr, IoTAddress: cfg.OmniIoTListenAddr,
+		MaxFrameBytes: cfg.OmniMaxFrameBytes, MaxConnections: cfg.OmniMaxConnections,
+		ReadTimeout: cfg.OmniReadTimeout,
+	})
+}
+
+func startOmniRuntime(logger *slog.Logger, runtime omniRuntimeRunner, fatal func(error)) (context.CancelFunc, chan struct{}) {
+	if runtime == nil || !runtime.Configured() {
+		return nil, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		err := runtime.Run(ctx, func(err error) {
+			logger.Error("Omni listener failed", slog.String("error", err.Error()))
+		})
+		if err != nil && ctx.Err() == nil && fatal != nil {
+			fatal(err)
+		}
+	}()
+	return cancel, done
+}
+
+func stopOmniRuntime(cancel context.CancelFunc, done <-chan struct{}, runtime omniRuntimeRunner) {
+	if cancel != nil {
+		cancel()
+	}
+	if runtime != nil {
+		_ = runtime.Close()
+	}
+	if done != nil {
+		<-done
+	}
+}
+
+func (a *app) replaceOmniRuntime(runtime omniRuntimeRunner) {
+	a.workerMu.Lock()
+	defer a.workerMu.Unlock()
+	stopOmniRuntime(a.omniCancel, a.omniDone, a.omniRuntime)
+	a.omniRuntime = runtime
+	a.omniCancel, a.omniDone = startOmniRuntime(a.logger, runtime, a.signalRuntimeFatal)
+}
+
 func (a *app) close() error {
 	a.replaceCommandWorker(nil)
 	a.replaceWebhookWorker(nil)
+	a.replaceOmniRuntime(nil)
 	if a.gateway != nil {
 		a.gateway.Stop()
 	}
@@ -578,18 +677,13 @@ func (a *app) projectService() httpapi.ProjectService {
 	return a.projects
 }
 
-func (a *app) setProjectService(service httpapi.ProjectService) {
-	a.runtimeMu.Lock()
-	defer a.runtimeMu.Unlock()
-	a.projects = service
-}
-
 func (a *app) deviceResourceService() httpapi.DeviceResourceService {
 	a.runtimeMu.RLock()
 	defer a.runtimeMu.RUnlock()
 	return a.devices
 }
 
+//lint:ignore U1000 used by integration-tagged HTTP tests
 func (a *app) setDeviceResourceService(service httpapi.DeviceResourceService) {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
@@ -602,6 +696,7 @@ func (a *app) commandResourceService() httpapi.CommandResourceService {
 	return a.commands
 }
 
+//lint:ignore U1000 used by integration-tagged HTTP tests
 func (a *app) setCommandResourceService(service httpapi.CommandResourceService) {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
@@ -630,9 +725,66 @@ func (a *app) commandRequestMetadata(r *http.Request) commandservice.RequestMeta
 }
 
 func deviceServiceConfig(cfg config) deviceservice.Config {
-	return deviceservice.Config{
-		WWTIOTEndpoint: cfg.WWTIOTAPIURL, WWTIOTUserID: cfg.WWTIOTUserID, WWTIOTUserKey: cfg.WWTIOTUserKey,
+	allActions := map[domain.ActionIdentifier]domain.ProviderActionAvailability{
+		domain.ActionIdentifier("unlock"):       domain.ProviderActionSupported,
+		domain.ActionIdentifier("lock"):         domain.ProviderActionSupported,
+		domain.ActionIdentifier("query_status"): domain.ProviderActionSupported,
 	}
+	wwtiotStatus := domain.ProviderIntegrationUnconfigured
+	if (wwtiot.Config{APIURL: cfg.WWTIOTAPIURL, UserID: cfg.WWTIOTUserID, UserKey: cfg.WWTIOTUserKey}).Configured() {
+		wwtiotStatus = domain.ProviderIntegrationConfiguredUnverified
+	}
+	omniStatus := domain.ProviderIntegrationUnconfigured
+	if strings.TrimSpace(cfg.OmniBikeListenAddr) != "" && strings.TrimSpace(cfg.OmniIoTListenAddr) != "" {
+		omniStatus = domain.ProviderIntegrationConfiguredUnverified
+	}
+	return deviceservice.Config{Providers: []deviceservice.ProviderRegistration{
+		{
+			Provider: deviceservice.Provider{
+				Code: domain.ProviderCodeSimulator, Name: "Simulator", AccessType: domain.AccessTypeSimulator,
+				TransportProtocol: domain.TransportProtocolInternal, Adapter: domain.AdapterSimulator,
+				Profiles: []string{domain.ProviderProfileSimulatorV1},
+				ProfileActions: map[string]map[domain.ActionIdentifier]domain.ProviderActionAvailability{
+					domain.ProviderProfileSimulatorV1: allActions,
+				},
+				IntegrationStatus: domain.ProviderIntegrationVerified,
+			},
+			IdentityPolicy: deviceservice.DeviceIdentityPolicyFunc(simulatorruntime.NormalizeDeviceIdentity),
+		},
+		{
+			Provider: deviceservice.Provider{
+				Code: domain.ProviderCodeOmni, Name: "Omni", AccessType: domain.AccessTypeDirectDevice,
+				TransportProtocol: domain.TransportProtocolTCP, Adapter: domain.AdapterOmniDirectTCP,
+				Profiles: []string{domain.ProviderProfileOmniBikeV207, domain.ProviderProfileOmniIoTV135},
+				ProfileActions: map[string]map[domain.ActionIdentifier]domain.ProviderActionAvailability{
+					domain.ProviderProfileOmniBikeV207: {
+						domain.ActionIdentifier("unlock"):       domain.ProviderActionMappingUnknown,
+						domain.ActionIdentifier("lock"):         domain.ProviderActionUnsupported,
+						domain.ActionIdentifier("query_status"): domain.ProviderActionSupported,
+					},
+					domain.ProviderProfileOmniIoTV135: {
+						domain.ActionIdentifier("unlock"):       domain.ProviderActionMappingUnknown,
+						domain.ActionIdentifier("lock"):         domain.ProviderActionMappingUnknown,
+						domain.ActionIdentifier("query_status"): domain.ProviderActionSupported,
+					},
+				},
+				IntegrationStatus: omniStatus,
+			},
+			IdentityPolicy: deviceservice.DeviceIdentityPolicyFunc(omni.NormalizeDeviceIdentity),
+		},
+		{
+			Provider: deviceservice.Provider{
+				Code: domain.ProviderCodeWWTIOT, Name: "WWTIOT", AccessType: domain.AccessTypeCloudAPI,
+				TransportProtocol: domain.TransportProtocolHTTP, Adapter: domain.AdapterWWTIOTCloudAPI,
+				Profiles: []string{domain.ProviderProfileWWTIOTV2},
+				ProfileActions: map[string]map[domain.ActionIdentifier]domain.ProviderActionAvailability{
+					domain.ProviderProfileWWTIOTV2: allActions,
+				},
+				IntegrationStatus: wwtiotStatus,
+			},
+			IdentityPolicy: deviceservice.DeviceIdentityPolicyFunc(wwtiot.NormalizeDeviceIdentity),
+		},
+	}}
 }
 
 func commandServiceConfig(devices *deviceservice.Service) commandservice.Config {
@@ -642,6 +794,7 @@ func commandServiceConfig(devices *deviceservice.Service) commandservice.Config 
 		registry = append(registry, domain.Provider{
 			Code: provider.Code, Name: provider.Name, AccessType: provider.AccessType,
 			TransportProtocol: provider.TransportProtocol, Adapter: provider.Adapter,
+			Profiles: provider.Profiles, ProfileActions: provider.ProfileActions,
 			IntegrationStatus: provider.IntegrationStatus,
 		})
 	}

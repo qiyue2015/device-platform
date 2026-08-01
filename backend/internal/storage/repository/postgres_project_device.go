@@ -107,6 +107,12 @@ func (s *PostgresStore) TransactWebhookAudit(ctx context.Context, fn func(Webhoo
 	})
 }
 
+func (s *PostgresStore) TransactProviderMessage(ctx context.Context, fn func(ProviderMessageTx) error) error {
+	return s.WithinTransaction(ctx, func(tx *PostgresTx) error {
+		return fn(tx)
+	})
+}
+
 type PostgresTx struct {
 	tx *sql.Tx
 }
@@ -459,7 +465,6 @@ func (r *postgresDeviceRepository) GetByProject(ctx context.Context, projectID, 
 func (r *postgresDeviceRepository) GetByProviderIdentity(ctx context.Context, providerCode, providerDeviceID string) (domain.Device, error) {
 	return scanDevice(r.exec.QueryRowContext(ctx, deviceSelect+`
 		WHERE lower(d.provider_code) = lower($1) AND d.provider_device_id = $2
-			AND d.lifecycle_status <> 'deleted'
 	`, providerCode, providerDeviceID))
 }
 
@@ -562,17 +567,18 @@ func (r *postgresDeviceRepository) GetCurrentState(ctx context.Context, deviceID
 
 func (r *postgresDeviceRepository) Create(ctx context.Context, device domain.Device) error {
 	_, err := r.exec.ExecContext(ctx, `
-		INSERT INTO devices (
-			id, project_id, device_type_id, name, provider_code, provider_device_id,
-			access_type, transport_protocol, adapter, connection_status,
-			lifecycle_status, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			INSERT INTO devices (
+				id, project_id, device_type_id, name, provider_code, provider_profile, provider_device_id,
+				access_type, transport_protocol, adapter, connection_status,
+				lifecycle_status, created_at, updated_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 	`,
 		device.ID,
 		device.ProjectID,
 		device.DeviceTypeID,
 		device.Name,
 		device.ProviderCode,
+		device.ProviderProfile,
 		device.ProviderDeviceID,
 		device.AccessType,
 		device.TransportProtocol,
@@ -635,7 +641,7 @@ func (r *postgresDeviceRepository) SaveState(ctx context.Context, state domain.D
 
 const deviceSelect = `
 	SELECT d.id::text, d.project_id::text, d.device_type_id::text, dt.code,
-		d.name, d.provider_code, d.provider_device_id, d.access_type,
+			d.name, d.provider_code, d.provider_profile, d.provider_device_id, d.access_type,
 		d.transport_protocol, d.adapter, d.connection_status, d.lifecycle_status,
 		d.created_at, d.updated_at
 	FROM devices d
@@ -650,6 +656,7 @@ func scanDevice(row rowScanner) (domain.Device, error) {
 		&device.DeviceTypeCode,
 		&device.Name,
 		&device.ProviderCode,
+		&device.ProviderProfile,
 		&device.ProviderDeviceID,
 		&device.AccessType,
 		&device.TransportProtocol,

@@ -12,7 +12,7 @@ import (
 
 var (
 	ErrInvalidConfig = errors.New("invalid Webhook worker configuration")
-	ErrLeaseLost     = errors.New("Webhook worker lease lost")
+	ErrLeaseLost     = errors.New("webhook worker lease lost")
 )
 
 type Store interface {

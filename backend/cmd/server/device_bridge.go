@@ -8,7 +8,7 @@ import (
 	"github.com/qiyue2015/device-platform/internal/httpapi"
 )
 
-var errDeviceServiceUnavailable = errors.New("Device service unavailable")
+var errDeviceServiceUnavailable = errors.New("device service unavailable")
 
 type appDeviceService struct {
 	app *app

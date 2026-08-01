@@ -90,7 +90,7 @@ func TestRuntimeAndInstallRejectDriftedFrozenProfile(t *testing.T) {
 
 	_, err = performInstall(context.Background(), setupInstallRequest{
 		Database: databaseSetupRequest{URL: schemaURL},
-		Redis:    redisSetupRequest{URL: "redis://127.0.0.1:6379/15"},
+		Redis:    redisSetupRequest{URL: requireProcessRedisTestURL(t)},
 		Admin: adminSetupRequest{
 			Email:           "admin@example.test",
 			DisplayName:     "Test Admin",
@@ -124,8 +124,8 @@ func TestNewAppRejectsDatabaseMissingLatestMigration(t *testing.T) {
 			ReadHeaderTimeout:          5 * time.Second,
 		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		if err == nil || !strings.Contains(err.Error(), "database migration validation failed") ||
-			!strings.Contains(err.Error(), "missing=[008_platform_core_v4]") {
-			t.Fatalf("newApp must reject a database missing migration 008, got %v", err)
+			!strings.Contains(err.Error(), "missing=[009_dual_provider_smart_lock]") {
+			t.Fatalf("newApp must reject a database missing migration 009, got %v", err)
 		}
 	})
 }

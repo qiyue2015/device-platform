@@ -60,7 +60,7 @@ func TestPostgresCommandLifecycleAndEvidence(t *testing.T) {
 		}
 
 		duplicate := testCommand("61000000-0000-0000-0000-000000000002", command.IdempotencyKey, deviceTypeID, now, now.Add(30*time.Minute))
-		duplicate.DeviceID = commandSimulatorID
+		setCommandProviderSnapshot(&duplicate, commandSimulatorID, domain.ProviderCodeSimulator, domain.AdapterSimulator)
 		err = store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
 			return tx.Commands().Create(ctx, duplicate)
 		})
@@ -123,12 +123,14 @@ func TestPostgresCommandLifecycleAndEvidence(t *testing.T) {
 
 		wrongMessage := domain.RawMessage{
 			ID:                "41000000-0000-0000-0000-000000000001",
-			DeviceID:          stringRef(commandSimulatorID),
+			DeviceID:          stringRef(commandDeviceID),
 			ProviderCode:      domain.ProviderCodeWWTIOT,
+			ProviderProfile:   domain.ProviderProfileWWTIOTV2,
 			ProviderDeviceID:  "LOCK-COMMAND-1",
 			AccessType:        domain.AccessTypeCloudAPI,
 			TransportProtocol: domain.TransportProtocolHTTP,
 			Adapter:           domain.AdapterWWTIOTCloudAPI,
+			EvidenceStatus:    domain.EvidenceVerified,
 			Direction:         domain.RawMessageInbound,
 			DeduplicationKey:  claimedAttempt.ProviderRequestKey,
 			Headers:           map[string]any{},
@@ -168,10 +170,12 @@ func TestPostgresCommandLifecycleAndEvidence(t *testing.T) {
 			ID:                "41000000-0000-0000-0000-000000000002",
 			DeviceID:          stringRef(commandSimulatorID),
 			ProviderCode:      domain.ProviderCodeSimulator,
+			ProviderProfile:   domain.ProviderProfileSimulatorV1,
 			ProviderDeviceID:  commandSimulatorID,
 			AccessType:        domain.AccessTypeSimulator,
 			TransportProtocol: domain.TransportProtocolInternal,
 			Adapter:           domain.AdapterSimulator,
+			EvidenceStatus:    domain.EvidenceVerified,
 			Direction:         domain.RawMessageInbound,
 			DeduplicationKey:  claimedAttempt.ProviderRequestKey,
 			Headers:           map[string]any{},
@@ -611,10 +615,12 @@ func TestPostgresCommandEvidenceAssociationFailsClosed(t *testing.T) {
 			ID:                "44000000-0000-0000-0000-000000000001",
 			DeviceID:          stringRef(commandSimulatorID),
 			ProviderCode:      domain.ProviderCodeSimulator,
+			ProviderProfile:   domain.ProviderProfileSimulatorV1,
 			ProviderDeviceID:  commandSimulatorID,
 			AccessType:        domain.AccessTypeSimulator,
 			TransportProtocol: domain.TransportProtocolInternal,
 			Adapter:           domain.AdapterSimulator,
+			EvidenceStatus:    domain.EvidenceVerified,
 			Direction:         domain.RawMessageInbound,
 			DeduplicationKey:  firstAttempt.ProviderRequestKey,
 			Headers:           map[string]any{},
@@ -689,10 +695,12 @@ func TestPostgresCommandEvidenceAssociationFailsClosed(t *testing.T) {
 			ID:                "44000000-0000-0000-0000-000000000002",
 			DeviceID:          stringRef(commandDeviceID),
 			ProviderCode:      domain.ProviderCodeWWTIOT,
+			ProviderProfile:   domain.ProviderProfileWWTIOTV2,
 			ProviderDeviceID:  "LOCK-COMMAND-1",
 			AccessType:        domain.AccessTypeCloudAPI,
 			TransportProtocol: domain.TransportProtocolHTTP,
 			Adapter:           domain.AdapterWWTIOTCloudAPI,
+			EvidenceStatus:    domain.EvidenceUnverified,
 			Direction:         domain.RawMessageInbound,
 			DeduplicationKey:  wwtiotAttempt.ProviderRequestKey,
 			Headers:           map[string]any{},
@@ -1054,6 +1062,7 @@ func createCommandFixtures(t *testing.T, ctx context.Context, store *repository.
 				DeviceTypeID:      deviceType.ID,
 				Name:              "Command Lock",
 				ProviderCode:      domain.ProviderCodeWWTIOT,
+				ProviderProfile:   domain.ProviderProfileWWTIOTV2,
 				ProviderDeviceID:  "LOCK-COMMAND-1",
 				AccessType:        domain.AccessTypeCloudAPI,
 				TransportProtocol: domain.TransportProtocolHTTP,
@@ -1069,6 +1078,7 @@ func createCommandFixtures(t *testing.T, ctx context.Context, store *repository.
 				DeviceTypeID:      deviceType.ID,
 				Name:              "Other Command Lock",
 				ProviderCode:      domain.ProviderCodeWWTIOT,
+				ProviderProfile:   domain.ProviderProfileWWTIOTV2,
 				ProviderDeviceID:  "LOCK-COMMAND-2",
 				AccessType:        domain.AccessTypeCloudAPI,
 				TransportProtocol: domain.TransportProtocolHTTP,
@@ -1084,6 +1094,7 @@ func createCommandFixtures(t *testing.T, ctx context.Context, store *repository.
 				DeviceTypeID:      deviceType.ID,
 				Name:              "Simulator Command Lock",
 				ProviderCode:      domain.ProviderCodeSimulator,
+				ProviderProfile:   domain.ProviderProfileSimulatorV1,
 				ProviderDeviceID:  commandSimulatorID,
 				AccessType:        domain.AccessTypeSimulator,
 				TransportProtocol: domain.TransportProtocolInternal,
@@ -1116,6 +1127,7 @@ func testCommand(id, key, deviceTypeID string, queuedAt, deadline time.Time) dom
 		DeviceTypeID:       deviceTypeID,
 		DeviceTypeCode:     domain.DeviceTypeSmartLock,
 		ProviderCode:       domain.ProviderCodeWWTIOT,
+		ProviderProfile:    domain.ProviderProfileWWTIOTV2,
 		ProviderDeviceID:   "LOCK-COMMAND-1",
 		Adapter:            domain.AdapterWWTIOTCloudAPI,
 		CommandType:        "unlock",
@@ -1238,7 +1250,10 @@ func setCommandProviderSnapshot(command *domain.Command, deviceID, providerCode 
 	command.ProviderCode = providerCode
 	command.Adapter = adapter
 	if providerCode == domain.ProviderCodeSimulator {
+		command.ProviderProfile = domain.ProviderProfileSimulatorV1
 		command.ProviderDeviceID = deviceID
+	} else {
+		command.ProviderProfile = domain.ProviderProfileWWTIOTV2
 	}
 }
 

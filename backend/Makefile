@@ -23,7 +23,7 @@ test-int:
 lint:
 	go vet ./...
 	@if command -v staticcheck >/dev/null 2>&1; then \
-		staticcheck ./...; \
+		staticcheck -tags=integration ./...; \
 	else \
 		echo "staticcheck not found; skipping staticcheck"; \
 	fi

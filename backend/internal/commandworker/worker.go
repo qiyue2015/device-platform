@@ -243,16 +243,22 @@ func (w *Worker) dispatchClaimed(ctx context.Context, registration AdapterRegist
 		return ErrRuntimeState
 	}
 	request := provideradapter.DispatchRequest{
-		ProviderDeviceID: command.ProviderDeviceID, Action: command.CommandType,
+		ProjectID: command.ProjectID, DeviceID: command.DeviceID,
+		ProviderDeviceID: command.ProviderDeviceID, ProviderProfile: command.ProviderProfile, Action: command.CommandType,
 		Payload: command.Payload, ProviderRequestKey: attempt.ProviderRequestKey,
 		AttemptRequestSummary: attempt.RequestSummary,
 	}
 	if !registration.Adapter.Configured() {
-		return w.failBeforeDispatch(ctx, command, attempt, registration.ResultSource, "Provider is not configured")
+		return w.failBeforeDispatch(ctx, command, attempt, registration.ResultSource, "provider_not_configured", "Provider is not configured")
 	}
 	prepared, err := registration.Adapter.Prepare(request)
 	if err != nil {
-		return w.failBeforeDispatch(ctx, command, attempt, registration.ResultSource, err.Error())
+		reasonCode := "provider_request_invalid"
+		var prepareError *provideradapter.PrepareError
+		if errors.As(err, &prepareError) {
+			reasonCode = string(prepareError.Failure)
+		}
+		return w.failBeforeDispatch(ctx, command, attempt, registration.ResultSource, reasonCode, err.Error())
 	}
 	dispatchLeaseDuration := max(w.leaseDuration, command.ProviderTimeout+5*time.Second)
 	dispatched, err := w.commitDispatch(ctx, command, attempt, registration.ResultSource, dispatchLeaseDuration, prepared.RequestSummary())
@@ -265,8 +271,13 @@ func (w *Worker) dispatchClaimed(ctx context.Context, registration AdapterRegist
 	return w.persistResult(ctx, registration, command, attempt, result)
 }
 
-func (w *Worker) failBeforeDispatch(ctx context.Context, command domain.Command, attempt domain.CommandAttempt, source domain.EventSource, detail string) error {
-	reasonCode := "provider_not_configured"
+func (w *Worker) failBeforeDispatch(ctx context.Context, command domain.Command, attempt domain.CommandAttempt, source domain.EventSource, reasonCode, detail string) error {
+	switch reasonCode {
+	case "provider_not_configured", "provider_action_unsupported", "provider_mapping_unknown",
+		"provider_session_unavailable", "provider_request_invalid":
+	default:
+		return ErrRuntimeState
+	}
 	detail = truncate(detail, 4096)
 	return w.store.TransactCommand(ctx, func(tx repository.CommandTx) error {
 		completed, err := tx.Commands().CompleteAttempt(ctx, command.ID, attempt.ID, attempt.LeaseToken, repository.CompleteCommandAttemptRequest{
@@ -432,15 +443,6 @@ func resultTransition(result provideradapter.DispatchResult) (*string, domain.Co
 		return nil, "", ErrRuntimeState
 	}
 	return &reason, target, nil
-}
-
-func actionFor(profile domain.DeviceTypeProfile, identifier domain.ActionIdentifier) (domain.CapabilityAction, bool) {
-	for _, action := range profile.Actions {
-		if action.Identifier == identifier {
-			return action, true
-		}
-	}
-	return domain.CapabilityAction{}, false
 }
 
 func (w *Worker) createStatusEvent(ctx context.Context, tx repository.CommandTx, command domain.Command, from domain.CommandStatus, source domain.EventSource, deduplicationKey string) error {

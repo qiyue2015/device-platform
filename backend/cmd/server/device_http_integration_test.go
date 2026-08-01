@@ -43,7 +43,7 @@ func TestDeviceRoutesSwitchServicesWithoutRouterRebuild(t *testing.T) {
 		server := application.routes()
 		admin := map[string]string{"Authorization": "Bearer " + loginProjectHTTPTestAdmin(t, server)}
 
-		devices, err := deviceservice.New(store, deviceservice.Config{})
+		devices, err := deviceservice.New(store, deviceServiceConfig(config{}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -70,12 +70,14 @@ func TestDeviceHTTPPostgresLifecycleIsolationAndRestart(t *testing.T) {
 		}
 
 		providers := doRequest(t, server, http.MethodGet, "/v1/cloud-providers?page=1&page_size=10", "", admin)
-		providersBody := assertPaginatedEnvelope(t, providers, http.StatusOK, 1, 10, 2)
+		providersBody := assertPaginatedEnvelope(t, providers, http.StatusOK, 1, 10, 3)
 		providerItems, ok := responseDataObject(t, providersBody)["items"].([]interface{})
-		if !ok || len(providerItems) != 2 {
+		if !ok || len(providerItems) != 3 {
 			t.Fatalf("Provider response = %#v", providersBody.Data)
 		}
-		if providerItems[0].(map[string]interface{})["code"] != "simulator" || providerItems[1].(map[string]interface{})["code"] != "wwtiot" {
+		if providerItems[0].(map[string]interface{})["code"] != "simulator" ||
+			providerItems[1].(map[string]interface{})["code"] != "omni" ||
+			providerItems[2].(map[string]interface{})["code"] != "wwtiot" {
 			t.Fatalf("Provider order = %#v", providerItems)
 		}
 		providerPayload := string(mustMarshalJSON(t, providerItems))
@@ -96,12 +98,12 @@ func TestDeviceHTTPPostgresLifecycleIsolationAndRestart(t *testing.T) {
 		}{
 			{
 				name: "unknown Project",
-				body: `{"project_id":"10000000-0000-0000-0000-000000000099","name":"Missing Project","device_type_code":"smart-lock","provider_code":"simulator"}`,
+				body: `{"project_id":"10000000-0000-0000-0000-000000000099","name":"Missing Project","device_type_code":"smart-lock","provider_code":"simulator","provider_profile":"simulator-v1"}`,
 				code: "not_found",
 			},
 			{
 				name: "unknown Device Type",
-				body: `{"project_id":"` + firstProject.ID + `","name":"Missing Type","device_type_code":"missing","provider_code":"simulator"}`,
+				body: `{"project_id":"` + firstProject.ID + `","name":"Missing Type","device_type_code":"missing","provider_code":"simulator","provider_profile":"simulator-v1"}`,
 				code: "not_found",
 			},
 			{
@@ -111,17 +113,17 @@ func TestDeviceHTTPPostgresLifecycleIsolationAndRestart(t *testing.T) {
 			},
 			{
 				name: "forbidden simulator identity",
-				body: `{"project_id":"` + firstProject.ID + `","name":"Bad Simulator","device_type_code":"smart-lock","provider_code":"simulator","provider_device_id":"caller-owned"}`,
+				body: `{"project_id":"` + firstProject.ID + `","name":"Bad Simulator","device_type_code":"smart-lock","provider_code":"simulator","provider_profile":"simulator-v1","provider_device_id":"caller-owned"}`,
 				code: "invalid_request",
 			},
 			{
 				name: "null simulator identity",
-				body: `{"project_id":"` + firstProject.ID + `","name":"Null Simulator","device_type_code":"smart-lock","provider_code":"simulator","provider_device_id":null}`,
+				body: `{"project_id":"` + firstProject.ID + `","name":"Null Simulator","device_type_code":"smart-lock","provider_code":"simulator","provider_profile":"simulator-v1","provider_device_id":null}`,
 				code: "invalid_request",
 			},
 			{
 				name: "forbidden metadata",
-				body: `{"project_id":"` + firstProject.ID + `","name":"Metadata","device_type_code":"smart-lock","provider_code":"simulator","metadata":{"online":true}}`,
+				body: `{"project_id":"` + firstProject.ID + `","name":"Metadata","device_type_code":"smart-lock","provider_code":"simulator","provider_profile":"simulator-v1","metadata":{"online":true}}`,
 				code: "invalid_request",
 			},
 		} {
@@ -142,6 +144,7 @@ func TestDeviceHTTPPostgresLifecycleIsolationAndRestart(t *testing.T) {
 			"name":"  Front Door  ",
 			"device_type_code":"smart-lock",
 			"provider_code":"wwtiot",
+			"provider_profile":"wwtiot-cloud-api-v2",
 			"provider_device_id":"`+providerDeviceID+`"
 		}`, admin)
 		createdBody := assertEnvelope(t, created, http.StatusCreated, true)
@@ -196,6 +199,7 @@ func TestDeviceHTTPPostgresLifecycleIsolationAndRestart(t *testing.T) {
 			"name":"Conflicting Lock",
 			"device_type_code":"smart-lock",
 			"provider_code":"wwtiot",
+			"provider_profile":"wwtiot-cloud-api-v2",
 			"provider_device_id":"` + providerDeviceID + `"
 		}`
 		assertErrorCode(t, doRequest(t, restarted, http.MethodPost, "/v1/devices", conflictBody, restartedAdmin), http.StatusConflict, "provider_device_conflict")
@@ -208,10 +212,7 @@ func TestDeviceHTTPPostgresLifecycleIsolationAndRestart(t *testing.T) {
 		assertEnvelope(t, doRequest(t, restarted, http.MethodGet, "/v1/open/devices/"+deviceID, "", openHeaders), http.StatusOK, true)
 
 		replacement := doRequest(t, restarted, http.MethodPost, "/v1/devices", conflictBody, restartedAdmin)
-		replacementData := responseDataObject(t, assertEnvelope(t, replacement, http.StatusCreated, true))
-		if replacementData["project_id"] != secondProject.ID || replacementData["provider_device_id"] != providerDeviceID {
-			t.Fatalf("replacement Device = %+v", replacementData)
-		}
+		assertErrorCode(t, replacement, http.StatusConflict, "provider_device_conflict")
 	})
 }
 
@@ -219,11 +220,11 @@ func insertVerifiedDeviceHTTPState(t *testing.T, db *sql.DB, deviceID, providerD
 	t.Helper()
 	if _, err := db.Exec(`
 		INSERT INTO device_raw_messages (
-			id, device_id, provider_code, provider_device_id, access_type, transport_protocol,
-			adapter, direction, headers, body, deduplication_key, received_at, created_at
+			id, device_id, provider_code, provider_profile, provider_device_id, access_type, transport_protocol,
+			adapter, evidence_status, direction, headers, body, deduplication_key, received_at, created_at
 		) VALUES (
-			'40000000-0000-0000-0000-000000000009', $1, 'wwtiot', $2, 'cloud_api', 'http',
-			'wwtiot_cloud_api', 'inbound', '{}'::jsonb, '{"lockstatus":0}', 'device-http-state',
+			'40000000-0000-0000-0000-000000000009', $1, 'wwtiot', 'wwtiot-cloud-api-v2', $2, 'cloud_api', 'http',
+			'wwtiot_cloud_api', 'verified', 'inbound', '{}'::jsonb, '{"lockstatus":0}', 'device-http-state',
 			'2026-07-31T08:00:00Z', '2026-07-31T08:00:00Z'
 		)
 	`, deviceID, providerDeviceID); err != nil {
@@ -254,7 +255,7 @@ func TestDeviceHTTPPostgresCreateRollsBackWithDeliveryOrAuditFailure(t *testing.
 		}
 		failedDelivery := doRequest(t, server, http.MethodPost, "/v1/devices", `{
 			"project_id":"`+project.ID+`","name":"Rollback Delivery","device_type_code":"smart-lock",
-			"provider_code":"wwtiot","provider_device_id":"ROLLBACK-HTTP-DELIVERY"
+			"provider_code":"wwtiot","provider_profile":"wwtiot-cloud-api-v2","provider_device_id":"ROLLBACK-HTTP-DELIVERY"
 		}`, admin)
 		assertErrorCode(t, failedDelivery, http.StatusInternalServerError, "internal_error")
 		assertDeviceAggregateTotals(t, db, baseline)
@@ -267,7 +268,7 @@ func TestDeviceHTTPPostgresCreateRollsBackWithDeliveryOrAuditFailure(t *testing.
 		}
 		failedAudit := doRequest(t, server, http.MethodPost, "/v1/devices", `{
 			"project_id":"`+project.ID+`","name":"Rollback Audit","device_type_code":"smart-lock",
-			"provider_code":"wwtiot","provider_device_id":"ROLLBACK-HTTP-AUDIT"
+			"provider_code":"wwtiot","provider_profile":"wwtiot-cloud-api-v2","provider_device_id":"ROLLBACK-HTTP-AUDIT"
 		}`, admin)
 		assertErrorCode(t, failedAudit, http.StatusInternalServerError, "internal_error")
 		assertDeviceAggregateTotals(t, db, baseline)

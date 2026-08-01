@@ -9,7 +9,7 @@ import (
 	"github.com/qiyue2015/device-platform/internal/httpapi"
 )
 
-var errCommandServiceUnavailable = errors.New("Command service unavailable")
+var errCommandServiceUnavailable = errors.New("command service unavailable")
 
 type appCommandService struct {
 	app *app

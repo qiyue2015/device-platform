@@ -9,6 +9,20 @@ import (
 	"github.com/qiyue2015/device-platform/internal/provideradapter"
 )
 
+func TestNormalizeDeviceIdentity(t *testing.T) {
+	platformDeviceID := "10000000-0000-0000-0000-000000000001"
+	if got, err := NormalizeDeviceIdentity(nil, platformDeviceID); err != nil || got != platformDeviceID {
+		t.Fatalf("generated identity = %q, %v", got, err)
+	}
+	requested := "caller-owned"
+	if _, err := NormalizeDeviceIdentity(&requested, platformDeviceID); err == nil {
+		t.Fatal("accepted caller-provided identity")
+	}
+	if _, err := NormalizeDeviceIdentity(nil, ""); err == nil {
+		t.Fatal("accepted missing platform Device identity")
+	}
+}
+
 func TestAdapterResultMatrix(t *testing.T) {
 	tests := []struct {
 		outcome      domain.SimulatorOutcome
@@ -72,7 +86,7 @@ func TestAdapterRejectsMissingOrInvalidClaimSnapshot(t *testing.T) {
 		dispatchRequest(domain.SimulatorOutcome("future"), 0, 1),
 		dispatchRequest(domain.SimulatorOutcomeProviderAccepted, 60001, 1),
 		dispatchRequest(domain.SimulatorOutcomeProviderAccepted, 0, 0),
-		{ProviderDeviceID: "device", Action: "unlock", Payload: map[string]any{}, ProviderRequestKey: "1"},
+		{ProviderDeviceID: "device", ProviderProfile: domain.ProviderProfileSimulatorV1, Action: "unlock", Payload: map[string]any{}, ProviderRequestKey: "1"},
 	}
 	for _, request := range requests {
 		if _, err := NewAdapter().Prepare(request); err == nil {
@@ -83,7 +97,8 @@ func TestAdapterRejectsMissingOrInvalidClaimSnapshot(t *testing.T) {
 
 func dispatchRequest(outcome domain.SimulatorOutcome, delayMS, version int64) provideradapter.DispatchRequest {
 	return provideradapter.DispatchRequest{
-		ProviderDeviceID: "92000000-0000-4000-8000-000000000001", Action: "unlock",
+		ProviderDeviceID: "92000000-0000-4000-8000-000000000001",
+		ProviderProfile:  domain.ProviderProfileSimulatorV1, Action: "unlock",
 		Payload: map[string]any{}, ProviderRequestKey: "123",
 		AttemptRequestSummary: map[string]any{
 			summaryOutcomeKey: outcome, summaryDelayKey: delayMS, summaryVersionKey: version,

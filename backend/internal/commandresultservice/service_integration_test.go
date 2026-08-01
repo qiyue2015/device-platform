@@ -142,8 +142,9 @@ func seedResultCommand(t *testing.T, ctx context.Context, store *repository.Post
 		}
 		if err := tx.Devices().Create(ctx, domain.Device{
 			ID: resultDeviceID, ProjectID: resultProjectID, DeviceTypeID: deviceType.ID, Name: "Result Simulator",
-			ProviderCode: domain.ProviderCodeSimulator, ProviderDeviceID: resultDeviceID,
-			AccessType: domain.AccessTypeSimulator, TransportProtocol: domain.TransportProtocolInternal,
+			ProviderCode: domain.ProviderCodeSimulator, ProviderProfile: domain.ProviderProfileSimulatorV1,
+			ProviderDeviceID: resultDeviceID,
+			AccessType:       domain.AccessTypeSimulator, TransportProtocol: domain.TransportProtocolInternal,
 			Adapter: domain.AdapterSimulator, ConnectionStatus: domain.ConnectionStatusUnknown,
 			LifecycleStatus: domain.LifecycleStatusActive, CreatedAt: queuedAt, UpdatedAt: queuedAt,
 		}); err != nil {
@@ -152,7 +153,7 @@ func seedResultCommand(t *testing.T, ctx context.Context, store *repository.Post
 		return tx.Commands().Create(ctx, domain.Command{
 			ID: resultCommandID, ProjectID: resultProjectID, DeviceID: resultDeviceID, DeviceTypeID: deviceType.ID,
 			DeviceTypeCode: domain.DeviceTypeSmartLock, ProviderCode: domain.ProviderCodeSimulator,
-			ProviderDeviceID: resultDeviceID, Adapter: domain.AdapterSimulator,
+			ProviderProfile: domain.ProviderProfileSimulatorV1, ProviderDeviceID: resultDeviceID, Adapter: domain.AdapterSimulator,
 			CommandType: "query_status", Payload: map[string]any{}, DeviceTypeRevision: domain.DeviceTypeSmartLockRevision,
 			DeliveryPolicy: domain.DeliveryPolicyDispatchOnce, DispatchDeadline: 30 * time.Second,
 			ProviderTimeout: 10 * time.Second, ResultTimeout: time.Minute, RetryAllowed: false,
@@ -192,7 +193,7 @@ func withResultDatabase(t *testing.T, fn func(*sql.DB, *repository.PostgresStore
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimPrefix(parsed.Path, "/") != "device_platform_test" {
+	if !strings.HasSuffix(strings.TrimPrefix(parsed.Path, "/"), "_test") {
 		t.Fatalf("refusing CommandResult integration test against database %q", parsed.Path)
 	}
 	admin, err := sql.Open("postgres", baseURL)

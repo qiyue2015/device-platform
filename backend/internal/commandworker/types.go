@@ -13,7 +13,7 @@ import (
 
 var (
 	ErrInvalidConfig = errors.New("invalid Command worker configuration")
-	ErrLeaseLost     = errors.New("Command worker lease lost")
+	ErrLeaseLost     = errors.New("command worker lease lost")
 	ErrRuntimeState  = errors.New("invalid persistent Command runtime state")
 )
 

@@ -3,6 +3,7 @@ package deviceservice
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/qiyue2015/device-platform/internal/domain"
@@ -18,33 +19,48 @@ func (inertStore) TransactDevice(context.Context, func(repository.DeviceTx) erro
 	return nil
 }
 
-func TestProviderRegistryIsFixedAndEvidenceConservative(t *testing.T) {
-	tests := []struct {
-		name       string
-		config     Config
-		wantWWTIOT domain.ProviderIntegrationStatus
-	}{
-		{name: "missing credentials", config: Config{WWTIOTEndpoint: "https://gps.example.test/api/"}, wantWWTIOT: domain.ProviderIntegrationUnconfigured},
-		{name: "endpoint userinfo", config: Config{WWTIOTEndpoint: "https://user@gps.example.test/api/", WWTIOTUserID: "id", WWTIOTUserKey: "key"}, wantWWTIOT: domain.ProviderIntegrationUnconfigured},
-		{name: "endpoint query", config: Config{WWTIOTEndpoint: "https://gps.example.test/api/?x=1", WWTIOTUserID: "id", WWTIOTUserKey: "key"}, wantWWTIOT: domain.ProviderIntegrationUnconfigured},
-		{name: "blank user id", config: Config{WWTIOTEndpoint: "https://gps.example.test/api/", WWTIOTUserID: "  ", WWTIOTUserKey: "key"}, wantWWTIOT: domain.ProviderIntegrationUnconfigured},
-		{name: "complete unverified", config: Config{WWTIOTEndpoint: "https://gps.example.test/api/", WWTIOTUserID: " id ", WWTIOTUserKey: " key "}, wantWWTIOT: domain.ProviderIntegrationConfiguredUnverified},
+func TestProviderRegistryUsesInjectedDefinitionsAndOrder(t *testing.T) {
+	registrations := []ProviderRegistration{
+		testProviderRegistration("simulated", "simulated-v1", domain.ProviderIntegrationVerified),
+		testProviderRegistration("direct", "direct-v2", domain.ProviderIntegrationConfiguredUnverified),
 	}
-	for _, test := range tests {
+	service, err := New(inertStore{}, Config{Providers: registrations})
+	if err != nil {
+		t.Fatal(err)
+	}
+	providers := service.ListProviders()
+	if len(providers) != 2 || providers[0].Code != "simulated" || providers[1].Code != "direct" {
+		t.Fatalf("registry = %+v", providers)
+	}
+	if providers[0].IntegrationStatus != domain.ProviderIntegrationVerified ||
+		providers[1].IntegrationStatus != domain.ProviderIntegrationConfiguredUnverified {
+		t.Fatalf("integration status = %+v", providers)
+	}
+	registrations[0].Provider.Profiles[0] = "mutated"
+	registrations[0].Provider.ProfileActions["simulated-v1"][domain.ActionIdentifier("query_status")] = domain.ProviderActionUnsupported
+	providers = service.ListProviders()
+	if providers[0].Profiles[0] != "simulated-v1" ||
+		providers[0].ProfileActions["simulated-v1"][domain.ActionIdentifier("query_status")] != domain.ProviderActionSupported {
+		t.Fatalf("registry retained caller-owned maps: %+v", providers[0])
+	}
+}
+
+func TestProviderRegistryRejectsInvalidDefinitions(t *testing.T) {
+	valid := testProviderRegistration("provider", "profile-v1", domain.ProviderIntegrationUnconfigured)
+	for _, test := range []struct {
+		name          string
+		registrations []ProviderRegistration
+	}{
+		{name: "empty"},
+		{name: "missing identity policy", registrations: []ProviderRegistration{{Provider: valid.Provider}}},
+		{name: "duplicate", registrations: []ProviderRegistration{valid, valid}},
+		{name: "missing profile actions", registrations: []ProviderRegistration{{
+			Provider: Provider{Code: "provider", Profiles: []string{"profile-v1"}}, IdentityPolicy: valid.IdentityPolicy,
+		}}},
+	} {
 		t.Run(test.name, func(t *testing.T) {
-			service, err := New(inertStore{}, test.config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			providers := service.ListProviders()
-			if len(providers) != 2 || providers[0].Code != domain.ProviderCodeSimulator || providers[1].Code != domain.ProviderCodeWWTIOT {
-				t.Fatalf("registry = %+v", providers)
-			}
-			if providers[1].IntegrationStatus != test.wantWWTIOT || providers[1].IntegrationStatus == domain.ProviderIntegrationVerified {
-				t.Fatalf("WWTIOT status = %s", providers[1].IntegrationStatus)
-			}
-			if providers[0].IntegrationStatus != domain.ProviderIntegrationVerified {
-				t.Fatalf("simulator status = %s", providers[0].IntegrationStatus)
+			if _, err := New(inertStore{}, Config{Providers: test.registrations}); err == nil {
+				t.Fatal("accepted invalid Provider registrations")
 			}
 		})
 	}
@@ -63,23 +79,32 @@ func TestPublicDTOsCannotExposeProviderConfiguration(t *testing.T) {
 	}
 }
 
-func TestProviderIdentityValidation(t *testing.T) {
-	valid := "LOCK.alpha_1:zone-2"
-	if got, err := providerIdentity(domain.ProviderCodeWWTIOT, &valid, "ignored"); err != nil || got != valid {
-		t.Fatalf("valid identity = %q, %v", got, err)
-	}
-	for _, invalid := range []string{"", "with space", "锁-1", string(make([]byte, 129))} {
-		if _, err := providerIdentity(domain.ProviderCodeWWTIOT, &invalid, "ignored"); err == nil {
-			t.Fatalf("accepted invalid identity %q", invalid)
+func TestCoreConfigurationHasNoProviderSpecificFields(t *testing.T) {
+	for _, value := range []any{Config{}, ProviderRegistration{}} {
+		typeOf := reflect.TypeOf(value)
+		for index := 0; index < typeOf.NumField(); index++ {
+			name := strings.ToLower(typeOf.Field(index).Name)
+			if strings.Contains(name, "wwtiot") || strings.Contains(name, "omni") {
+				t.Fatalf("%s contains Provider-specific field %s", typeOf.Name(), typeOf.Field(index).Name)
+			}
 		}
 	}
-	simulatorID := "10000000-0000-0000-0000-000000000001"
-	if got, err := providerIdentity(domain.ProviderCodeSimulator, nil, simulatorID); err != nil || got != simulatorID {
-		t.Fatalf("simulator identity = %q, %v", got, err)
-	}
-	empty := ""
-	if _, err := providerIdentity(domain.ProviderCodeSimulator, &empty, simulatorID); err == nil {
-		t.Fatal("simulator accepted caller-provided identity")
+}
+
+func testProviderRegistration(code, profile string, status domain.ProviderIntegrationStatus) ProviderRegistration {
+	return ProviderRegistration{
+		Provider: Provider{
+			Code: code, Name: code, Profiles: []string{profile}, IntegrationStatus: status,
+			ProfileActions: map[string]map[domain.ActionIdentifier]domain.ProviderActionAvailability{
+				profile: {domain.ActionIdentifier("query_status"): domain.ProviderActionSupported},
+			},
+		},
+		IdentityPolicy: DeviceIdentityPolicyFunc(func(requested *string, platformDeviceID string) (string, error) {
+			if requested == nil {
+				return platformDeviceID, nil
+			}
+			return *requested, nil
+		}),
 	}
 }
 

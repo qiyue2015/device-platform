@@ -20,6 +20,16 @@ const (
 
 type Adapter struct{}
 
+func NormalizeDeviceIdentity(requested *string, platformDeviceID string) (string, error) {
+	if requested != nil {
+		return "", fmt.Errorf("provider_device_id is forbidden for simulator")
+	}
+	if strings.TrimSpace(platformDeviceID) == "" {
+		return "", fmt.Errorf("platform Device identity is required")
+	}
+	return platformDeviceID, nil
+}
+
 var _ provideradapter.Adapter = Adapter{}
 
 type preparedDispatch struct {
@@ -47,18 +57,18 @@ func ClaimSnapshot(ctx context.Context, tx repository.CommandTx) (map[string]any
 }
 
 func (Adapter) Prepare(request provideradapter.DispatchRequest) (provideradapter.PreparedDispatch, error) {
-	if strings.TrimSpace(request.ProviderDeviceID) == "" || strings.TrimSpace(request.ProviderRequestKey) == "" ||
+	if request.ProviderProfile != domain.ProviderProfileSimulatorV1 || strings.TrimSpace(request.ProviderDeviceID) == "" || strings.TrimSpace(request.ProviderRequestKey) == "" ||
 		len(request.ProviderRequestKey) > 128 || len(request.Payload) != 0 {
-		return nil, fmt.Errorf("invalid Simulator dispatch request")
+		return nil, provideradapter.NewPrepareError(provideradapter.PrepareRequestInvalid, "invalid Simulator dispatch request")
 	}
 	switch request.Action {
 	case domain.ActionIdentifier("unlock"), domain.ActionIdentifier("lock"), domain.ActionIdentifier("query_status"):
 	default:
-		return nil, fmt.Errorf("unsupported Simulator action")
+		return nil, provideradapter.NewPrepareError(provideradapter.PrepareActionUnsupported, "unsupported Simulator action")
 	}
 	outcome, delay, version, err := parseSnapshot(request.AttemptRequestSummary)
 	if err != nil {
-		return nil, err
+		return nil, provideradapter.NewPrepareError(provideradapter.PrepareRequestInvalid, err.Error())
 	}
 	summary := map[string]any{
 		"action": request.Action, "provider_device_id": request.ProviderDeviceID,

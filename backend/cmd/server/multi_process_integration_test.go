@@ -202,7 +202,7 @@ func TestNewServerProcessRecoversKilledDispatchAfterLeaseExpiry(t *testing.T) {
 		deviceID := processCreateSimulatorDevice(t, crashed.baseURL, token, projectID)
 		processPatchSimulator(t, crashed.baseURL, token, "provider_accepted", 5000)
 		status, envelope, err := processJSONRequest(crashed.baseURL, token, http.MethodPost, "/v1/device-commands",
-			commandCreateBody(projectID, deviceID, "unlock", "killed-dispatch", `{}`))
+			commandCreateBody(projectID, deviceID, "query_status", "killed-dispatch", `{}`))
 		if err != nil || status != http.StatusCreated {
 			t.Fatalf("create crash Command status=%d envelope=%+v err=%v", status, envelope, err)
 		}
@@ -220,17 +220,18 @@ func TestNewServerProcessRecoversKilledDispatchAfterLeaseExpiry(t *testing.T) {
 		recovered := startProcessServer(t, databaseURL, redisURL)
 		defer recovered.kill(t)
 		waitForProcessState(t, 20*time.Second, func() (bool, error) {
-			var commandStatus, reasonCode, phase, outcome string
+			var commandStatus, phase string
+			var commandReason, outcome, attemptReason sql.NullString
 			var attemptCount int
 			err := db.QueryRow(`
-				SELECT c.status, c.reason_code, a.phase, a.outcome,
+				SELECT c.status, c.reason_code, a.phase, a.outcome, a.reason_code,
 					(SELECT count(*) FROM device_command_attempts WHERE command_id = c.id)
 				FROM device_commands c
 				JOIN device_command_attempts a ON a.command_id = c.id
 				WHERE c.id = $1
-			`, command.ID).Scan(&commandStatus, &reasonCode, &phase, &outcome, &attemptCount)
-			return commandStatus == "unknown" && reasonCode == "provider_delivery_unknown" &&
-				phase == "completed" && outcome == "transport_error_after_send" && attemptCount == 1, err
+			`, command.ID).Scan(&commandStatus, &commandReason, &phase, &outcome, &attemptReason, &attemptCount)
+			return commandStatus == "sent" && !commandReason.Valid && phase == "completed" &&
+				outcome.String == "indeterminate" && attemptReason.String == "provider_delivery_unknown" && attemptCount == 1, err
 		})
 	})
 }
@@ -380,7 +381,7 @@ func processCreateProject(t *testing.T, baseURL, token, webhookURL string) strin
 
 func processCreateSimulatorDevice(t *testing.T, baseURL, token, projectID string) string {
 	t.Helper()
-	body := `{"project_id":"` + projectID + `","name":"Process Lock","device_type_code":"smart-lock","provider_code":"simulator"}`
+	body := `{"project_id":"` + projectID + `","name":"Process Lock","device_type_code":"smart-lock","provider_code":"simulator","provider_profile":"simulator-v1"}`
 	status, envelope, err := processJSONRequest(baseURL, token, http.MethodPost, "/v1/devices", body)
 	if err != nil || status != http.StatusCreated {
 		t.Fatalf("create process Device status=%d envelope=%+v err=%v", status, envelope, err)

@@ -19,8 +19,10 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/qiyue2015/device-platform/internal/cloudapi/wwtiot"
 	"github.com/qiyue2015/device-platform/internal/deviceservice"
 	"github.com/qiyue2015/device-platform/internal/domain"
+	"github.com/qiyue2015/device-platform/internal/simulator"
 	"github.com/qiyue2015/device-platform/internal/storage"
 	"github.com/qiyue2015/device-platform/internal/storage/repository"
 )
@@ -46,6 +48,7 @@ func TestDeviceServicePostgresLifecycleScopeAndState(t *testing.T) {
 		projectMetadata := deviceservice.RequestMetadata{ActorType: domain.ActorTypeProject, ActorID: projectOneID, RequestID: "request-open"}
 		if _, err := service.Create(ctx, deviceservice.ProjectScope(projectOneID), deviceservice.CreateRequest{
 			Name: "Forbidden Open Create", DeviceTypeCode: domain.DeviceTypeSmartLock, ProviderCode: domain.ProviderCodeSimulator,
+			ProviderProfile: domain.ProviderProfileSimulatorV1,
 		}, projectMetadata); !errors.Is(err, deviceservice.ErrInvalidRequest) {
 			t.Fatalf("Open Device create error = %v", err)
 		}
@@ -61,7 +64,8 @@ func TestDeviceServicePostgresLifecycleScopeAndState(t *testing.T) {
 		wwtiotID := "LOCK-001"
 		created, err := service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
 			ProjectID: projectOneID, Name: "  Front Lock  ", DeviceTypeCode: domain.DeviceTypeSmartLock,
-			ProviderCode: domain.ProviderCodeWWTIOT, ProviderDeviceID: &wwtiotID,
+			ProviderCode: domain.ProviderCodeWWTIOT, ProviderProfile: domain.ProviderProfileWWTIOTV2,
+			ProviderDeviceID: &wwtiotID,
 		}, metadata)
 		if err != nil {
 			t.Fatal(err)
@@ -92,7 +96,7 @@ func TestDeviceServicePostgresLifecycleScopeAndState(t *testing.T) {
 		}
 		simulator, err := service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
 			ProjectID: projectOneID, Name: "Simulator", DeviceTypeCode: domain.DeviceTypeSmartLock,
-			ProviderCode: domain.ProviderCodeSimulator,
+			ProviderCode: domain.ProviderCodeSimulator, ProviderProfile: domain.ProviderProfileSimulatorV1,
 		}, metadata)
 		if err != nil || simulator.ProviderDeviceID != simulator.ID || simulator.AccessType != domain.AccessTypeSimulator || simulator.Adapter != domain.AdapterSimulator {
 			t.Fatalf("simulator Device = %+v, %v", simulator, err)
@@ -190,12 +194,13 @@ func TestDeviceServicePostgresLifecycleScopeAndState(t *testing.T) {
 			t.Fatalf("deleted historical read = %+v, %v", historical, err)
 		}
 
-		replacement, err := service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
+		_, err = service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
 			ProjectID: projectTwoID, Name: "Replacement", DeviceTypeCode: domain.DeviceTypeSmartLock,
-			ProviderCode: domain.ProviderCodeWWTIOT, ProviderDeviceID: &wwtiotID,
+			ProviderCode: domain.ProviderCodeWWTIOT, ProviderProfile: domain.ProviderProfileWWTIOTV2,
+			ProviderDeviceID: &wwtiotID,
 		}, metadata)
-		if err != nil || replacement.ProjectID != projectTwoID {
-			t.Fatalf("released Provider identity = %+v, %v", replacement, err)
+		if !errors.Is(err, deviceservice.ErrProviderDeviceConflict) {
+			t.Fatalf("deleted Provider identity was reused: %v", err)
 		}
 		var unconfiguredDeliveries int
 		if err := db.QueryRow(`SELECT count(*) FROM webhook_deliveries WHERE project_id = $1`, projectTwoID).Scan(&unconfiguredDeliveries); err != nil || unconfiguredDeliveries != 0 {
@@ -233,7 +238,8 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 				defer wait.Done()
 				_, err := service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
 					ProjectID: projectID, Name: projectID, DeviceTypeCode: domain.DeviceTypeSmartLock,
-					ProviderCode: domain.ProviderCodeWWTIOT, ProviderDeviceID: &providerID,
+					ProviderCode: domain.ProviderCodeWWTIOT, ProviderProfile: domain.ProviderProfileWWTIOTV2,
+					ProviderDeviceID: &providerID,
 				}, metadata)
 				results <- err
 			}(projectID)
@@ -295,7 +301,8 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 		rollbackProviderID := "ROLLBACK-DELIVERY"
 		if _, err := service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
 			ProjectID: projectOneID, Name: "Must Roll Back", DeviceTypeCode: domain.DeviceTypeSmartLock,
-			ProviderCode: domain.ProviderCodeWWTIOT, ProviderDeviceID: &rollbackProviderID,
+			ProviderCode: domain.ProviderCodeWWTIOT, ProviderProfile: domain.ProviderProfileWWTIOTV2,
+			ProviderDeviceID: &rollbackProviderID,
 		}, metadata); err == nil {
 			t.Fatal("Device create committed without configured Webhook Delivery")
 		}
@@ -313,7 +320,8 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 		rollbackAuditProviderID := "ROLLBACK-AUDIT"
 		if _, err := service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
 			ProjectID: projectOneID, Name: "Must Roll Back Audit", DeviceTypeCode: domain.DeviceTypeSmartLock,
-			ProviderCode: domain.ProviderCodeWWTIOT, ProviderDeviceID: &rollbackAuditProviderID,
+			ProviderCode: domain.ProviderCodeWWTIOT, ProviderProfile: domain.ProviderProfileWWTIOTV2,
+			ProviderDeviceID: &rollbackAuditProviderID,
 		}, metadata); err == nil {
 			t.Fatal("Device create committed without Audit")
 		}
@@ -384,7 +392,8 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 		}
 		if _, err := service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
 			ProjectID: conflictingProject, Name: "Still Conflicts", DeviceTypeCode: domain.DeviceTypeSmartLock,
-			ProviderCode: domain.ProviderCodeWWTIOT, ProviderDeviceID: &providerID,
+			ProviderCode: domain.ProviderCodeWWTIOT, ProviderProfile: domain.ProviderProfileWWTIOTV2,
+			ProviderDeviceID: &providerID,
 		}, metadata); !errors.Is(err, deviceservice.ErrProviderDeviceConflict) {
 			t.Fatalf("rolled-back delete released Provider identity: %v", err)
 		}
@@ -393,8 +402,32 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 
 func newService(t *testing.T, store repository.DeviceStore) *deviceservice.Service {
 	t.Helper()
+	allActions := map[domain.ActionIdentifier]domain.ProviderActionAvailability{
+		domain.ActionIdentifier("unlock"):       domain.ProviderActionSupported,
+		domain.ActionIdentifier("lock"):         domain.ProviderActionSupported,
+		domain.ActionIdentifier("query_status"): domain.ProviderActionSupported,
+	}
 	service, err := deviceservice.New(store, deviceservice.Config{
-		WWTIOTEndpoint: "https://gps.example.test/api/", WWTIOTUserID: "test-user", WWTIOTUserKey: "top-secret-key",
+		Providers: []deviceservice.ProviderRegistration{
+			{
+				Provider: deviceservice.Provider{
+					Code: domain.ProviderCodeSimulator, AccessType: domain.AccessTypeSimulator,
+					TransportProtocol: domain.TransportProtocolInternal, Adapter: domain.AdapterSimulator,
+					Profiles: []string{domain.ProviderProfileSimulatorV1}, IntegrationStatus: domain.ProviderIntegrationVerified,
+					ProfileActions: map[string]map[domain.ActionIdentifier]domain.ProviderActionAvailability{domain.ProviderProfileSimulatorV1: allActions},
+				},
+				IdentityPolicy: deviceservice.DeviceIdentityPolicyFunc(simulator.NormalizeDeviceIdentity),
+			},
+			{
+				Provider: deviceservice.Provider{
+					Code: domain.ProviderCodeWWTIOT, AccessType: domain.AccessTypeCloudAPI,
+					TransportProtocol: domain.TransportProtocolHTTP, Adapter: domain.AdapterWWTIOTCloudAPI,
+					Profiles: []string{domain.ProviderProfileWWTIOTV2}, IntegrationStatus: domain.ProviderIntegrationConfiguredUnverified,
+					ProfileActions: map[string]map[domain.ActionIdentifier]domain.ProviderActionAvailability{domain.ProviderProfileWWTIOTV2: allActions},
+				},
+				IdentityPolicy: deviceservice.DeviceIdentityPolicyFunc(wwtiot.NormalizeDeviceIdentity),
+			},
+		},
 		Random: rand.Reader, Clock: fixedClock{now: time.Date(2026, 7, 31, 16, 0, 0, 0, time.UTC)},
 	})
 	if err != nil {
@@ -435,10 +468,11 @@ func insertVerifiedState(t *testing.T, db *sql.DB, device deviceservice.Device, 
 	rawMessageID := "40000000-0000-0000-0000-000000000001"
 	if _, err := db.Exec(`
 		INSERT INTO device_raw_messages (
-			id, device_id, provider_code, provider_device_id, access_type, transport_protocol,
-			adapter, direction, headers, body, deduplication_key, received_at, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, 'inbound', '{}'::jsonb, $8, 'state-1', $9, $9)
-	`, rawMessageID, device.ID, device.ProviderCode, device.ProviderDeviceID, device.AccessType, device.TransportProtocol, device.Adapter, []byte(`{"lockstatus":0}`), observedAt); err != nil {
+			id, device_id, provider_code, provider_profile, provider_device_id, access_type, transport_protocol,
+			adapter, evidence_status, direction, headers, body, deduplication_key, received_at, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'verified', 'inbound', '{}'::jsonb, $9, 'state-1', $10, $10)
+	`, rawMessageID, device.ID, device.ProviderCode, device.ProviderProfile, device.ProviderDeviceID,
+		device.AccessType, device.TransportProtocol, device.Adapter, []byte(`{"lockstatus":0}`), observedAt); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`

@@ -104,5 +104,10 @@ func recoveryOnlyConfig() config {
 		WWTIOTAPIURL:          envDefault("WWTIOT_API_URL", "http://gps.wwtiot.com/api/"),
 		WWTIOTUserID:          strings.TrimSpace(os.Getenv("WWTIOT_USER_ID")),
 		WWTIOTUserKey:         os.Getenv("WWTIOT_USER_KEY"),
+		OmniBikeListenAddr:    strings.TrimSpace(os.Getenv("OMNI_BIKE_LISTEN_ADDR")),
+		OmniIoTListenAddr:     strings.TrimSpace(os.Getenv("OMNI_IOT_LISTEN_ADDR")),
+		OmniMaxFrameBytes:     4096,
+		OmniMaxConnections:    256,
+		OmniReadTimeout:       5 * time.Minute,
 	}
 }

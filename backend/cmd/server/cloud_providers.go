@@ -114,7 +114,7 @@ func (a *app) providerResponses() ([]v1.ProviderResponse, error) {
 			result = append(result, v1.ProviderResponse{
 				Code: provider.Code, Name: provider.Name, AccessType: provider.AccessType,
 				TransportProtocol: provider.TransportProtocol, Adapter: provider.Adapter,
-				IntegrationStatus: provider.IntegrationStatus,
+				Profiles: provider.Profiles, IntegrationStatus: provider.IntegrationStatus,
 			})
 		}
 		return result, nil
@@ -123,15 +123,27 @@ func (a *app) providerResponses() ([]v1.ProviderResponse, error) {
 	if client, ok := a.cloudProviders.WWTIOTClient(domain.ProviderCodeWWTIOT); ok && client.Configured() {
 		wwtiotStatus = domain.ProviderIntegrationConfiguredUnverified
 	}
+	omniStatus := domain.ProviderIntegrationUnconfigured
+	if strings.TrimSpace(a.runtimeConfig().OmniBikeListenAddr) != "" && strings.TrimSpace(a.runtimeConfig().OmniIoTListenAddr) != "" {
+		omniStatus = domain.ProviderIntegrationConfiguredUnverified
+	}
 	return []v1.ProviderResponse{
 		{
 			Code: domain.ProviderCodeSimulator, Name: "Simulator", AccessType: domain.AccessTypeSimulator,
 			TransportProtocol: domain.TransportProtocolInternal, Adapter: domain.AdapterSimulator,
+			Profiles:          []string{domain.ProviderProfileSimulatorV1},
 			IntegrationStatus: domain.ProviderIntegrationVerified,
+		},
+		{
+			Code: domain.ProviderCodeOmni, Name: "Omni", AccessType: domain.AccessTypeDirectDevice,
+			TransportProtocol: domain.TransportProtocolTCP, Adapter: domain.AdapterOmniDirectTCP,
+			Profiles:          []string{domain.ProviderProfileOmniBikeV207, domain.ProviderProfileOmniIoTV135},
+			IntegrationStatus: omniStatus,
 		},
 		{
 			Code: domain.ProviderCodeWWTIOT, Name: "WWTIOT", AccessType: domain.AccessTypeCloudAPI,
 			TransportProtocol: domain.TransportProtocolHTTP, Adapter: domain.AdapterWWTIOTCloudAPI,
+			Profiles:          []string{domain.ProviderProfileWWTIOTV2},
 			IntegrationStatus: wwtiotStatus,
 		},
 	}, nil

@@ -80,10 +80,26 @@ func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest
 	}
 	var result CreateResult
 	err = s.store.TransactCommand(ctx, func(tx repository.CommandTx) error {
+		if replay, found, replayErr := findIdempotentReplay(
+			ctx, tx.Commands(), projectID, idempotencyKey, deviceID, commandType, payload,
+		); replayErr != nil {
+			return replayErr
+		} else if found {
+			result = replay
+			return nil
+		}
 		if _, lockErr := tx.Projects().GetForUpdate(ctx, projectID); errors.Is(lockErr, sql.ErrNoRows) {
 			return ErrProjectNotFound
 		} else if lockErr != nil {
 			return lockErr
+		}
+		if replay, found, replayErr := findIdempotentReplay(
+			ctx, tx.Commands(), projectID, idempotencyKey, deviceID, commandType, payload,
+		); replayErr != nil {
+			return replayErr
+		} else if found {
+			result = replay
+			return nil
 		}
 		device, deviceErr := tx.Devices().GetForUpdate(ctx, deviceID)
 		if errors.Is(deviceErr, sql.ErrNoRows) || deviceErr == nil && device.ProjectID != projectID {
@@ -118,20 +134,22 @@ func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest
 			provider.Code != device.ProviderCode || provider.Adapter != device.Adapter {
 			return ErrProviderNotConfigured
 		}
+		profileActions, registeredProfile := provider.ProfileActions[device.ProviderProfile]
+		if !registeredProfile {
+			return ErrProviderNotConfigured
+		}
+		switch profileActions[commandType] {
+		case domain.ProviderActionSupported:
+		case domain.ProviderActionUnsupported:
+			return ErrProviderActionUnsupported
+		case domain.ProviderActionMappingUnknown:
+			return ErrProviderMappingUnknown
+		default:
+			return ErrProviderNotConfigured
+		}
 		requestHash, hashErr := canonicalRequestHash(device, commandType, payload, profile.Revision, action)
 		if hashErr != nil {
 			return hashErr
-		}
-		existing, existingErr := tx.Commands().GetByIdempotencyKey(ctx, projectID, idempotencyKey)
-		if existingErr == nil {
-			if !bytes.Equal(existing.RequestHash, requestHash) {
-				return ErrIdempotencyKeyConflict
-			}
-			result = CreateResult{Command: existing, IdempotentReplay: true}
-			return nil
-		}
-		if !errors.Is(existingErr, sql.ErrNoRows) {
-			return existingErr
 		}
 		if action.DeliveryPolicy == domain.DeliveryPolicyOnlineOnly && device.ConnectionStatus != domain.ConnectionStatusOnline {
 			return ErrDeviceNotOnline
@@ -144,7 +162,7 @@ func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest
 		command := domain.Command{
 			ID: commandID, ProjectID: projectID, DeviceID: device.ID, DeviceTypeID: deviceType.ID,
 			DeviceTypeCode: deviceType.Code, ProviderCode: device.ProviderCode,
-			ProviderDeviceID: device.ProviderDeviceID, Adapter: device.Adapter,
+			ProviderProfile: device.ProviderProfile, ProviderDeviceID: device.ProviderDeviceID, Adapter: device.Adapter,
 			CommandType: commandType, Payload: payload, DeviceTypeRevision: profile.Revision,
 			DeliveryPolicy: action.DeliveryPolicy, DispatchDeadline: action.DispatchDeadline,
 			ProviderTimeout: action.ProviderRequestTimeout, ResultTimeout: action.ResultObservationTimeout,
@@ -168,6 +186,34 @@ func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest
 		return nil
 	})
 	return result, err
+}
+
+func findIdempotentReplay(
+	ctx context.Context,
+	commands repository.CommandQueries,
+	projectID, idempotencyKey, deviceID string,
+	commandType domain.ActionIdentifier,
+	payload map[string]any,
+) (CreateResult, bool, error) {
+	existing, err := commands.GetByIdempotencyKey(ctx, projectID, idempotencyKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return CreateResult{}, false, nil
+	}
+	if err != nil {
+		return CreateResult{}, false, err
+	}
+	existingPayload, err := json.Marshal(existing.Payload)
+	if err != nil {
+		return CreateResult{}, false, fmt.Errorf("encode historical Command payload: %w", err)
+	}
+	requestPayload, err := json.Marshal(payload)
+	if err != nil {
+		return CreateResult{}, false, fmt.Errorf("encode replay Command payload: %w", err)
+	}
+	if existing.DeviceID != deviceID || existing.CommandType != commandType || !bytes.Equal(existingPayload, requestPayload) {
+		return CreateResult{}, false, ErrIdempotencyKeyConflict
+	}
+	return CreateResult{Command: existing, IdempotentReplay: true}, true, nil
 }
 
 func (s *Service) List(ctx context.Context, scope Scope, request ListRequest) (ListResult, error) {
@@ -289,6 +335,7 @@ func canonicalRequestHash(device domain.Device, commandType domain.ActionIdentif
 		"dispatch_deadline_ms":          action.DispatchDeadline.Milliseconds(),
 		"normalized_payload":            payload,
 		"provider_code":                 device.ProviderCode,
+		"provider_profile":              device.ProviderProfile,
 		"provider_device_id":            device.ProviderDeviceID,
 		"provider_request_timeout_ms":   action.ProviderRequestTimeout.Milliseconds(),
 		"result_observation_timeout_ms": action.ResultObservationTimeout.Milliseconds(),

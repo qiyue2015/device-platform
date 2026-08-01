@@ -79,6 +79,7 @@ func TestPostgresProjectDeviceRepositories(t *testing.T) {
 				DeviceTypeID:      deviceType.ID,
 				Name:              "WWTIOT Lock",
 				ProviderCode:      domain.ProviderCodeWWTIOT,
+				ProviderProfile:   domain.ProviderProfileWWTIOTV2,
 				ProviderDeviceID:  "LOCK-001",
 				AccessType:        domain.AccessTypeCloudAPI,
 				TransportProtocol: domain.TransportProtocolHTTP,
@@ -96,6 +97,7 @@ func TestPostgresProjectDeviceRepositories(t *testing.T) {
 				DeviceTypeID:      deviceType.ID,
 				Name:              "Simulator Lock",
 				ProviderCode:      domain.ProviderCodeSimulator,
+				ProviderProfile:   domain.ProviderProfileSimulatorV1,
 				ProviderDeviceID:  simulatorDeviceID,
 				AccessType:        domain.AccessTypeSimulator,
 				TransportProtocol: domain.TransportProtocolInternal,
@@ -154,6 +156,7 @@ func TestPostgresProjectDeviceRepositories(t *testing.T) {
 				DeviceTypeID:      deviceType.ID,
 				Name:              "Conflicting Lock",
 				ProviderCode:      domain.ProviderCodeWWTIOT,
+				ProviderProfile:   domain.ProviderProfileWWTIOTV2,
 				ProviderDeviceID:  "LOCK-001",
 				AccessType:        domain.AccessTypeCloudAPI,
 				TransportProtocol: domain.TransportProtocolHTTP,
@@ -187,8 +190,9 @@ func TestPostgresProjectDeviceRepositories(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.Devices().GetByProviderIdentity(ctx, domain.ProviderCodeWWTIOT, "LOCK-001"); !errors.Is(err, sql.ErrNoRows) {
-			t.Fatalf("deleted Provider identity must not resolve, got %v", err)
+		deletedDevice, err := store.Devices().GetByProviderIdentity(ctx, domain.ProviderCodeWWTIOT, "LOCK-001")
+		if err != nil || deletedDevice.ID != wwtiotDeviceID || deletedDevice.LifecycleStatus != domain.LifecycleStatusDeleted {
+			t.Fatalf("Provider identity tombstone lookup failed: device=%+v err=%v", deletedDevice, err)
 		}
 
 		err = store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
@@ -198,7 +202,30 @@ func TestPostgresProjectDeviceRepositories(t *testing.T) {
 				DeviceTypeID:      deviceType.ID,
 				Name:              "Replacement Lock",
 				ProviderCode:      domain.ProviderCodeWWTIOT,
+				ProviderProfile:   domain.ProviderProfileWWTIOTV2,
 				ProviderDeviceID:  "LOCK-001",
+				AccessType:        domain.AccessTypeCloudAPI,
+				TransportProtocol: domain.TransportProtocolHTTP,
+				Adapter:           domain.AdapterWWTIOTCloudAPI,
+				ConnectionStatus:  domain.ConnectionStatusUnknown,
+				LifecycleStatus:   domain.LifecycleStatusActive,
+				CreatedAt:         now,
+				UpdatedAt:         now,
+			})
+		})
+		if !errors.As(err, &pqErr) || pqErr.Code != "23505" {
+			t.Fatalf("deleted Provider identity reuse error = %v", err)
+		}
+
+		err = store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
+			return tx.Devices().Create(ctx, domain.Device{
+				ID:                replacementDeviceID,
+				ProjectID:         projectTwoID,
+				DeviceTypeID:      deviceType.ID,
+				Name:              "Replacement Lock",
+				ProviderCode:      domain.ProviderCodeWWTIOT,
+				ProviderProfile:   domain.ProviderProfileWWTIOTV2,
+				ProviderDeviceID:  "LOCK-002",
 				AccessType:        domain.AccessTypeCloudAPI,
 				TransportProtocol: domain.TransportProtocolHTTP,
 				Adapter:           domain.AdapterWWTIOTCloudAPI,
@@ -211,12 +238,12 @@ func TestPostgresProjectDeviceRepositories(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mapped, err := store.Devices().GetByProviderIdentity(ctx, domain.ProviderCodeWWTIOT, "LOCK-001")
+		mapped, err := store.Devices().GetByProviderIdentity(ctx, domain.ProviderCodeWWTIOT, "LOCK-002")
 		if err != nil || mapped.ID != replacementDeviceID || mapped.ProjectID != projectTwoID {
 			t.Fatalf("replacement Provider identity mapping failed: device=%+v err=%v", mapped, err)
 		}
 
-		rawMessageID := insertTrustedRawMessageFixture(t, db, replacementDeviceID, now)
+		rawMessageID := insertTrustedRawMessageFixture(t, db, replacementDeviceID, "LOCK-002", now)
 		err = store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
 			locked, err := tx.Devices().GetForUpdate(ctx, replacementDeviceID)
 			if err != nil || locked.Name != "Replacement Lock" {
@@ -307,17 +334,17 @@ func TestPostgresStoreRollsBackProjectDeviceTransaction(t *testing.T) {
 	})
 }
 
-func insertTrustedRawMessageFixture(t *testing.T, db *sql.DB, deviceID string, now time.Time) string {
+func insertTrustedRawMessageFixture(t *testing.T, db *sql.DB, deviceID, providerDeviceID string, now time.Time) string {
 	t.Helper()
 	rawMessageID := "40000000-0000-0000-0000-000000000001"
 	if _, err := db.Exec(`
 		INSERT INTO device_raw_messages (
-			id, device_id, provider_code, provider_device_id, access_type,
-			transport_protocol, adapter, direction, headers, body,
+			id, device_id, provider_code, provider_profile, provider_device_id, access_type,
+			transport_protocol, adapter, evidence_status, direction, headers, body,
 			deduplication_key, received_at, created_at
-		) VALUES ($1, $2, 'wwtiot', 'LOCK-001', 'cloud_api', 'http',
-			'wwtiot_cloud_api', 'inbound', '{}'::jsonb, $3, 'callback-1', $4, $4)
-	`, rawMessageID, deviceID, []byte(`{"lockstatus":0}`), now); err != nil {
+		) VALUES ($1, $2, 'wwtiot', 'wwtiot-cloud-api-v2', $3, 'cloud_api', 'http',
+			'wwtiot_cloud_api', 'verified', 'inbound', '{}'::jsonb, $4, 'callback-1', $5, $5)
+	`, rawMessageID, deviceID, providerDeviceID, []byte(`{"lockstatus":0}`), now); err != nil {
 		t.Fatal(err)
 	}
 	return rawMessageID
