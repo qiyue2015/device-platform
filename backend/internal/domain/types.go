@@ -194,10 +194,17 @@ const (
 type ActorType string
 
 const (
-	ActorTypeAdmin    ActorType = "admin"
+	ActorTypeUser     ActorType = "user"
 	ActorTypeProject  ActorType = "project"
 	ActorTypeProvider ActorType = "provider"
 	ActorTypeSystem   ActorType = "system"
+)
+
+type UserStatus string
+
+const (
+	UserStatusActive   UserStatus = "active"
+	UserStatusDisabled UserStatus = "disabled"
 )
 
 type AuditResult string
@@ -212,7 +219,8 @@ type User struct {
 	Email             string
 	PasswordHash      string
 	DisplayName       string
-	IsAdmin           bool
+	IsSuperAdmin      bool
+	Status            UserStatus
 	SessionGeneration int64
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
@@ -221,6 +229,8 @@ type User struct {
 type Project struct {
 	ID                          string
 	Name                        string
+	ManagerUserID               string
+	Manager                     User
 	APIKeyDigest                []byte
 	WebhookURL                  *string
 	WebhookConfigVersion        int64
@@ -461,6 +471,7 @@ type WebhookDeliveryAttempt struct {
 type AuditLog struct {
 	ID           string
 	ActorType    ActorType
+	ActorUserID  *string
 	ActorID      *string
 	ProjectID    *string
 	Action       string

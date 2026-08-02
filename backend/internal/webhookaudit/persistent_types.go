@@ -5,6 +5,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/qiyue2015/device-platform/internal/access"
 	"github.com/qiyue2015/device-platform/internal/domain"
 )
 
@@ -14,6 +15,7 @@ var (
 	ErrWebhookDeliveryNotDead = errors.New("webhook delivery not dead")
 	ErrWebhookNotConfigured   = errors.New("webhook not configured")
 	ErrIdentifierGeneration   = errors.New("identifier generation failed")
+	ErrForbidden              = errors.New("operation forbidden")
 )
 
 type PersistentConfig struct {
@@ -54,10 +56,12 @@ type AuditListRequest struct {
 }
 
 type ReplayRequest struct {
-	ActorID   string
-	IPAddress string
-	RequestID string
+	ActorUserID string
+	IPAddress   string
+	RequestID   string
 }
+
+type Scope = access.Scope
 
 type ListResult[T any] struct {
 	Items    []T
@@ -107,6 +111,7 @@ type PersistentDeliveryAttempt struct {
 type PersistentAudit struct {
 	ID           string             `json:"id"`
 	ActorType    domain.ActorType   `json:"actor_type"`
+	ActorUserID  *string            `json:"actor_user_id"`
 	ActorID      *string            `json:"actor_id"`
 	ProjectID    *string            `json:"project_id"`
 	Action       string             `json:"action"`

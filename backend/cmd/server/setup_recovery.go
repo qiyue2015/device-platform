@@ -301,7 +301,7 @@ func recoverInstallationLocked(ctx context.Context) error {
 			_ = db.Close()
 			return fmt.Errorf("acquire recovery database lock: %w", err)
 		}
-		_, deleteErr := db.ExecContext(ctx, `DELETE FROM users WHERE id = $1 AND is_admin = true`, journal.AdminID)
+		_, deleteErr := db.ExecContext(ctx, `DELETE FROM users WHERE id = $1 AND is_super_admin = true`, journal.AdminID)
 		if deleteErr == nil {
 			deleteErr = advanceInstallJournal(&journal, installPhaseAdminReverted)
 		}
@@ -329,7 +329,7 @@ func recoverInstallationLocked(ctx context.Context) error {
 
 func rollbackInstallBeforeMarker(ctx context.Context, db *sql.DB, journal *installJournal) error {
 	if journal.Phase == installPhaseAdminPending {
-		if _, err := db.ExecContext(ctx, `DELETE FROM users WHERE id = $1 AND is_admin = true`, journal.AdminID); err != nil {
+		if _, err := db.ExecContext(ctx, `DELETE FROM users WHERE id = $1 AND is_super_admin = true`, journal.AdminID); err != nil {
 			return err
 		}
 		if err := advanceInstallJournal(journal, installPhaseAdminReverted); err != nil {

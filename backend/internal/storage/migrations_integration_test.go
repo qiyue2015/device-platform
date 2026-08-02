@@ -26,7 +26,7 @@ func TestFrozenContractMigrationOnPostgres(t *testing.T) {
 			t.Fatalf("repeat migrations: %v", err)
 		}
 		var count int
-		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 9 {
+		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&count); err != nil || count != 10 {
 			t.Fatalf("migration count = %d, err = %v", count, err)
 		}
 		var profileHash string
@@ -47,6 +47,103 @@ func TestFrozenContractMigrationOnPostgres(t *testing.T) {
 	})
 }
 
+func TestMultiUserAuthorizationMigrationBackfillsAndEnforcesInvariants(t *testing.T) {
+	baseURL := requireMigrationTestDatabase(t)
+	withIsolatedSchema(t, baseURL, func(db *sql.DB) {
+		ctx := context.Background()
+		if err := ApplyMigrations(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+		rollbackMultiUserAuthorizationMigration(t, ctx, db)
+
+		const (
+			adminID   = "70000000-0000-0000-0000-000000000010"
+			projectID = "10000000-0000-0000-0000-000000000010"
+			auditID   = "80000000-0000-0000-0000-000000000010"
+		)
+		if _, err := db.Exec(`
+			INSERT INTO users (id, email, password_hash, display_name, is_admin)
+			VALUES ($1, 'migration-admin@example.test', 'hash', 'Migration Admin', true)
+		`, adminID); err != nil {
+			t.Fatalf("seed pre-010 administrator: %v", err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO projects (id, name, api_key_hash)
+			VALUES ($1, 'pre-010 Project', decode(repeat('10', 32), 'hex'))
+		`, projectID); err != nil {
+			t.Fatalf("seed pre-010 Project: %v", err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO audit_logs (
+				id, actor_type, actor_id, action, result, resource_type,
+				resource_id, metadata, occurred_at
+			) VALUES ($1, 'admin', $2, 'auth.login', 'success', 'auth_session', $2, '{}', now())
+		`, auditID, adminID); err != nil {
+			t.Fatalf("seed pre-010 administrator Audit: %v", err)
+		}
+
+		if err := ApplyMigrations(ctx, db); err != nil {
+			t.Fatalf("apply migration 010: %v", err)
+		}
+		var isSuperAdmin bool
+		var status, managerUserID, actorType, actorUserID string
+		var actorID sql.NullString
+		if err := db.QueryRow(`SELECT is_super_admin, status FROM users WHERE id = $1`, adminID).Scan(&isSuperAdmin, &status); err != nil {
+			t.Fatal(err)
+		}
+		if !isSuperAdmin || status != "active" {
+			t.Fatalf("migrated administrator = super:%v status:%s", isSuperAdmin, status)
+		}
+		if err := db.QueryRow(`SELECT manager_user_id::text FROM projects WHERE id = $1`, projectID).Scan(&managerUserID); err != nil {
+			t.Fatal(err)
+		}
+		if managerUserID != adminID {
+			t.Fatalf("backfilled Project manager = %s, want %s", managerUserID, adminID)
+		}
+		if err := db.QueryRow(`SELECT actor_type, actor_user_id::text, actor_id FROM audit_logs WHERE id = $1`, auditID).
+			Scan(&actorType, &actorUserID, &actorID); err != nil {
+			t.Fatal(err)
+		}
+		if actorType != "user" || actorUserID != adminID || actorID.Valid {
+			t.Fatalf("migrated Audit actor = %s/%s legacy=%v", actorType, actorUserID, actorID)
+		}
+
+		if _, err := db.Exec(`
+			INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status)
+			VALUES ('70000000-0000-0000-0000-000000000011', 'ordinary@example.test', 'hash', 'Ordinary User', false, 'active')
+		`); err != nil {
+			t.Fatalf("migration must allow an ordinary User: %v", err)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status)
+			VALUES ('70000000-0000-0000-0000-000000000012', 'second-admin@example.test', 'hash', 'Second Admin', true, 'active')
+		`); err == nil {
+			t.Fatal("migration allowed a second super administrator")
+		}
+		if _, err := db.Exec(`UPDATE users SET status = 'disabled' WHERE id = $1`, adminID); err == nil {
+			t.Fatal("migration allowed the super administrator to be disabled")
+		}
+		if _, err := db.Exec(`
+			INSERT INTO audit_logs (id, actor_type, action, result, resource_type, metadata, occurred_at)
+			VALUES ('80000000-0000-0000-0000-000000000011', 'user', 'auth.login', 'success', 'auth_session', '{}', now())
+		`); err == nil {
+			t.Fatal("migration allowed a User Audit without actor_user_id")
+		}
+
+		err := RollbackLastMigration(ctx, db)
+		if err == nil || !strings.Contains(err.Error(), "cannot rollback multi-user authorization while multiple Users exist") {
+			t.Fatalf("rollback 010 with multiple Users error = %v", err)
+		}
+		var applied bool
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '010_multi_user_project_authorization')`).Scan(&applied); err != nil {
+			t.Fatal(err)
+		}
+		if !applied {
+			t.Fatal("failed rollback removed migration 010 record")
+		}
+	})
+}
+
 func TestDualProviderMigrationDoesNotUpgradeHistoricalWWTIOTRawMessageEvidence(t *testing.T) {
 	baseURL := requireMigrationTestDatabase(t)
 	withIsolatedSchema(t, baseURL, func(db *sql.DB) {
@@ -63,6 +160,12 @@ func TestDualProviderMigrationDoesNotUpgradeHistoricalWWTIOTRawMessageEvidence(t
 			wwtiotRawID       = "61000000-0000-0000-0000-000000000099"
 			simulatorRawID    = "61000000-0000-0000-0000-000000000100"
 		)
+		if _, err := db.Exec(`
+			INSERT INTO users (id, email, password_hash, display_name, is_admin)
+			VALUES ('70000000-0000-0000-0000-000000000099', 'admin-099@example.test', 'hash', 'Admin 099', true)
+		`); err != nil {
+			t.Fatalf("seed User before 009: %v", err)
+		}
 		if _, err := db.Exec(`
 			INSERT INTO projects (id, name, api_key_hash)
 			VALUES ($1, 'historical raw message migration', decode(repeat('99', 32), 'hex'))
@@ -949,8 +1052,8 @@ func TestMigrationDownRejectsSecurityAndRuntimeState(t *testing.T) {
 	}{
 		{
 			name: "session generation",
-			seed: `INSERT INTO users (id, email, password_hash, display_name, is_admin, session_generation)
-					VALUES ('70000000-0000-0000-0000-000000000001', 'admin@example.test', 'hash', 'Admin', true, 1)`,
+			seed: `INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status, session_generation)
+					VALUES ('70000000-0000-0000-0000-000000000001', 'admin@example.test', 'hash', 'Admin', true, 'active', 1)`,
 		},
 		{
 			name: "auth failures",
@@ -960,8 +1063,10 @@ func TestMigrationDownRejectsSecurityAndRuntimeState(t *testing.T) {
 		{
 			name: "webhook configuration",
 			seed: `
-				INSERT INTO projects (id, name, api_key_hash)
-				VALUES ('72000000-0000-0000-0000-000000000001', 'webhook', decode(repeat('22', 32), 'hex'));
+				INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status)
+				VALUES ('70000000-0000-0000-0000-000000000001', 'admin@example.test', 'hash', 'Admin', true, 'active');
+				INSERT INTO projects (id, name, manager_user_id, api_key_hash)
+				VALUES ('72000000-0000-0000-0000-000000000001', 'webhook', '70000000-0000-0000-0000-000000000001', decode(repeat('22', 32), 'hex'));
 				INSERT INTO project_webhook_secrets (project_id, version, ciphertext, nonce, encryption_key_version)
 				VALUES ('72000000-0000-0000-0000-000000000001', 1, decode(repeat('33', 17), 'hex'), decode(repeat('44', 12), 'hex'), 1);
 				UPDATE projects SET webhook_url = 'https://example.test/hook', webhook_config_version = 1,
@@ -1083,6 +1188,7 @@ func rollbackPlatformCoreV4Migration(t *testing.T, ctx context.Context, db *sql.
 
 func rollbackDualProviderMigration(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
+	rollbackMultiUserAuthorizationMigration(t, ctx, db)
 	var applied bool
 	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '009_dual_provider_smart_lock')`).Scan(&applied); err != nil {
 		t.Fatal(err)
@@ -1094,6 +1200,21 @@ func rollbackDualProviderMigration(t *testing.T, ctx context.Context, db *sql.DB
 		t.Fatalf("rollback 009: %v", err)
 	}
 	assertMigrationNotApplied(t, db, "009_dual_provider_smart_lock")
+}
+
+func rollbackMultiUserAuthorizationMigration(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	var applied bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '010_multi_user_project_authorization')`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if !applied {
+		return
+	}
+	if err := RollbackLastMigration(ctx, db); err != nil {
+		t.Fatalf("rollback 010: %v", err)
+	}
+	assertMigrationNotApplied(t, db, "010_multi_user_project_authorization")
 }
 
 func seedPlatformCoreV3Command(t *testing.T, db *sql.DB, status string) {
@@ -1546,6 +1667,8 @@ func assertSQLFails(t *testing.T, db *sql.DB, statement, description string) {
 }
 
 const legacyBaseFixture = `
+	INSERT INTO users (id, email, password_hash, display_name, is_admin)
+	VALUES ('70000000-0000-0000-0000-000000000001', 'admin@example.test', 'hash', 'Admin', true);
 	INSERT INTO projects (id, name, api_key_hash)
 	VALUES ('10000000-0000-0000-0000-000000000001', 'one', repeat('a', 64));
 	INSERT INTO device_types (id, code, name)

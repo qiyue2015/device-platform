@@ -358,7 +358,7 @@ func processLogin(t *testing.T, baseURL string) string {
 
 func processCreateProject(t *testing.T, baseURL, token, webhookURL string) string {
 	t.Helper()
-	body := map[string]any{"name": "Multi Process Project"}
+	body := map[string]any{"name": "Multi Process Project", "manager_user_id": authTestAdminID}
 	if webhookURL != "" {
 		body["webhook_url"] = webhookURL
 	}

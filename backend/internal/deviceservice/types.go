@@ -5,6 +5,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/qiyue2015/device-platform/internal/access"
 	"github.com/qiyue2015/device-platform/internal/domain"
 )
 
@@ -41,29 +42,28 @@ func (policy DeviceIdentityPolicyFunc) NormalizeDeviceIdentity(requested *string
 	return policy(requested, platformDeviceID)
 }
 
-type ScopeKind string
+type Scope = access.Scope
 
 const (
-	ScopeAdmin   ScopeKind = "admin"
-	ScopeProject ScopeKind = "project"
+	ScopeUser    = access.ScopeUser
+	ScopeProject = access.ScopeProject
 )
 
-type Scope struct {
-	Kind      ScopeKind
-	ProjectID string
+func HumanScope(userID string, isSuperAdmin bool) Scope {
+	if isSuperAdmin {
+		return access.SuperAdmin(userID)
+	}
+	return access.User(userID)
 }
 
-func AdminScope() Scope { return Scope{Kind: ScopeAdmin} }
-
-func ProjectScope(projectID string) Scope {
-	return Scope{Kind: ScopeProject, ProjectID: projectID}
-}
+func ProjectScope(projectID string) Scope { return access.Project(projectID) }
 
 type RequestMetadata struct {
-	ActorType domain.ActorType
-	ActorID   string
-	IPAddress string
-	RequestID string
+	ActorType   domain.ActorType
+	ActorUserID string
+	ActorID     string
+	IPAddress   string
+	RequestID   string
 }
 
 type CapabilityAction struct {

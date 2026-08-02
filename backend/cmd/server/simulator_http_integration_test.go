@@ -42,19 +42,19 @@ func TestPersistentSimulatorHTTPContractAuditAndRestart(t *testing.T) {
 		if updated["outcome"] != "provider_rejected" || updated["delay_ms"] != float64(125) || updated["version"] != float64(2) {
 			t.Fatalf("updated Simulator config=%+v", updated)
 		}
-		var action, actorType, actorID, resourceType, requestID string
+		var action, actorType, actorUserID, resourceType, requestID string
 		var projectID, resourceID sql.NullString
 		var metadata string
 		if err := db.QueryRow(`
-			SELECT action, actor_type, actor_id, project_id, resource_type, resource_id, request_id, metadata::text
+			SELECT action, actor_type, actor_user_id::text, project_id, resource_type, resource_id, request_id, metadata::text
 			FROM audit_logs WHERE action = 'simulator.updated'
-		`).Scan(&action, &actorType, &actorID, &projectID, &resourceType, &resourceID, &requestID, &metadata); err != nil {
+		`).Scan(&action, &actorType, &actorUserID, &projectID, &resourceType, &resourceID, &requestID, &metadata); err != nil {
 			t.Fatal(err)
 		}
-		if action != "simulator.updated" || actorType != "admin" || actorID == "" || resourceType != "simulator" ||
+		if action != "simulator.updated" || actorType != "user" || actorUserID != authTestAdminID || resourceType != "simulator" ||
 			projectID.Valid || resourceID.Valid || requestID == "" || metadata == "" {
 			t.Fatalf("Simulator Audit=%s/%s/%s project=%v resource=%s/%v request=%q metadata=%s",
-				action, actorType, actorID, projectID, resourceType, resourceID, requestID, metadata)
+				action, actorType, actorUserID, projectID, resourceType, resourceID, requestID, metadata)
 		}
 
 		restarted := newProjectHTTPTestServer(t, db)

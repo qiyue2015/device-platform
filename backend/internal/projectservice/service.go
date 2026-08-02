@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/qiyue2015/device-platform/internal/access"
 	"github.com/qiyue2015/device-platform/internal/domain"
 	"github.com/qiyue2015/device-platform/internal/storage/repository"
 )
@@ -22,6 +23,8 @@ const (
 	apiKeyPrefix        = "dp_"
 	webhookSecretPrefix = "whsec_"
 )
+
+var errTransferRetry = errors.New("Project manager changed while acquiring locks")
 
 type Service struct {
 	store                      repository.ProjectStore
@@ -60,7 +63,16 @@ func New(store repository.ProjectStore, config Config) (*Service, error) {
 	}, nil
 }
 
-func (s *Service) Create(ctx context.Context, request CreateRequest, metadata RequestMetadata) (CredentialResult, error) {
+func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest, metadata RequestMetadata) (CredentialResult, error) {
+	if err := validateHumanScope(scope); err != nil {
+		return CredentialResult{}, err
+	}
+	if !scope.IsSuperAdmin() {
+		return CredentialResult{}, ErrForbidden
+	}
+	if !validUUID(request.ManagerUserID) {
+		return CredentialResult{}, ErrInvalidRequest
+	}
 	name, err := normalizeName(request.Name)
 	if err != nil {
 		return CredentialResult{}, err
@@ -76,6 +88,9 @@ func (s *Service) Create(ctx context.Context, request CreateRequest, metadata Re
 	metadata, err = validateRequestMetadata(metadata)
 	if err != nil {
 		return CredentialResult{}, err
+	}
+	if scope.UserID != "" && scope.UserID != metadata.ActorUserID {
+		return CredentialResult{}, ErrInvalidRequest
 	}
 	projectID, err := randomUUID(s.random)
 	if err != nil {
@@ -102,13 +117,19 @@ func (s *Service) Create(ctx context.Context, request CreateRequest, metadata Re
 	now := s.clock.Now().UTC()
 	var created domain.Project
 	err = s.store.TransactProject(ctx, func(tx repository.ProjectTx) error {
+		manager, managerErr := tx.Users().GetForUpdate(ctx, request.ManagerUserID)
+		if errors.Is(managerErr, sql.ErrNoRows) {
+			return ErrManagerNotFound
+		}
+		if managerErr != nil {
+			return managerErr
+		}
+		if manager.Status != domain.UserStatusActive {
+			return ErrManagerInactive
+		}
 		project := domain.Project{
-			ID:           projectID,
-			Name:         name,
-			APIKeyDigest: digest[:],
-			IPWhitelist:  whitelist,
-			CreatedAt:    now,
-			UpdatedAt:    now,
+			ID: projectID, Name: name, ManagerUserID: manager.ID, Manager: manager,
+			APIKeyDigest: digest[:], IPWhitelist: whitelist, CreatedAt: now, UpdatedAt: now,
 		}
 		if err := tx.Projects().Create(ctx, project); err != nil {
 			return err
@@ -134,6 +155,7 @@ func (s *Service) Create(ctx context.Context, request CreateRequest, metadata Re
 			return err
 		}
 		return s.createAudit(ctx, tx, metadata, projectID, "project.created", map[string]any{
+			"manager_user_id":    manager.ID,
 			"webhook_configured": webhookURL != nil,
 			"ip_whitelist_count": len(whitelist),
 		})
@@ -141,10 +163,13 @@ func (s *Service) Create(ctx context.Context, request CreateRequest, metadata Re
 	if err != nil {
 		return CredentialResult{}, err
 	}
-	return CredentialResult{Project: safeProject(created), APIKey: apiKey, WebhookSecret: webhookSecret}, nil
+	return CredentialResult{Project: safeProject(created, true), APIKey: apiKey, WebhookSecret: webhookSecret}, nil
 }
 
-func (s *Service) List(ctx context.Context, request ListRequest) (ListResult, error) {
+func (s *Service) List(ctx context.Context, scope Scope, request ListRequest) (ListResult, error) {
+	if err := validateHumanScope(scope); err != nil {
+		return ListResult{}, err
+	}
 	page, pageSize := request.Page, request.PageSize
 	if page == 0 {
 		page = 1
@@ -158,21 +183,32 @@ func (s *Service) List(ctx context.Context, request ListRequest) (ListResult, er
 	if request.Name != nil && (!utf8.ValidString(*request.Name) || *request.Name == "" || utf8.RuneCountInString(*request.Name) > 120) {
 		return ListResult{}, fmt.Errorf("%w: name filter is invalid", ErrInvalidRequest)
 	}
+	managerUserID := request.ManagerUserID
+	if managerUserID != nil && !validUUID(*managerUserID) {
+		return ListResult{}, fmt.Errorf("%w: manager_user_id filter is invalid", ErrInvalidRequest)
+	}
+	if scope.Kind == access.ScopeUser {
+		if managerUserID != nil && *managerUserID != scope.UserID {
+			return ListResult{}, ErrForbidden
+		}
+		value := scope.UserID
+		managerUserID = &value
+	}
 	items, total, err := s.store.Projects().List(ctx, repository.ListProjectsRequest{
-		Name: request.Name, Limit: pageSize, Offset: (page - 1) * pageSize,
+		Name: request.Name, ManagerUserID: managerUserID, Limit: pageSize, Offset: (page - 1) * pageSize,
 	})
 	if err != nil {
 		return ListResult{}, err
 	}
 	result := make([]Project, 0, len(items))
 	for _, item := range items {
-		result = append(result, safeProject(item))
+		result = append(result, safeProject(item, scope.IsSuperAdmin()))
 	}
 	return ListResult{Items: result, Page: page, PageSize: pageSize, Total: total}, nil
 }
 
-func (s *Service) Get(ctx context.Context, projectID string) (Project, error) {
-	if !validUUID(projectID) {
+func (s *Service) Get(ctx context.Context, scope Scope, projectID string) (Project, error) {
+	if validateHumanScope(scope) != nil || !validUUID(projectID) {
 		return Project{}, fmt.Errorf("%w: project_id is invalid", ErrInvalidRequest)
 	}
 	project, err := s.store.Projects().Get(ctx, projectID)
@@ -182,11 +218,14 @@ func (s *Service) Get(ctx context.Context, projectID string) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
-	return safeProject(project), nil
+	if !scope.CanAccessProject(project) {
+		return Project{}, ErrProjectNotFound
+	}
+	return safeProject(project, scope.IsSuperAdmin()), nil
 }
 
-func (s *Service) Update(ctx context.Context, projectID string, request UpdateRequest, metadata RequestMetadata) (UpdateResult, error) {
-	if !validUUID(projectID) || (request.Name == nil && !request.WebhookURLSet && request.IPWhitelist == nil) || (!request.WebhookURLSet && request.WebhookURL != nil) {
+func (s *Service) Update(ctx context.Context, scope Scope, projectID string, request UpdateRequest, metadata RequestMetadata) (UpdateResult, error) {
+	if validateHumanScope(scope) != nil || !validUUID(projectID) || (request.Name == nil && !request.WebhookURLSet && request.IPWhitelist == nil) || (!request.WebhookURLSet && request.WebhookURL != nil) {
 		return UpdateResult{}, ErrInvalidRequest
 	}
 	var name *string
@@ -217,6 +256,9 @@ func (s *Service) Update(ctx context.Context, projectID string, request UpdateRe
 	if err != nil {
 		return UpdateResult{}, err
 	}
+	if scope.UserID != "" && scope.UserID != metadata.ActorUserID {
+		return UpdateResult{}, ErrInvalidRequest
+	}
 
 	var updated domain.Project
 	var oneTimeSecret string
@@ -227,6 +269,12 @@ func (s *Service) Update(ctx context.Context, projectID string, request UpdateRe
 		}
 		if lockErr != nil {
 			return lockErr
+		}
+		if !scope.CanAccessProject(current) {
+			return ErrProjectNotFound
+		}
+		if !scope.IsSuperAdmin() && (request.WebhookURLSet || request.IPWhitelist != nil) {
+			return ErrForbidden
 		}
 		fields := make([]string, 0, 3)
 		if name != nil {
@@ -281,16 +329,19 @@ func (s *Service) Update(ctx context.Context, projectID string, request UpdateRe
 	if err != nil {
 		return UpdateResult{}, err
 	}
-	return UpdateResult{Project: safeProject(updated), WebhookSecret: oneTimeSecret}, nil
+	return UpdateResult{Project: safeProject(updated, scope.IsSuperAdmin()), WebhookSecret: oneTimeSecret}, nil
 }
 
-func (s *Service) RotateAPIKey(ctx context.Context, projectID string, metadata RequestMetadata) (CredentialResult, error) {
-	if !validUUID(projectID) {
+func (s *Service) RotateAPIKey(ctx context.Context, scope Scope, projectID string, metadata RequestMetadata) (CredentialResult, error) {
+	if validateHumanScope(scope) != nil || !validUUID(projectID) {
 		return CredentialResult{}, ErrInvalidRequest
 	}
 	metadata, err := validateRequestMetadata(metadata)
 	if err != nil {
 		return CredentialResult{}, err
+	}
+	if scope.UserID != "" && scope.UserID != metadata.ActorUserID {
+		return CredentialResult{}, ErrInvalidRequest
 	}
 	apiKey, err := generateCredential(s.random, apiKeyPrefix)
 	if err != nil {
@@ -299,10 +350,17 @@ func (s *Service) RotateAPIKey(ctx context.Context, projectID string, metadata R
 	digest := apiKeyDigest(apiKey)
 	var updated domain.Project
 	err = s.store.TransactProject(ctx, func(tx repository.ProjectTx) error {
-		if _, err := tx.Projects().GetForUpdate(ctx, projectID); errors.Is(err, sql.ErrNoRows) {
+		current, lockErr := tx.Projects().GetForUpdate(ctx, projectID)
+		if errors.Is(lockErr, sql.ErrNoRows) {
 			return ErrProjectNotFound
-		} else if err != nil {
-			return err
+		} else if lockErr != nil {
+			return lockErr
+		}
+		if !scope.CanAccessProject(current) {
+			return ErrProjectNotFound
+		}
+		if !scope.IsSuperAdmin() {
+			return ErrForbidden
 		}
 		if err := tx.Projects().ReplaceAPIKeyDigest(ctx, projectID, digest[:]); err != nil {
 			return err
@@ -316,16 +374,19 @@ func (s *Service) RotateAPIKey(ctx context.Context, projectID string, metadata R
 	if err != nil {
 		return CredentialResult{}, err
 	}
-	return CredentialResult{Project: safeProject(updated), APIKey: apiKey}, nil
+	return CredentialResult{Project: safeProject(updated, true), APIKey: apiKey}, nil
 }
 
-func (s *Service) RotateWebhookSecret(ctx context.Context, projectID string, metadata RequestMetadata) (CredentialResult, error) {
-	if !validUUID(projectID) {
+func (s *Service) RotateWebhookSecret(ctx context.Context, scope Scope, projectID string, metadata RequestMetadata) (CredentialResult, error) {
+	if validateHumanScope(scope) != nil || !validUUID(projectID) {
 		return CredentialResult{}, ErrInvalidRequest
 	}
 	metadata, err := validateRequestMetadata(metadata)
 	if err != nil {
 		return CredentialResult{}, err
+	}
+	if scope.UserID != "" && scope.UserID != metadata.ActorUserID {
+		return CredentialResult{}, ErrInvalidRequest
 	}
 	var updated domain.Project
 	var plaintext string
@@ -336,6 +397,12 @@ func (s *Service) RotateWebhookSecret(ctx context.Context, projectID string, met
 		}
 		if lockErr != nil {
 			return lockErr
+		}
+		if !scope.CanAccessProject(current) {
+			return ErrProjectNotFound
+		}
+		if !scope.IsSuperAdmin() {
+			return ErrForbidden
 		}
 		if current.WebhookURL == nil || current.CurrentWebhookSecretVersion == nil {
 			return ErrWebhookNotConfigured
@@ -372,7 +439,97 @@ func (s *Service) RotateWebhookSecret(ctx context.Context, projectID string, met
 	if err != nil {
 		return CredentialResult{}, err
 	}
-	return CredentialResult{Project: safeProject(updated), WebhookSecret: plaintext}, nil
+	return CredentialResult{Project: safeProject(updated, true), WebhookSecret: plaintext}, nil
+}
+
+func (s *Service) Transfer(ctx context.Context, scope Scope, projectID string, request TransferRequest, metadata RequestMetadata) (Project, error) {
+	if validateHumanScope(scope) != nil || !validUUID(projectID) || !validUUID(request.ManagerUserID) {
+		return Project{}, ErrInvalidRequest
+	}
+	if !scope.IsSuperAdmin() {
+		visible, err := s.store.Projects().Get(ctx, projectID)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && !scope.CanAccessProject(visible) {
+			return Project{}, ErrProjectNotFound
+		}
+		if err != nil {
+			return Project{}, err
+		}
+		return Project{}, ErrForbidden
+	}
+	metadata, err := validateRequestMetadata(metadata)
+	if err != nil || scope.UserID != "" && scope.UserID != metadata.ActorUserID {
+		return Project{}, ErrInvalidRequest
+	}
+	observed, err := s.store.Projects().Get(ctx, projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Project{}, ErrProjectNotFound
+	}
+	if err != nil {
+		return Project{}, err
+	}
+	for attempt := 0; attempt < 4; attempt++ {
+		var updated domain.Project
+		err = s.store.TransactProject(ctx, func(tx repository.ProjectTx) error {
+			userIDs := []string{observed.ManagerUserID, request.ManagerUserID}
+			slices.Sort(userIDs)
+			userIDs = slices.Compact(userIDs)
+			var target domain.User
+			for _, userID := range userIDs {
+				locked, lockErr := tx.Users().GetForUpdate(ctx, userID)
+				if errors.Is(lockErr, sql.ErrNoRows) && userID == request.ManagerUserID {
+					return ErrManagerNotFound
+				}
+				if lockErr != nil {
+					return lockErr
+				}
+				if userID == request.ManagerUserID {
+					target = locked
+				}
+			}
+			current, lockErr := tx.Projects().GetForUpdate(ctx, projectID)
+			if errors.Is(lockErr, sql.ErrNoRows) {
+				return ErrProjectNotFound
+			}
+			if lockErr != nil {
+				return lockErr
+			}
+			if current.ManagerUserID != observed.ManagerUserID {
+				return errTransferRetry
+			}
+			if target.Status != domain.UserStatusActive {
+				return ErrManagerInactive
+			}
+			if current.ManagerUserID == target.ID {
+				updated = current
+				return nil
+			}
+			if setErr := tx.Projects().SetManager(ctx, projectID, target.ID); setErr != nil {
+				return setErr
+			}
+			updated, lockErr = tx.Projects().Get(ctx, projectID)
+			if lockErr != nil {
+				return lockErr
+			}
+			return s.createAudit(ctx, tx, metadata, projectID, "project.transferred", map[string]any{
+				"from_manager_user_id": current.ManagerUserID,
+				"to_manager_user_id":   target.ID,
+			})
+		})
+		if !errors.Is(err, errTransferRetry) {
+			if err != nil {
+				return Project{}, err
+			}
+			return safeProject(updated, true), nil
+		}
+		observed, err = s.store.Projects().Get(ctx, projectID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return Project{}, ErrProjectNotFound
+		}
+		if err != nil {
+			return Project{}, err
+		}
+	}
+	return Project{}, errTransferRetry
 }
 
 // AuthenticateAPIKey uses only the direct peer address supplied by the server.
@@ -400,7 +557,7 @@ func (s *Service) AuthenticateAPIKey(ctx context.Context, apiKey, peerAddress st
 	if !allowed {
 		return Project{}, ErrSourceIPNotAllowed
 	}
-	return safeProject(project), nil
+	return safeProject(project, false), nil
 }
 
 func (s *Service) ResolveWebhookSecret(ctx context.Context, projectID string, version int) (string, error) {
@@ -429,19 +586,34 @@ func (s *Service) createAudit(ctx context.Context, tx repository.ProjectTx, meta
 	projectIDCopy := projectID
 	resourceID := projectID
 	return tx.Audits().Create(ctx, domain.AuditLog{
-		ID: id, ActorType: metadata.ActorType, ActorID: optionalString(metadata.ActorID),
+		ID: id, ActorType: domain.ActorTypeUser, ActorUserID: optionalString(metadata.ActorUserID),
 		ProjectID: &projectIDCopy, Action: action, Result: domain.AuditResultSuccess,
 		ResourceType: "project", ResourceID: &resourceID, IPAddress: optionalString(metadata.IPAddress),
 		RequestID: optionalString(metadata.RequestID), Metadata: fields, OccurredAt: s.clock.Now().UTC(),
 	})
 }
 
-func safeProject(project domain.Project) Project {
-	return Project{
-		ID: project.ID, Name: project.Name, WebhookURL: cloneString(project.WebhookURL),
-		WebhookConfigured: project.WebhookURL != nil, IPWhitelist: slices.Clone(project.IPWhitelist),
-		CreatedAt: project.CreatedAt, UpdatedAt: project.UpdatedAt,
+func safeProject(project domain.Project, includeSensitive bool) Project {
+	result := Project{
+		ID: project.ID, Name: project.Name, ManagerUserID: project.ManagerUserID,
+		Manager:                        Manager{ID: project.Manager.ID, Email: project.Manager.Email, DisplayName: project.Manager.DisplayName, Status: project.Manager.Status},
+		SensitiveConfigurationIncluded: includeSensitive,
+		CreatedAt:                      project.CreatedAt,
+		UpdatedAt:                      project.UpdatedAt,
 	}
+	if includeSensitive {
+		result.WebhookURL = cloneString(project.WebhookURL)
+		result.WebhookConfigured = project.WebhookURL != nil
+		result.IPWhitelist = slices.Clone(project.IPWhitelist)
+	}
+	return result
+}
+
+func validateHumanScope(scope Scope) error {
+	if scope.Validate() != nil || !scope.IsHuman() || scope.UserID != "" && !validUUID(scope.UserID) {
+		return ErrInvalidRequest
+	}
+	return nil
 }
 
 func validCredential(value, prefix string) bool {

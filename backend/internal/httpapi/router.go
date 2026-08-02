@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qiyue2015/device-platform/internal/access"
 	v1 "github.com/qiyue2015/device-platform/internal/api/v1"
 	"github.com/qiyue2015/device-platform/internal/commandservice"
 	"github.com/qiyue2015/device-platform/internal/devicecore"
@@ -30,15 +31,17 @@ type Router struct {
 	projectMetadata  func(*http.Request) projectservice.RequestMetadata
 	deviceMetadata   func(*http.Request) deviceservice.RequestMetadata
 	commandMetadata  func(*http.Request) commandservice.RequestMetadata
+	humanScope       func(*http.Request) access.Scope
 }
 
 type ProjectService interface {
-	Create(context.Context, projectservice.CreateRequest, projectservice.RequestMetadata) (projectservice.CredentialResult, error)
-	List(context.Context, projectservice.ListRequest) (projectservice.ListResult, error)
-	Get(context.Context, string) (projectservice.Project, error)
-	Update(context.Context, string, projectservice.UpdateRequest, projectservice.RequestMetadata) (projectservice.UpdateResult, error)
-	RotateAPIKey(context.Context, string, projectservice.RequestMetadata) (projectservice.CredentialResult, error)
-	RotateWebhookSecret(context.Context, string, projectservice.RequestMetadata) (projectservice.CredentialResult, error)
+	Create(context.Context, projectservice.Scope, projectservice.CreateRequest, projectservice.RequestMetadata) (projectservice.CredentialResult, error)
+	List(context.Context, projectservice.Scope, projectservice.ListRequest) (projectservice.ListResult, error)
+	Get(context.Context, projectservice.Scope, string) (projectservice.Project, error)
+	Update(context.Context, projectservice.Scope, string, projectservice.UpdateRequest, projectservice.RequestMetadata) (projectservice.UpdateResult, error)
+	RotateAPIKey(context.Context, projectservice.Scope, string, projectservice.RequestMetadata) (projectservice.CredentialResult, error)
+	RotateWebhookSecret(context.Context, projectservice.Scope, string, projectservice.RequestMetadata) (projectservice.CredentialResult, error)
+	Transfer(context.Context, projectservice.Scope, string, projectservice.TransferRequest, projectservice.RequestMetadata) (projectservice.Project, error)
 	AuthenticateAPIKey(context.Context, string, string) (projectservice.Project, error)
 }
 
@@ -80,6 +83,7 @@ type RouterHooks struct {
 	ProjectMetadata  func(*http.Request) projectservice.RequestMetadata
 	DeviceMetadata   func(*http.Request) deviceservice.RequestMetadata
 	CommandMetadata  func(*http.Request) commandservice.RequestMetadata
+	HumanScope       func(*http.Request) access.Scope
 }
 
 func NewRouter(service DeviceService) http.Handler {
@@ -160,9 +164,13 @@ func newRouter(service DeviceService, projects ProjectService, devices DeviceRes
 	if commandMetadata == nil {
 		commandMetadata = defaultCommandMetadata
 	}
+	humanScope := hooks.HumanScope
+	if humanScope == nil {
+		humanScope = defaultHumanScope
+	}
 	return &Router{
 		service: service, projects: projects, devices: devices, commands: commands, onCommandCreated: hooks.OnCommandCreated,
-		projectMetadata: projectMetadata, deviceMetadata: deviceMetadata, commandMetadata: commandMetadata,
+		projectMetadata: projectMetadata, deviceMetadata: deviceMetadata, commandMetadata: commandMetadata, humanScope: humanScope,
 	}
 }
 
@@ -243,7 +251,7 @@ func (r *Router) handleAdminCommandResources(w http.ResponseWriter, req *http.Re
 		if !ok {
 			return
 		}
-		result, err := r.commands.List(req.Context(), commandservice.AdminScope(), listRequest)
+		result, err := r.commands.List(req.Context(), r.humanScope(req), listRequest)
 		if err != nil {
 			writeCommandError(w, err)
 			return
@@ -257,7 +265,7 @@ func (r *Router) handleAdminCommandResources(w http.ResponseWriter, req *http.Re
 		if !decodeJSON(w, req, &body) {
 			return
 		}
-		result, err := r.commands.Create(req.Context(), commandservice.AdminScope(), commandservice.CreateRequest{
+		result, err := r.commands.Create(req.Context(), r.humanScope(req), commandservice.CreateRequest{
 			ProjectID: body.ProjectID, DeviceID: body.DeviceID, CommandType: body.CommandType,
 			Payload: map[string]any(body.Payload), IdempotencyKey: body.IdempotencyKey,
 		}, r.commandMetadata(req))
@@ -285,7 +293,7 @@ func (r *Router) handleAdminCommandResourceByID(w http.ResponseWriter, req *http
 		if !rejectQueryParameters(w, req) || !decodeOptionalEmptyJSON(w, req) {
 			return
 		}
-		command, err := r.commands.Cancel(req.Context(), commandservice.AdminScope(), commandID, r.commandMetadata(req))
+		command, err := r.commands.Cancel(req.Context(), r.humanScope(req), commandID, r.commandMetadata(req))
 		if err != nil {
 			writeCommandError(w, err)
 			return
@@ -304,7 +312,7 @@ func (r *Router) handleAdminCommandResourceByID(w http.ResponseWriter, req *http
 	if !rejectQueryParameters(w, req) {
 		return
 	}
-	detail, err := r.commands.Get(req.Context(), commandservice.AdminScope(), commandID)
+	detail, err := r.commands.Get(req.Context(), r.humanScope(req), commandID)
 	if err != nil {
 		writeCommandError(w, err)
 		return
@@ -319,7 +327,7 @@ func (r *Router) handleProjects(w http.ResponseWriter, req *http.Request) {
 		if !ok {
 			return
 		}
-		result, err := r.projects.List(req.Context(), listRequest)
+		result, err := r.projects.List(req.Context(), r.humanScope(req), listRequest)
 		if err != nil {
 			writeProjectError(w, err)
 			return
@@ -339,8 +347,8 @@ func (r *Router) handleProjects(w http.ResponseWriter, req *http.Request) {
 		if !decodeJSON(w, req, &body) {
 			return
 		}
-		result, err := r.projects.Create(req.Context(), projectservice.CreateRequest{
-			Name: body.Name, WebhookURL: body.WebhookURL, IPWhitelist: body.IPWhitelist,
+		result, err := r.projects.Create(req.Context(), r.humanScope(req), projectservice.CreateRequest{
+			Name: body.Name, ManagerUserID: body.ManagerUserID, WebhookURL: body.WebhookURL, IPWhitelist: body.IPWhitelist,
 		}, r.projectMetadata(req))
 		if err != nil {
 			writeProjectError(w, err)
@@ -363,6 +371,25 @@ func (r *Router) handleProjectByID(w http.ResponseWriter, req *http.Request) {
 	if !rejectQueryParameters(w, req) {
 		return
 	}
+	if len(parts) == 2 && parts[1] == "transfer" {
+		if req.Method != http.MethodPost {
+			methodNotAllowed(w)
+			return
+		}
+		var body v1.TransferProjectRequest
+		if !decodeJSON(w, req, &body) {
+			return
+		}
+		project, err := r.projects.Transfer(req.Context(), r.humanScope(req), projectID, projectservice.TransferRequest{
+			ManagerUserID: body.ManagerUserID,
+		}, r.projectMetadata(req))
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, "ok", projectResponse(project))
+		return
+	}
 	if len(parts) == 3 && parts[2] == "rotate" {
 		if req.Method != http.MethodPost {
 			methodNotAllowed(w)
@@ -375,9 +402,9 @@ func (r *Router) handleProjectByID(w http.ResponseWriter, req *http.Request) {
 		var err error
 		switch parts[1] {
 		case "api-key":
-			result, err = r.projects.RotateAPIKey(req.Context(), projectID, r.projectMetadata(req))
+			result, err = r.projects.RotateAPIKey(req.Context(), r.humanScope(req), projectID, r.projectMetadata(req))
 		case "webhook-secret":
-			result, err = r.projects.RotateWebhookSecret(req.Context(), projectID, r.projectMetadata(req))
+			result, err = r.projects.RotateWebhookSecret(req.Context(), r.humanScope(req), projectID, r.projectMetadata(req))
 		default:
 			notFound(w)
 			return
@@ -395,7 +422,7 @@ func (r *Router) handleProjectByID(w http.ResponseWriter, req *http.Request) {
 	}
 	switch req.Method {
 	case http.MethodGet:
-		project, err := r.projects.Get(req.Context(), projectID)
+		project, err := r.projects.Get(req.Context(), r.humanScope(req), projectID)
 		if err != nil {
 			writeProjectError(w, err)
 			return
@@ -406,7 +433,7 @@ func (r *Router) handleProjectByID(w http.ResponseWriter, req *http.Request) {
 		if !decodeJSON(w, req, &body) {
 			return
 		}
-		result, err := r.projects.Update(req.Context(), projectID, body.request(), r.projectMetadata(req))
+		result, err := r.projects.Update(req.Context(), r.humanScope(req), projectID, body.request(), r.projectMetadata(req))
 		if err != nil {
 			writeProjectError(w, err)
 			return
@@ -478,7 +505,7 @@ func (r *Router) handleDevices(w http.ResponseWriter, req *http.Request) {
 		if !ok {
 			return
 		}
-		result, err := r.devices.List(req.Context(), deviceservice.AdminScope(), listRequest)
+		result, err := r.devices.List(req.Context(), r.humanScope(req), listRequest)
 		if err != nil {
 			writeDeviceError(w, err)
 			return
@@ -496,7 +523,7 @@ func (r *Router) handleDevices(w http.ResponseWriter, req *http.Request) {
 			writeDeviceError(w, deviceservice.ErrInvalidRequest)
 			return
 		}
-		device, err := r.devices.Create(req.Context(), deviceservice.AdminScope(), deviceservice.CreateRequest{
+		device, err := r.devices.Create(req.Context(), r.humanScope(req), deviceservice.CreateRequest{
 			ProjectID: body.ProjectID, Name: body.Name, DeviceTypeCode: body.DeviceTypeCode,
 			ProviderCode: body.ProviderCode, ProviderProfile: body.ProviderProfile,
 			ProviderDeviceID: body.ProviderDeviceID.Value,
@@ -526,7 +553,7 @@ func (r *Router) handleDeviceByID(w http.ResponseWriter, req *http.Request) {
 	}
 	switch req.Method {
 	case http.MethodGet:
-		device, err := r.devices.Get(req.Context(), deviceservice.AdminScope(), path)
+		device, err := r.devices.Get(req.Context(), r.humanScope(req), path)
 		if err != nil {
 			writeDeviceError(w, err)
 			return
@@ -537,7 +564,7 @@ func (r *Router) handleDeviceByID(w http.ResponseWriter, req *http.Request) {
 		if !decodeJSON(w, req, &body) {
 			return
 		}
-		device, err := r.devices.Update(req.Context(), deviceservice.AdminScope(), path, deviceservice.UpdateRequest{
+		device, err := r.devices.Update(req.Context(), r.humanScope(req), path, deviceservice.UpdateRequest{
 			Name: body.name(), LifecycleStatus: body.lifecycleStatus(),
 		}, r.deviceMetadata(req))
 		if err != nil {
@@ -614,7 +641,7 @@ func (r *Router) handleOpenProjectByID(w http.ResponseWriter, req *http.Request)
 		notFound(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, "ok", projectResponse(project))
+	writeJSON(w, http.StatusOK, "ok", openProjectResponse(project))
 }
 
 func (r *Router) handleOpenDevices(w http.ResponseWriter, req *http.Request) {
@@ -1013,7 +1040,7 @@ func parseProjectListRequest(w http.ResponseWriter, req *http.Request) (projects
 		return projectservice.ListRequest{}, false
 	}
 	for key, values := range query {
-		if (key != "page" && key != "page_size" && key != "name") || len(values) != 1 {
+		if (key != "page" && key != "page_size" && key != "name" && key != "manager_user_id") || len(values) != 1 {
 			writeError(w, http.StatusBadRequest, "invalid_request", "invalid query parameters")
 			return projectservice.ListRequest{}, false
 		}
@@ -1033,7 +1060,12 @@ func parseProjectListRequest(w http.ResponseWriter, req *http.Request) (projects
 		value := query.Get("name")
 		name = &value
 	}
-	return projectservice.ListRequest{Name: name, Page: page, PageSize: pageSize}, true
+	var managerUserID *string
+	if query.Has("manager_user_id") {
+		value := query.Get("manager_user_id")
+		managerUserID = &value
+	}
+	return projectservice.ListRequest{Name: name, ManagerUserID: managerUserID, Page: page, PageSize: pageSize}, true
 }
 
 func parsePageOnlyListRequest(w http.ResponseWriter, req *http.Request) (int, int, bool) {
@@ -1192,16 +1224,31 @@ func parsePositiveQueryInteger(query map[string][]string, key string, fallback i
 }
 
 func projectResponse(project projectservice.Project) v1.ProjectResponse {
-	return v1.ProjectResponse{
-		ID: project.ID, Name: project.Name, WebhookURL: project.WebhookURL,
-		WebhookConfigured: project.WebhookConfigured, IPWhitelist: project.IPWhitelist,
+	response := v1.ProjectResponse{
+		ID: project.ID, Name: project.Name, ManagerUserID: project.ManagerUserID,
+		Manager: v1.ProjectManagerResponse{
+			ID: project.Manager.ID, Email: project.Manager.Email,
+			DisplayName: project.Manager.DisplayName, Status: project.Manager.Status,
+		},
 		CreatedAt: project.CreatedAt, UpdatedAt: project.UpdatedAt,
 	}
+	if project.SensitiveConfigurationIncluded {
+		response.WebhookURL = &project.WebhookURL
+		response.WebhookConfigured = &project.WebhookConfigured
+		response.IPWhitelist = &project.IPWhitelist
+	}
+	return response
 }
 
 func credentialResponse(result projectservice.CredentialResult) v1.ProjectCredentialResponse {
 	return v1.ProjectCredentialResponse{
 		ProjectResponse: projectResponse(result.Project), APIKey: result.APIKey, WebhookSecret: result.WebhookSecret,
+	}
+}
+
+func openProjectResponse(project projectservice.Project) v1.OpenProjectResponse {
+	return v1.OpenProjectResponse{
+		ID: project.ID, Name: project.Name, CreatedAt: project.CreatedAt, UpdatedAt: project.UpdatedAt,
 	}
 }
 
@@ -1373,6 +1420,12 @@ func writeProjectError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid request")
 	case errors.Is(err, projectservice.ErrProjectNotFound), errors.Is(err, devicecore.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "resource not found")
+	case errors.Is(err, projectservice.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden", "operation is forbidden")
+	case errors.Is(err, projectservice.ErrManagerNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "resource not found")
+	case errors.Is(err, projectservice.ErrManagerInactive):
+		writeError(w, http.StatusConflict, "project_manager_inactive", "Project manager is inactive")
 	case errors.Is(err, projectservice.ErrWebhookNotConfigured):
 		writeError(w, http.StatusConflict, "webhook_not_configured", "Webhook endpoint is not configured")
 	default:
@@ -1382,20 +1435,28 @@ func writeProjectError(w http.ResponseWriter, err error) {
 
 func defaultProjectMetadata(req *http.Request) projectservice.RequestMetadata {
 	return projectservice.RequestMetadata{
-		ActorType: domain.ActorTypeAdmin, IPAddress: directPeerIP(req.RemoteAddr), RequestID: httpjson.RequestID(req.Context()),
+		ActorUserID: defaultActorUserID, IPAddress: directPeerIP(req.RemoteAddr), RequestID: httpjson.RequestID(req.Context()),
 	}
 }
 
 func defaultDeviceMetadata(req *http.Request) deviceservice.RequestMetadata {
 	return deviceservice.RequestMetadata{
-		ActorType: domain.ActorTypeAdmin, IPAddress: directPeerIP(req.RemoteAddr), RequestID: httpjson.RequestID(req.Context()),
+		ActorType: domain.ActorTypeUser, ActorUserID: defaultActorUserID,
+		IPAddress: directPeerIP(req.RemoteAddr), RequestID: httpjson.RequestID(req.Context()),
 	}
 }
 
 func defaultCommandMetadata(req *http.Request) commandservice.RequestMetadata {
 	return commandservice.RequestMetadata{
-		ActorType: domain.ActorTypeAdmin, IPAddress: directPeerIP(req.RemoteAddr), RequestID: httpjson.RequestID(req.Context()),
+		ActorType: domain.ActorTypeUser, ActorUserID: defaultActorUserID,
+		IPAddress: directPeerIP(req.RemoteAddr), RequestID: httpjson.RequestID(req.Context()),
 	}
+}
+
+const defaultActorUserID = "00000000-0000-4000-8000-000000000001"
+
+func defaultHumanScope(*http.Request) access.Scope {
+	return access.SuperAdmin(defaultActorUserID)
 }
 
 func projectCommandMetadata(req *http.Request, projectID string) commandservice.RequestMetadata {
@@ -1421,7 +1482,7 @@ func NewMemoryProjectService(service DeviceService) ProjectService {
 	return legacyProjectService{service: service}
 }
 
-func (s legacyProjectService) Create(_ context.Context, request projectservice.CreateRequest, _ projectservice.RequestMetadata) (projectservice.CredentialResult, error) {
+func (s legacyProjectService) Create(_ context.Context, _ projectservice.Scope, request projectservice.CreateRequest, _ projectservice.RequestMetadata) (projectservice.CredentialResult, error) {
 	webhookURL := ""
 	if request.WebhookURL != nil {
 		webhookURL = *request.WebhookURL
@@ -1433,7 +1494,7 @@ func (s legacyProjectService) Create(_ context.Context, request projectservice.C
 	return projectservice.CredentialResult{Project: legacySafeProject(project), APIKey: project.APIKey}, nil
 }
 
-func (s legacyProjectService) List(_ context.Context, request projectservice.ListRequest) (projectservice.ListResult, error) {
+func (s legacyProjectService) List(_ context.Context, _ projectservice.Scope, request projectservice.ListRequest) (projectservice.ListResult, error) {
 	page, pageSize := request.Page, request.PageSize
 	if page == 0 {
 		page = 1
@@ -1456,7 +1517,7 @@ func (s legacyProjectService) List(_ context.Context, request projectservice.Lis
 	return projectservice.ListResult{Items: filtered[start:end], Page: page, PageSize: pageSize, Total: int64(len(filtered))}, nil
 }
 
-func (s legacyProjectService) Get(_ context.Context, projectID string) (projectservice.Project, error) {
+func (s legacyProjectService) Get(_ context.Context, _ projectservice.Scope, projectID string) (projectservice.Project, error) {
 	project, err := s.service.GetProject(projectID)
 	if err != nil {
 		return projectservice.Project{}, err
@@ -1464,7 +1525,7 @@ func (s legacyProjectService) Get(_ context.Context, projectID string) (projects
 	return legacySafeProject(project), nil
 }
 
-func (s legacyProjectService) Update(_ context.Context, projectID string, request projectservice.UpdateRequest, _ projectservice.RequestMetadata) (projectservice.UpdateResult, error) {
+func (s legacyProjectService) Update(_ context.Context, _ projectservice.Scope, projectID string, request projectservice.UpdateRequest, _ projectservice.RequestMetadata) (projectservice.UpdateResult, error) {
 	legacyRequest := devicecore.UpdateProjectRequest{Name: request.Name}
 	if request.IPWhitelist != nil {
 		legacyRequest.IPWhitelist = *request.IPWhitelist
@@ -1479,12 +1540,16 @@ func (s legacyProjectService) Update(_ context.Context, projectID string, reques
 	return projectservice.UpdateResult{Project: legacySafeProject(project)}, nil
 }
 
-func (legacyProjectService) RotateAPIKey(context.Context, string, projectservice.RequestMetadata) (projectservice.CredentialResult, error) {
+func (legacyProjectService) RotateAPIKey(context.Context, projectservice.Scope, string, projectservice.RequestMetadata) (projectservice.CredentialResult, error) {
 	return projectservice.CredentialResult{}, projectservice.ErrInvalidRequest
 }
 
-func (legacyProjectService) RotateWebhookSecret(context.Context, string, projectservice.RequestMetadata) (projectservice.CredentialResult, error) {
+func (legacyProjectService) RotateWebhookSecret(context.Context, projectservice.Scope, string, projectservice.RequestMetadata) (projectservice.CredentialResult, error) {
 	return projectservice.CredentialResult{}, projectservice.ErrWebhookNotConfigured
+}
+
+func (legacyProjectService) Transfer(context.Context, projectservice.Scope, string, projectservice.TransferRequest, projectservice.RequestMetadata) (projectservice.Project, error) {
+	return projectservice.Project{}, projectservice.ErrInvalidRequest
 }
 
 func (s legacyProjectService) AuthenticateAPIKey(_ context.Context, apiKey, _ string) (projectservice.Project, error) {

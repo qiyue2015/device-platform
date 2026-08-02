@@ -262,8 +262,8 @@ func seedInboundDevices(t *testing.T, store *repository.PostgresStore) {
 	now := time.Date(2026, time.August, 1, 10, 0, 0, 0, time.UTC)
 	if err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
 		for _, project := range []domain.Project{
-			{ID: inboundProjectID, Name: "Omni Project", APIKeyDigest: bytes.Repeat([]byte{0xa1}, 32), IPWhitelist: []string{}, CreatedAt: now, UpdatedAt: now},
-			{ID: inboundOtherProjectID, Name: "WWTIOT Project", APIKeyDigest: bytes.Repeat([]byte{0xa2}, 32), IPWhitelist: []string{}, CreatedAt: now, UpdatedAt: now},
+			{ID: inboundProjectID, Name: "Omni Project", ManagerUserID: inboundManagerUserID, APIKeyDigest: bytes.Repeat([]byte{0xa1}, 32), IPWhitelist: []string{}, CreatedAt: now, UpdatedAt: now},
+			{ID: inboundOtherProjectID, Name: "WWTIOT Project", ManagerUserID: inboundManagerUserID, APIKeyDigest: bytes.Repeat([]byte{0xa2}, 32), IPWhitelist: []string{}, CreatedAt: now, UpdatedAt: now},
 		} {
 			if err := tx.Projects().Create(ctx, project); err != nil {
 				return err
@@ -353,5 +353,13 @@ func withOmniDatabase(t *testing.T, fn func(*sql.DB, *repository.PostgresStore))
 	if err := storage.ApplyMigrations(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`
+		INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status)
+		VALUES ($1, 'omni-manager@example.test', 'hash', 'Omni Manager', true, 'active')
+	`, inboundManagerUserID); err != nil {
+		t.Fatal(err)
+	}
 	fn(db, repository.NewPostgresStore(db))
 }
+
+const inboundManagerUserID = "71000000-0000-0000-0000-000000000002"

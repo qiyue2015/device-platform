@@ -164,6 +164,35 @@ func TestInstallationSingletonMigrationMatchesFrozenContract(t *testing.T) {
 	}
 }
 
+func TestMultiUserProjectAuthorizationMigrationMatchesFrozenContract(t *testing.T) {
+	content, err := embeddedMigrations.ReadFile("migrations/010_multi_user_project_authorization.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlText := string(content)
+	for _, marker := range []string{
+		"uq_users_single_super_admin",
+		"chk_users_super_admin_active",
+		"manager_user_id",
+		"fk_projects_manager_user",
+		"actor_user_id",
+		"chk_audit_logs_actor_identity",
+		"'project.transferred'",
+		"010 cannot backfill Project manager",
+	} {
+		if !strings.Contains(sqlText, marker) {
+			t.Errorf("multi-user authorization migration is missing %q", marker)
+		}
+	}
+	downContent, err := embeddedMigrations.ReadFile("migrations/010_multi_user_project_authorization.down.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(downContent), "cannot rollback multi-user authorization while multiple Users exist") {
+		t.Error("multi-user authorization rollback must fail closed while ordinary Users exist")
+	}
+}
+
 func TestTransportFailureTimingMigrationMatchesDispatcherContract(t *testing.T) {
 	content, err := embeddedMigrations.ReadFile("migrations/003_command_transport_failure_timing.up.sql")
 	if err != nil {

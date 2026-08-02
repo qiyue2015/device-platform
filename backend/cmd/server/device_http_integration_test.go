@@ -282,7 +282,7 @@ type persistentProjectCredentials struct {
 
 func createPersistentProjectForDeviceTest(t *testing.T, server http.Handler, admin map[string]string, name, webhookURL string) persistentProjectCredentials {
 	t.Helper()
-	body := map[string]any{"name": name}
+	body := map[string]any{"name": name, "manager_user_id": authTestAdminID}
 	if webhookURL != "" {
 		body["webhook_url"] = webhookURL
 	}

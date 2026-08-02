@@ -31,6 +31,7 @@ func TestProjectHTTPPostgresLifecycleAndOpenAuthentication(t *testing.T) {
 
 		created := doRequest(t, server, http.MethodPost, "/v1/projects", `{
 			"name":"  Project Alpha  ",
+			"manager_user_id":"`+authTestAdminID+`",
 			"webhook_url":"`+webhookURL+`",
 			"ip_whitelist":["192.0.2.42/24","192.0.2.0/24","2001:db8::/64"]
 		}`, admin)
@@ -112,7 +113,19 @@ func TestProjectHTTPPostgresLifecycleAndOpenAuthentication(t *testing.T) {
 		allowedIPv6Request.RemoteAddr = "[2001:db8::7]:4321"
 		allowedIPv6Request.Header.Set("X-API-Key", apiKey)
 		restarted.ServeHTTP(allowedIPv6, allowedIPv6Request)
-		assertEnvelope(t, allowedIPv6, http.StatusOK, true)
+		openProject := responseDataObject(t, assertEnvelope(t, allowedIPv6, http.StatusOK, true))
+		for _, key := range []string{
+			"manager_user_id", "manager", "webhook_url", "webhook_configured", "ip_whitelist", "api_key", "webhook_secret",
+		} {
+			if _, exists := openProject[key]; exists {
+				t.Fatalf("Open Project DTO exposed %s: %+v", key, openProject)
+			}
+		}
+		for _, key := range []string{"id", "name", "created_at", "updated_at"} {
+			if _, exists := openProject[key]; !exists {
+				t.Fatalf("Open Project DTO omitted %s: %+v", key, openProject)
+			}
+		}
 
 		restartedToken := loginProjectHTTPTestAdmin(t, restarted)
 		restartedAdmin := map[string]string{"Authorization": "Bearer " + restartedToken}
@@ -156,7 +169,7 @@ func TestProjectHTTPPostgresLifecycleAndOpenAuthentication(t *testing.T) {
 		}
 		assertNoCredentialDisclosure(t, reenabledData, rotatedAPIKey, rotatedWebhookSecret)
 
-		withoutWebhook := doRequest(t, restarted, http.MethodPost, "/v1/projects", `{"name":"No Webhook"}`, restartedAdmin)
+		withoutWebhook := doRequest(t, restarted, http.MethodPost, "/v1/projects", `{"name":"No Webhook","manager_user_id":"`+authTestAdminID+`"}`, restartedAdmin)
 		withoutWebhookBody := assertEnvelope(t, withoutWebhook, http.StatusCreated, true)
 		withoutWebhookData := responseDataObject(t, withoutWebhookBody)
 		withoutWebhookID := requiredStringField(t, withoutWebhookData, "id")
@@ -192,6 +205,17 @@ func TestProjectHTTPPostgresLifecycleAndOpenAuthentication(t *testing.T) {
 
 func newProjectHTTPTestServer(t *testing.T, db *sql.DB) http.Handler {
 	t.Helper()
+	ensureProjectHTTPTestAdmin(t, db)
+	auth, err := newMemoryAuthenticator("admin@test.local", "Test Admin", "test-admin-password", testJWTSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth.user.ID = authTestAdminID
+	return newPersistentHTTPTestServer(t, db, auth)
+}
+
+func newPersistentHTTPTestServer(t *testing.T, db *sql.DB, auth authenticator) http.Handler {
+	t.Helper()
 	projects, err := projectservice.New(repository.NewPostgresStore(db), projectservice.Config{
 		EncryptionKeys: map[int][]byte{1: []byte("0123456789abcdef0123456789abcdef")}, ActiveEncryptionKeyVersion: 1,
 	})
@@ -206,10 +230,6 @@ func newProjectHTTPTestServer(t *testing.T, db *sql.DB) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	auth, err := newMemoryAuthenticator("admin@test.local", "Test Admin", "test-admin-password", testJWTSecret)
-	if err != nil {
-		t.Fatal(err)
-	}
 	deviceService := devicecore.NewService()
 	providerRegistry := newCloudProviderRegistry(config{})
 	application := newAppWithServices(
@@ -220,6 +240,17 @@ func newProjectHTTPTestServer(t *testing.T, db *sql.DB) http.Handler {
 	)
 	application.setCommandResourceService(commands)
 	return application.routes()
+}
+
+func ensureProjectHTTPTestAdmin(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status)
+		VALUES ($1, 'admin@test.local', 'unused-by-memory-authenticator', 'Test Admin', true, 'active')
+		ON CONFLICT (id) DO NOTHING
+	`, authTestAdminID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func loginProjectHTTPTestAdmin(t *testing.T, server http.Handler) string {

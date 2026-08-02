@@ -510,8 +510,8 @@ func createInitialAdmin(ctx context.Context, db *sql.DB, id, passwordHash string
 		return fmt.Errorf("%w: users table is not empty", errAdminCreationConflict)
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO users (id, email, password_hash, display_name, is_admin)
-		VALUES ($1, $2, $3, $4, true)
+		INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status)
+		VALUES ($1, $2, $3, $4, true, 'active')
 	`, id, req.Email, passwordHash, req.DisplayName)
 	var pqErr *pq.Error
 	if errors.As(err, &pqErr) && pqErr.Code == "23505" {

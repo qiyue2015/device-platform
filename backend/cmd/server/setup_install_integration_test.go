@@ -159,7 +159,7 @@ func runSetupInstallProcesses(t *testing.T, db *sql.DB, markerPaths []string) ma
 func assertSingleSetupAdmin(t *testing.T, db *sql.DB) {
 	t.Helper()
 	var users, admins int
-	if err := db.QueryRow(`SELECT count(*), count(*) FILTER (WHERE is_admin = true) FROM users`).Scan(&users, &admins); err != nil {
+	if err := db.QueryRow(`SELECT count(*), count(*) FILTER (WHERE is_super_admin = true) FROM users`).Scan(&users, &admins); err != nil {
 		t.Fatal(err)
 	}
 	if users != 1 || admins != 1 {
@@ -190,8 +190,8 @@ func TestAdminPendingCrashRecoveryDeletesOnlyJournalAdminAndRestoresConfig(t *te
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`
-			INSERT INTO users (id, email, password_hash, display_name, is_admin)
-			VALUES ($1, 'admin@example.test', 'hash', 'Test Admin', true)
+			INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status)
+			VALUES ($1, 'admin@example.test', 'hash', 'Test Admin', true, 'active')
 		`, testAdminID); err != nil {
 			t.Fatal(err)
 		}
@@ -282,8 +282,8 @@ func TestMarkerPresentCrashRecoveryNeverDeletesAdminOrRestoresConfig(t *testing.
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`
-			INSERT INTO users (id, email, password_hash, display_name, is_admin)
-			VALUES ($1, 'admin@example.test', 'hash', 'Test Admin', true)
+			INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status)
+			VALUES ($1, 'admin@example.test', 'hash', 'Test Admin', true, 'active')
 		`, testAdminID); err != nil {
 			t.Fatal(err)
 		}

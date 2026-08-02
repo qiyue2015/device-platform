@@ -1461,7 +1461,7 @@ func seedWorkerCommandWithBinding(
 	err = store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
 		project := domain.Project{
 			ID: workerProjectID, Name: "Worker Project", APIKeyDigest: bytes.Repeat([]byte{0x91}, 32),
-			IPWhitelist: []string{}, CreatedAt: now, UpdatedAt: now,
+			ManagerUserID: workerManagerUserID, IPWhitelist: []string{}, CreatedAt: now, UpdatedAt: now,
 		}
 		if err := tx.Projects().Create(ctx, project); err != nil {
 			return err
@@ -1604,5 +1604,13 @@ func withWorkerDatabase(t *testing.T, fn func(*sql.DB, *repository.PostgresStore
 	if err := storage.ApplyMigrations(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`
+		INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status)
+		VALUES ($1, 'worker-manager@example.test', 'hash', 'Worker Manager', true, 'active')
+	`, workerManagerUserID); err != nil {
+		t.Fatal(err)
+	}
 	fn(db, repository.NewPostgresStore(db))
 }
+
+const workerManagerUserID = "71000000-0000-0000-0000-000000000003"

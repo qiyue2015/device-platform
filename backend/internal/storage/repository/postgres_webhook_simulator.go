@@ -45,17 +45,20 @@ func (r *postgresWebhookRepository) ListDeliveries(ctx context.Context, request 
 		return nil, 0, ErrInvalidRepositoryRequest
 	}
 	const where = `
-		WHERE ($1::uuid IS NULL OR project_id = $1)
-			AND ($2::uuid IS NULL OR event_id = $2)
-			AND ($3::text IS NULL OR status = $3)`
-	arguments := []any{nullableString(request.ProjectID), nullableString(request.EventID), nullableWebhookStatus(request.Status)}
+			WHERE ($1::uuid IS NULL OR project_id = $1)
+				AND ($2::uuid IS NULL OR EXISTS (
+					SELECT 1 FROM projects p WHERE p.id = webhook_deliveries.project_id AND p.manager_user_id = $2
+				))
+				AND ($3::uuid IS NULL OR event_id = $3)
+				AND ($4::text IS NULL OR status = $4)`
+	arguments := []any{nullableString(request.ProjectID), nullableString(request.ManagerUserID), nullableString(request.EventID), nullableWebhookStatus(request.Status)}
 	var total int64
 	if err := r.exec.QueryRowContext(ctx, `SELECT count(*) FROM webhook_deliveries`+where, arguments...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := r.exec.QueryContext(ctx, webhookDeliverySelect+where+`
 		ORDER BY created_at DESC, id DESC
-		LIMIT $4 OFFSET $5
+			LIMIT $5 OFFSET $6
 	`, append(arguments, request.Limit, request.Offset)...)
 	if err != nil {
 		return nil, 0, err

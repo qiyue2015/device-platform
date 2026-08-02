@@ -124,8 +124,8 @@ func TestNewAppRejectsDatabaseMissingLatestMigration(t *testing.T) {
 			ReadHeaderTimeout:          5 * time.Second,
 		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		if err == nil || !strings.Contains(err.Error(), "database migration validation failed") ||
-			!strings.Contains(err.Error(), "missing=[009_dual_provider_smart_lock]") {
-			t.Fatalf("newApp must reject a database missing migration 009, got %v", err)
+			!strings.Contains(err.Error(), "missing=[010_multi_user_project_authorization]") {
+			t.Fatalf("newApp must reject a database missing migration 010, got %v", err)
 		}
 	})
 }

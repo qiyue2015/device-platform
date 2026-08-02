@@ -80,15 +80,8 @@ func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest
 	}
 	var result CreateResult
 	err = s.store.TransactCommand(ctx, func(tx repository.CommandTx) error {
-		if replay, found, replayErr := findIdempotentReplay(
-			ctx, tx.Commands(), projectID, idempotencyKey, deviceID, commandType, payload,
-		); replayErr != nil {
-			return replayErr
-		} else if found {
-			result = replay
-			return nil
-		}
-		if _, lockErr := tx.Projects().GetForUpdate(ctx, projectID); errors.Is(lockErr, sql.ErrNoRows) {
+		project, lockErr := tx.Projects().GetForUpdate(ctx, projectID)
+		if errors.Is(lockErr, sql.ErrNoRows) || lockErr == nil && !scope.CanAccessProject(project) {
 			return ErrProjectNotFound
 		} else if lockErr != nil {
 			return lockErr
@@ -225,8 +218,17 @@ func (s *Service) List(ctx context.Context, scope Scope, request ListRequest) (L
 	if err != nil {
 		return ListResult{}, err
 	}
+	if scope.Kind == ScopeUser && request.ProjectID != nil {
+		project, projectErr := s.store.Projects().Get(ctx, *request.ProjectID)
+		if errors.Is(projectErr, sql.ErrNoRows) || projectErr == nil && !scope.CanAccessProject(project) {
+			return ListResult{}, ErrProjectNotFound
+		}
+		if projectErr != nil {
+			return ListResult{}, projectErr
+		}
+	}
 	items, total, err := s.store.Commands().List(ctx, repository.ListCommandsRequest{
-		ProjectID: request.ProjectID, DeviceID: request.DeviceID, CommandType: request.CommandType,
+		ProjectID: request.ProjectID, ManagerUserID: scope.ManagerUserID(), DeviceID: request.DeviceID, CommandType: request.CommandType,
 		Status: request.Status, Limit: request.PageSize, Offset: (request.Page - 1) * request.PageSize,
 	})
 	if err != nil {
@@ -246,6 +248,15 @@ func (s *Service) Get(ctx context.Context, scope Scope, commandID string) (Detai
 	}
 	if err != nil {
 		return Detail{}, err
+	}
+	if scope.Kind == ScopeUser {
+		project, projectErr := s.store.Projects().Get(ctx, command.ProjectID)
+		if errors.Is(projectErr, sql.ErrNoRows) || projectErr == nil && !scope.CanAccessProject(project) {
+			return Detail{}, ErrCommandNotFound
+		}
+		if projectErr != nil {
+			return Detail{}, projectErr
+		}
 	}
 	attempts, err := s.store.Commands().ListAttempts(ctx, commandID)
 	if err != nil {
@@ -279,6 +290,13 @@ func (s *Service) Cancel(ctx context.Context, scope Scope, commandID string, met
 		}
 		if lockErr != nil {
 			return lockErr
+		}
+		project, projectErr := tx.Projects().Get(ctx, current.ProjectID)
+		if errors.Is(projectErr, sql.ErrNoRows) || projectErr == nil && !scope.CanAccessProject(project) {
+			return ErrCommandNotFound
+		}
+		if projectErr != nil {
+			return projectErr
 		}
 		updated, cancelErr := tx.Commands().CancelQueued(ctx, commandID, nil)
 		if cancelErr != nil {
@@ -417,7 +435,8 @@ func (s *Service) createAudit(ctx context.Context, tx repository.CommandTx, meta
 	}
 	projectID, resourceID := command.ProjectID, command.ID
 	return tx.Audits().Create(ctx, domain.AuditLog{
-		ID: id, ActorType: metadata.ActorType, ActorID: optionalString(metadata.ActorID), ProjectID: &projectID,
+		ID: id, ActorType: metadata.ActorType, ActorUserID: optionalString(metadata.ActorUserID),
+		ActorID: optionalString(metadata.ActorID), ProjectID: &projectID,
 		Action: action, Result: domain.AuditResultSuccess, ResourceType: "command", ResourceID: &resourceID,
 		IPAddress: optionalString(metadata.IPAddress), RequestID: optionalString(metadata.RequestID),
 		Metadata: fields, OccurredAt: s.clock.Now().UTC(),

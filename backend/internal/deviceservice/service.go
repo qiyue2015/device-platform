@@ -110,11 +110,8 @@ func (s *Service) GetDeviceType(ctx context.Context, code string) (DeviceType, e
 
 func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest, metadata RequestMetadata) (Device, error) {
 	scope, err := validateScope(scope)
-	if err != nil {
-		return Device{}, err
-	}
-	if scope.Kind != ScopeAdmin {
-		return Device{}, fmt.Errorf("%w: Device creation requires admin scope", ErrInvalidRequest)
+	if err != nil || !scope.IsHuman() {
+		return Device{}, ErrInvalidRequest
 	}
 	metadata, err = validateMetadata(metadata)
 	if err != nil {
@@ -171,7 +168,8 @@ func (s *Service) Create(ctx context.Context, scope Scope, request CreateRequest
 		CreatedAt: now, UpdatedAt: now,
 	}
 	err = s.store.TransactDevice(ctx, func(tx repository.DeviceTx) error {
-		if _, projectErr := tx.Projects().Get(ctx, projectID); errors.Is(projectErr, sql.ErrNoRows) {
+		project, projectErr := tx.Projects().Get(ctx, projectID)
+		if errors.Is(projectErr, sql.ErrNoRows) || projectErr == nil && !scope.CanAccessProject(project) {
 			return ErrProjectNotFound
 		} else if projectErr != nil {
 			return projectErr
@@ -230,6 +228,15 @@ func (s *Service) Get(ctx context.Context, scope Scope, deviceID string) (Device
 	if err != nil {
 		return Device{}, err
 	}
+	if scope.Kind == ScopeUser {
+		project, projectErr := s.store.Projects().Get(ctx, device.ProjectID)
+		if errors.Is(projectErr, sql.ErrNoRows) || projectErr == nil && !scope.CanAccessProject(project) {
+			return Device{}, ErrDeviceNotFound
+		}
+		if projectErr != nil {
+			return Device{}, projectErr
+		}
+	}
 	return s.withState(ctx, device)
 }
 
@@ -242,10 +249,19 @@ func (s *Service) List(ctx context.Context, scope Scope, request ListRequest) (L
 	if err != nil {
 		return ListResult{}, err
 	}
+	if scope.Kind == ScopeUser && request.ProjectID != nil {
+		project, projectErr := s.store.Projects().Get(ctx, *request.ProjectID)
+		if errors.Is(projectErr, sql.ErrNoRows) || projectErr == nil && !scope.CanAccessProject(project) {
+			return ListResult{}, ErrProjectNotFound
+		}
+		if projectErr != nil {
+			return ListResult{}, projectErr
+		}
+	}
 	items, total, err := s.store.Devices().List(ctx, repository.ListDevicesRequest{
 		ProjectID: request.ProjectID, DeviceTypeCode: request.DeviceTypeCode, ProviderCode: request.ProviderCode,
 		ConnectionStatus: request.ConnectionStatus, LifecycleStatus: request.LifecycleStatus,
-		Limit: request.PageSize, Offset: (request.Page - 1) * request.PageSize,
+		ManagerUserID: scope.ManagerUserID(), Limit: request.PageSize, Offset: (request.Page - 1) * request.PageSize,
 	})
 	if err != nil {
 		return ListResult{}, err
@@ -263,11 +279,8 @@ func (s *Service) List(ctx context.Context, scope Scope, request ListRequest) (L
 
 func (s *Service) Update(ctx context.Context, scope Scope, deviceID string, request UpdateRequest, metadata RequestMetadata) (Device, error) {
 	scope, err := validateScope(scope)
-	if err != nil || !validUUID(deviceID) {
+	if err != nil || !scope.IsHuman() || !validUUID(deviceID) {
 		return Device{}, ErrInvalidRequest
-	}
-	if scope.Kind != ScopeAdmin {
-		return Device{}, fmt.Errorf("%w: Device update requires admin scope", ErrInvalidRequest)
 	}
 	metadata, err = validateMetadata(metadata)
 	if err != nil {
@@ -296,11 +309,18 @@ func (s *Service) Update(ctx context.Context, scope Scope, deviceID string, requ
 	var updated domain.Device
 	err = s.store.TransactDevice(ctx, func(tx repository.DeviceTx) error {
 		current, lockErr := tx.Devices().GetForUpdate(ctx, deviceID)
-		if errors.Is(lockErr, sql.ErrNoRows) || lockErr == nil && scope.Kind == ScopeProject && current.ProjectID != scope.ProjectID {
+		if errors.Is(lockErr, sql.ErrNoRows) {
 			return ErrDeviceNotFound
 		}
 		if lockErr != nil {
 			return lockErr
+		}
+		project, projectErr := tx.Projects().Get(ctx, current.ProjectID)
+		if errors.Is(projectErr, sql.ErrNoRows) || projectErr == nil && !scope.CanAccessProject(project) {
+			return ErrDeviceNotFound
+		}
+		if projectErr != nil {
+			return projectErr
 		}
 		if current.LifecycleStatus == domain.LifecycleStatusDeleted {
 			return ErrDeviceImmutable
@@ -438,7 +458,8 @@ func (s *Service) createAudit(ctx context.Context, tx repository.DeviceTx, metad
 	}
 	projectID, resourceID := device.ProjectID, device.ID
 	return tx.Audits().Create(ctx, domain.AuditLog{
-		ID: id, ActorType: metadata.ActorType, ActorID: optionalString(metadata.ActorID), ProjectID: &projectID,
+		ID: id, ActorType: metadata.ActorType, ActorUserID: optionalString(metadata.ActorUserID),
+		ActorID: optionalString(metadata.ActorID), ProjectID: &projectID,
 		Action: action, Result: domain.AuditResultSuccess, ResourceType: "device", ResourceID: &resourceID,
 		IPAddress: optionalString(metadata.IPAddress), RequestID: optionalString(metadata.RequestID),
 		Metadata: fields, OccurredAt: s.clock.Now().UTC(),

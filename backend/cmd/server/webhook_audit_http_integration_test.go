@@ -87,18 +87,18 @@ func TestWebhookAuditHTTPPostgresReadReplayAndRestart(t *testing.T) {
 
 		var replayAudits int
 		var originalStatus, originalRawBody string
-		var actorID sql.NullString
+		var actorUserID string
 		if err := db.QueryRow(`SELECT count(*) FROM audit_logs WHERE action = 'webhook.delivery_replayed' AND resource_id = $1`, replayID).Scan(&replayAudits); err != nil {
 			t.Fatal(err)
 		}
-		if err := db.QueryRow(`SELECT actor_id FROM audit_logs WHERE action = 'webhook.delivery_replayed' AND resource_id = $1`, replayID).Scan(&actorID); err != nil {
+		if err := db.QueryRow(`SELECT actor_user_id::text FROM audit_logs WHERE action = 'webhook.delivery_replayed' AND resource_id = $1`, replayID).Scan(&actorUserID); err != nil {
 			t.Fatal(err)
 		}
 		if err := db.QueryRow(`SELECT status, convert_from(raw_body, 'UTF8') FROM webhook_deliveries WHERE id = $1`, fixture.deliveryID).Scan(&originalStatus, &originalRawBody); err != nil {
 			t.Fatal(err)
 		}
-		if replayAudits != 1 || !actorID.Valid || actorID.String == "" || originalStatus != "dead" || originalRawBody != "RAW_PRIVATE_MARKER" {
-			t.Fatalf("replay atomic facts audits=%d actor=%q original=%s raw=%q", replayAudits, actorID.String, originalStatus, originalRawBody)
+		if replayAudits != 1 || actorUserID != authTestAdminID || originalStatus != "dead" || originalRawBody != "RAW_PRIVATE_MARKER" {
+			t.Fatalf("replay atomic facts audits=%d actor=%q original=%s raw=%q", replayAudits, actorUserID, originalStatus, originalRawBody)
 		}
 
 		restarted := newProjectHTTPTestServer(t, db)

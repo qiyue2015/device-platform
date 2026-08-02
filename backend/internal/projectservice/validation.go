@@ -8,8 +8,6 @@ import (
 	"net/url"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/qiyue2015/device-platform/internal/domain"
 )
 
 func normalizeName(value string) (string, error) {
@@ -123,14 +121,9 @@ func whitelistAllows(values []string, address netip.Addr) (bool, error) {
 }
 
 func validateRequestMetadata(metadata RequestMetadata) (RequestMetadata, error) {
-	switch metadata.ActorType {
-	case domain.ActorTypeAdmin, domain.ActorTypeProject, domain.ActorTypeProvider, domain.ActorTypeSystem:
-	default:
-		return RequestMetadata{}, fmt.Errorf("%w: actor_type is invalid", ErrInvalidRequest)
-	}
-	metadata.ActorID = strings.TrimSpace(metadata.ActorID)
+	metadata.ActorUserID = strings.TrimSpace(metadata.ActorUserID)
 	metadata.RequestID = strings.TrimSpace(metadata.RequestID)
-	if metadata.RequestID == "" || len(metadata.RequestID) > 255 {
+	if !validUUID(metadata.ActorUserID) || metadata.RequestID == "" || len(metadata.RequestID) > 255 {
 		return RequestMetadata{}, fmt.Errorf("%w: request_id is required", ErrInvalidRequest)
 	}
 	if metadata.IPAddress != "" {

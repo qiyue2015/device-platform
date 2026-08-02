@@ -26,6 +26,7 @@ const (
 	wwtiotDeviceID      = "30000000-0000-0000-0000-000000000001"
 	simulatorDeviceID   = "30000000-0000-0000-0000-000000000002"
 	replacementDeviceID = "30000000-0000-0000-0000-000000000003"
+	repositoryManagerID = "70000000-0000-0000-0000-000000000001"
 )
 
 func TestPostgresProjectDeviceRepositories(t *testing.T) {
@@ -35,20 +36,22 @@ func TestPostgresProjectDeviceRepositories(t *testing.T) {
 		now := time.Date(2026, 7, 31, 14, 0, 0, 0, time.UTC)
 		apiDigest := bytes.Repeat([]byte{0x11}, 32)
 		projectOne := domain.Project{
-			ID:           projectOneID,
-			Name:         "Project One",
-			APIKeyDigest: apiDigest,
-			IPWhitelist:  []string{"192.0.2.0/24", "2001:db8::1"},
-			CreatedAt:    now,
-			UpdatedAt:    now,
+			ID:            projectOneID,
+			Name:          "Project One",
+			ManagerUserID: repositoryManagerID,
+			APIKeyDigest:  apiDigest,
+			IPWhitelist:   []string{"192.0.2.0/24", "2001:db8::1"},
+			CreatedAt:     now,
+			UpdatedAt:     now,
 		}
 		projectTwo := domain.Project{
-			ID:           projectTwoID,
-			Name:         "Project Two",
-			APIKeyDigest: bytes.Repeat([]byte{0x22}, 32),
-			IPWhitelist:  []string{},
-			CreatedAt:    now,
-			UpdatedAt:    now,
+			ID:            projectTwoID,
+			Name:          "Project Two",
+			ManagerUserID: repositoryManagerID,
+			APIKeyDigest:  bytes.Repeat([]byte{0x22}, 32),
+			IPWhitelist:   []string{},
+			CreatedAt:     now,
+			UpdatedAt:     now,
 		}
 
 		deviceType, err := store.DeviceTypes().GetByCode(ctx, domain.DeviceTypeSmartLock)
@@ -314,12 +317,13 @@ func TestPostgresStoreRollsBackProjectDeviceTransaction(t *testing.T) {
 		sentinel := errors.New("stop transaction")
 		err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
 			if err := tx.Projects().Create(ctx, domain.Project{
-				ID:           projectOneID,
-				Name:         "Rolled Back",
-				APIKeyDigest: bytes.Repeat([]byte{0x55}, 32),
-				IPWhitelist:  []string{},
-				CreatedAt:    time.Now().UTC(),
-				UpdatedAt:    time.Now().UTC(),
+				ID:            projectOneID,
+				Name:          "Rolled Back",
+				ManagerUserID: repositoryManagerID,
+				APIKeyDigest:  bytes.Repeat([]byte{0x55}, 32),
+				IPWhitelist:   []string{},
+				CreatedAt:     time.Now().UTC(),
+				UpdatedAt:     time.Now().UTC(),
 			}); err != nil {
 				return err
 			}
@@ -384,6 +388,12 @@ func withRepositoryTestDatabase(t *testing.T, fn func(*sql.DB)) {
 	}
 	defer db.Close()
 	if err := storage.ApplyMigrations(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status)
+		VALUES ($1, 'repository-manager@example.test', 'hash', 'Repository Manager', true, 'active')
+	`, repositoryManagerID); err != nil {
 		t.Fatal(err)
 	}
 	fn(db)

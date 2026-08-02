@@ -30,14 +30,17 @@ func (r *postgresCommandRepository) List(ctx context.Context, request ListComman
 		return nil, 0, ErrInvalidRepositoryRequest
 	}
 	rows, err := r.exec.QueryContext(ctx, commandSelect+`
-		WHERE ($1::uuid IS NULL OR project_id = $1)
-			AND ($2::uuid IS NULL OR device_id = $2)
-			AND ($3::text IS NULL OR command_type = $3)
-			AND ($4::text IS NULL OR status = $4)
-		ORDER BY created_at DESC, id DESC
-		LIMIT $5 OFFSET $6
-	`, nullableString(request.ProjectID), nullableString(request.DeviceID), nullableActionIdentifier(request.CommandType),
-		nullableCommandStatus(request.Status), request.Limit, request.Offset)
+			WHERE ($1::uuid IS NULL OR project_id = $1)
+				AND ($2::uuid IS NULL OR EXISTS (
+					SELECT 1 FROM projects p WHERE p.id = device_commands.project_id AND p.manager_user_id = $2
+				))
+				AND ($3::uuid IS NULL OR device_id = $3)
+				AND ($4::text IS NULL OR command_type = $4)
+				AND ($5::text IS NULL OR status = $5)
+			ORDER BY created_at DESC, id DESC
+			LIMIT $6 OFFSET $7
+		`, nullableString(request.ProjectID), nullableString(request.ManagerUserID), nullableString(request.DeviceID),
+		nullableActionIdentifier(request.CommandType), nullableCommandStatus(request.Status), request.Limit, request.Offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -55,13 +58,16 @@ func (r *postgresCommandRepository) List(ctx context.Context, request ListComman
 	}
 	var total int64
 	err = r.exec.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM device_commands
-		WHERE ($1::uuid IS NULL OR project_id = $1)
-			AND ($2::uuid IS NULL OR device_id = $2)
-			AND ($3::text IS NULL OR command_type = $3)
-			AND ($4::text IS NULL OR status = $4)
-	`, nullableString(request.ProjectID), nullableString(request.DeviceID), nullableActionIdentifier(request.CommandType),
-		nullableCommandStatus(request.Status)).Scan(&total)
+			SELECT COUNT(*) FROM device_commands
+			WHERE ($1::uuid IS NULL OR project_id = $1)
+				AND ($2::uuid IS NULL OR EXISTS (
+					SELECT 1 FROM projects p WHERE p.id = device_commands.project_id AND p.manager_user_id = $2
+				))
+				AND ($3::uuid IS NULL OR device_id = $3)
+				AND ($4::text IS NULL OR command_type = $4)
+				AND ($5::text IS NULL OR status = $5)
+		`, nullableString(request.ProjectID), nullableString(request.ManagerUserID), nullableString(request.DeviceID),
+		nullableActionIdentifier(request.CommandType), nullableCommandStatus(request.Status)).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1268,12 +1274,16 @@ func (r *postgresEventRepository) List(ctx context.Context, request ListEventsRe
 		return nil, 0, ErrInvalidRepositoryRequest
 	}
 	const where = `
-		WHERE ($1::uuid IS NULL OR project_id = $1)
-			AND ($2::uuid IS NULL OR device_id = $2)
-			AND ($3::uuid IS NULL OR command_id = $3)
-			AND ($4::text IS NULL OR event_type = $4)`
+			WHERE ($1::uuid IS NULL OR project_id = $1)
+				AND ($2::uuid IS NULL OR EXISTS (
+					SELECT 1 FROM projects p WHERE p.id = device_events.project_id AND p.manager_user_id = $2
+				))
+				AND ($3::uuid IS NULL OR device_id = $3)
+				AND ($4::uuid IS NULL OR command_id = $4)
+				AND ($5::text IS NULL OR event_type = $5)`
 	arguments := []any{
-		nullableString(request.ProjectID), nullableString(request.DeviceID), nullableString(request.CommandID), nullableEventType(request.EventType),
+		nullableString(request.ProjectID), nullableString(request.ManagerUserID), nullableString(request.DeviceID),
+		nullableString(request.CommandID), nullableEventType(request.EventType),
 	}
 	var total int64
 	if err := r.exec.QueryRowContext(ctx, `SELECT count(*) FROM device_events`+where, arguments...).Scan(&total); err != nil {
@@ -1281,7 +1291,7 @@ func (r *postgresEventRepository) List(ctx context.Context, request ListEventsRe
 	}
 	rows, err := r.exec.QueryContext(ctx, eventSelect+where+`
 		ORDER BY occurred_at DESC, id DESC
-		LIMIT $5 OFFSET $6
+			LIMIT $6 OFFSET $7
 	`, append(arguments, request.Limit, request.Offset)...)
 	if err != nil {
 		return nil, 0, err
@@ -1398,14 +1408,17 @@ func (r *postgresAuditRepository) List(ctx context.Context, request ListAuditsRe
 		return nil, 0, ErrInvalidRepositoryRequest
 	}
 	const where = `
-		WHERE ($1::uuid IS NULL OR project_id = $1)
-			AND ($2::text IS NULL OR actor_type = $2)
-			AND ($3::text IS NULL OR action = $3)
-			AND ($4::text IS NULL OR result = $4)
-			AND ($5::text IS NULL OR resource_type = $5)
-			AND ($6::text IS NULL OR resource_id = $6)`
+			WHERE ($1::uuid IS NULL OR project_id = $1)
+				AND ($2::uuid IS NULL OR EXISTS (
+					SELECT 1 FROM projects p WHERE p.id = audit_logs.project_id AND p.manager_user_id = $2
+				))
+				AND ($3::text IS NULL OR actor_type = $3)
+				AND ($4::text IS NULL OR action = $4)
+				AND ($5::text IS NULL OR result = $5)
+				AND ($6::text IS NULL OR resource_type = $6)
+				AND ($7::text IS NULL OR resource_id = $7)`
 	arguments := []any{
-		nullableString(request.ProjectID), nullableActorType(request.ActorType), nullableString(request.Action),
+		nullableString(request.ProjectID), nullableString(request.ManagerUserID), nullableActorType(request.ActorType), nullableString(request.Action),
 		nullableAuditResult(request.Result), nullableString(request.ResourceType), nullableString(request.ResourceID),
 	}
 	var total int64
@@ -1414,7 +1427,7 @@ func (r *postgresAuditRepository) List(ctx context.Context, request ListAuditsRe
 	}
 	rows, err := r.exec.QueryContext(ctx, auditSelect+where+`
 		ORDER BY occurred_at DESC, id DESC
-		LIMIT $7 OFFSET $8
+			LIMIT $8 OFFSET $9
 	`, append(arguments, request.Limit, request.Offset)...)
 	if err != nil {
 		return nil, 0, err
@@ -1455,12 +1468,13 @@ func (r *postgresAuditRepository) Create(ctx context.Context, log domain.AuditLo
 	}
 	_, err = r.exec.ExecContext(ctx, `
 		INSERT INTO audit_logs (
-			id, actor_type, actor_id, project_id, action, result,
+			id, actor_type, actor_user_id, actor_id, project_id, action, result,
 			resource_type, resource_id, ip_address, request_id, metadata, occurred_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`,
 		log.ID,
 		log.ActorType,
+		nullableString(log.ActorUserID),
 		nullableString(log.ActorID),
 		nullableString(log.ProjectID),
 		log.Action,
@@ -1476,17 +1490,18 @@ func (r *postgresAuditRepository) Create(ctx context.Context, log domain.AuditLo
 }
 
 const auditSelect = `
-	SELECT id::text, actor_type, actor_id, project_id::text, action, result,
+	SELECT id::text, actor_type, actor_user_id::text, actor_id, project_id::text, action, result,
 		resource_type, resource_id, host(ip_address), request_id, metadata, occurred_at
 	FROM audit_logs`
 
 func scanAudit(row rowScanner) (domain.AuditLog, error) {
 	var log domain.AuditLog
-	var actorID, projectID, resourceID, ipAddress, requestID sql.NullString
+	var actorUserID, actorID, projectID, resourceID, ipAddress, requestID sql.NullString
 	var metadata []byte
 	err := row.Scan(
 		&log.ID,
 		&log.ActorType,
+		&actorUserID,
 		&actorID,
 		&projectID,
 		&log.Action,
@@ -1501,6 +1516,7 @@ func scanAudit(row rowScanner) (domain.AuditLog, error) {
 	if err != nil {
 		return domain.AuditLog{}, err
 	}
+	log.ActorUserID = stringPointer(actorUserID)
 	log.ActorID = stringPointer(actorID)
 	log.ProjectID = stringPointer(projectID)
 	log.ResourceID = stringPointer(resourceID)

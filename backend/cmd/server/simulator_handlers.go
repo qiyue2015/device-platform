@@ -17,6 +17,9 @@ type simulatorUpdatePayload struct {
 }
 
 func (a *app) handleSimulator(w http.ResponseWriter, r *http.Request) error {
+	if !a.humanScope(r).IsSuperAdmin() {
+		return newAPIError(http.StatusForbidden, "forbidden", "operation is forbidden")
+	}
 	service := a.simulatorService()
 	if service == nil {
 		legacy := http.NewServeMux()
@@ -51,7 +54,7 @@ func (a *app) handleSimulator(w http.ResponseWriter, r *http.Request) error {
 		config, err := service.Update(r.Context(), simulatorruntime.UpdateRequest{
 			Outcome: *payload.Outcome, DelayMS: *payload.DelayMS,
 		}, simulatorruntime.RequestMetadata{
-			ActorType: domain.ActorTypeAdmin, ActorID: user.ID, IPAddress: clientIP(r),
+			ActorUserID: user.ID, IPAddress: clientIP(r),
 			RequestID: httpjson.RequestID(r.Context()),
 		})
 		if errors.Is(err, simulatorruntime.ErrInvalidRequest) {

@@ -32,6 +32,18 @@ type ProjectStore interface {
 }
 
 type ProjectTx interface {
+	Users() UserRepository
+	Projects() ProjectRepository
+	Audits() AuditRepository
+}
+
+type UserStore interface {
+	Users() UserQueries
+	TransactUser(ctx context.Context, fn func(UserTx) error) error
+}
+
+type UserTx interface {
+	Users() UserRepository
 	Projects() ProjectRepository
 	Audits() AuditRepository
 }
@@ -44,6 +56,7 @@ type DeviceStore interface {
 }
 
 type CommandStore interface {
+	Projects() ProjectQueries
 	Commands() CommandQueries
 	Events() EventQueries
 	TransactCommand(ctx context.Context, fn func(CommandTx) error) error
@@ -55,6 +68,7 @@ type SimulatorStore interface {
 }
 
 type WebhookAuditStore interface {
+	Projects() ProjectQueries
 	Events() EventQueries
 	Webhooks() WebhookQueries
 	Audits() AuditQueries
@@ -133,11 +147,21 @@ type Queries interface {
 type UserQueries interface {
 	Get(ctx context.Context, id string) (domain.User, error)
 	GetByEmail(ctx context.Context, normalizedEmail string) (domain.User, error)
+	List(ctx context.Context, request ListUsersRequest) ([]domain.User, int64, error)
+}
+
+type ListUsersRequest struct {
+	Email  *string
+	Status *domain.UserStatus
+	Limit  int
+	Offset int
 }
 
 type UserRepository interface {
 	UserQueries
 	Create(ctx context.Context, user domain.User) error
+	GetForUpdate(ctx context.Context, id string) (domain.User, error)
+	SetStatus(ctx context.Context, id string, status domain.UserStatus, invalidateSessions bool) error
 	IncrementSessionGeneration(ctx context.Context, id string, expected int64) (next int64, updated bool, err error)
 }
 
@@ -161,15 +185,18 @@ type ProjectQueries interface {
 }
 
 type ListProjectsRequest struct {
-	Name   *string
-	Limit  int
-	Offset int
+	Name          *string
+	ManagerUserID *string
+	Limit         int
+	Offset        int
 }
 
 type ProjectRepository interface {
 	ProjectQueries
 	Create(ctx context.Context, project domain.Project) error
 	GetForUpdate(ctx context.Context, id string) (domain.Project, error)
+	CountByManager(ctx context.Context, managerUserID string) (int64, error)
+	SetManager(ctx context.Context, id, managerUserID string) error
 	Rename(ctx context.Context, id, name string) error
 	ReplaceIPWhitelist(ctx context.Context, id string, whitelist []string) error
 	SetWebhookConfiguration(ctx context.Context, id string, webhookURL *string, configVersion int64, secretVersion *int) error
@@ -195,6 +222,7 @@ type DeviceQueries interface {
 
 type ListDevicesRequest struct {
 	ProjectID        *string
+	ManagerUserID    *string
 	DeviceTypeCode   *string
 	ProviderCode     *string
 	ConnectionStatus *domain.ConnectionStatus
@@ -276,12 +304,13 @@ type CommandQueries interface {
 }
 
 type ListCommandsRequest struct {
-	ProjectID   *string
-	DeviceID    *string
-	CommandType *domain.ActionIdentifier
-	Status      *domain.CommandStatus
-	Limit       int
-	Offset      int
+	ProjectID     *string
+	ManagerUserID *string
+	DeviceID      *string
+	CommandType   *domain.ActionIdentifier
+	Status        *domain.CommandStatus
+	Limit         int
+	Offset        int
 }
 
 type CommandRepository interface {
@@ -331,12 +360,13 @@ type EventQueries interface {
 }
 
 type ListEventsRequest struct {
-	ProjectID *string
-	DeviceID  *string
-	CommandID *string
-	EventType *domain.EventType
-	Limit     int
-	Offset    int
+	ProjectID     *string
+	ManagerUserID *string
+	DeviceID      *string
+	CommandID     *string
+	EventType     *domain.EventType
+	Limit         int
+	Offset        int
 }
 
 type EventRepository interface {
@@ -386,11 +416,12 @@ type WebhookQueries interface {
 }
 
 type ListWebhookDeliveriesRequest struct {
-	ProjectID *string
-	EventID   *string
-	Status    *domain.WebhookDeliveryStatus
-	Limit     int
-	Offset    int
+	ProjectID     *string
+	ManagerUserID *string
+	EventID       *string
+	Status        *domain.WebhookDeliveryStatus
+	Limit         int
+	Offset        int
 }
 
 type WebhookRepository interface {
@@ -409,14 +440,15 @@ type AuditQueries interface {
 }
 
 type ListAuditsRequest struct {
-	ProjectID    *string
-	ActorType    *domain.ActorType
-	Action       *string
-	Result       *domain.AuditResult
-	ResourceType *string
-	ResourceID   *string
-	Limit        int
-	Offset       int
+	ProjectID     *string
+	ManagerUserID *string
+	ActorType     *domain.ActorType
+	Action        *string
+	Result        *domain.AuditResult
+	ResourceType  *string
+	ResourceID    *string
+	Limit         int
+	Offset        int
 }
 
 type AuditRepository interface {

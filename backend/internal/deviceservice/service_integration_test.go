@@ -28,8 +28,9 @@ import (
 )
 
 const (
-	projectOneID = "10000000-0000-0000-0000-000000000001"
-	projectTwoID = "10000000-0000-0000-0000-000000000002"
+	projectOneID        = "10000000-0000-0000-0000-000000000001"
+	projectTwoID        = "10000000-0000-0000-0000-000000000002"
+	deviceServiceUserID = "70000000-0000-0000-0000-000000000001"
 )
 
 type fixedClock struct{ now time.Time }
@@ -43,8 +44,9 @@ func TestDeviceServicePostgresLifecycleScopeAndState(t *testing.T) {
 		seedProjects(t, ctx, store)
 		service := newService(t, store)
 		metadata := deviceservice.RequestMetadata{
-			ActorType: domain.ActorTypeAdmin, ActorID: "admin-1", IPAddress: "2001:db8::10", RequestID: "request-1",
+			ActorType: domain.ActorTypeUser, ActorUserID: deviceServiceUserID, IPAddress: "2001:db8::10", RequestID: "request-1",
 		}
+		superAdminScope := deviceservice.HumanScope(deviceServiceUserID, true)
 		projectMetadata := deviceservice.RequestMetadata{ActorType: domain.ActorTypeProject, ActorID: projectOneID, RequestID: "request-open"}
 		if _, err := service.Create(ctx, deviceservice.ProjectScope(projectOneID), deviceservice.CreateRequest{
 			Name: "Forbidden Open Create", DeviceTypeCode: domain.DeviceTypeSmartLock, ProviderCode: domain.ProviderCodeSimulator,
@@ -62,7 +64,7 @@ func TestDeviceServicePostgresLifecycleScopeAndState(t *testing.T) {
 		}
 
 		wwtiotID := "LOCK-001"
-		created, err := service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
+		created, err := service.Create(ctx, superAdminScope, deviceservice.CreateRequest{
 			ProjectID: projectOneID, Name: "  Front Lock  ", DeviceTypeCode: domain.DeviceTypeSmartLock,
 			ProviderCode: domain.ProviderCodeWWTIOT, ProviderProfile: domain.ProviderProfileWWTIOTV2,
 			ProviderDeviceID: &wwtiotID,
@@ -94,7 +96,7 @@ func TestDeviceServicePostgresLifecycleScopeAndState(t *testing.T) {
 		if envelope["schema_version"] != float64(1) || envelope["event_type"] != "device.created" || envelope["source"] != "admin" || envelope["command_id"] != nil {
 			t.Fatalf("Delivery envelope = %s", rawEnvelope)
 		}
-		simulator, err := service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
+		simulator, err := service.Create(ctx, superAdminScope, deviceservice.CreateRequest{
 			ProjectID: projectOneID, Name: "Simulator", DeviceTypeCode: domain.DeviceTypeSmartLock,
 			ProviderCode: domain.ProviderCodeSimulator, ProviderProfile: domain.ProviderProfileSimulatorV1,
 		}, metadata)
@@ -117,7 +119,7 @@ func TestDeviceServicePostgresLifecycleScopeAndState(t *testing.T) {
 		if err != nil || listed.Total != 1 || len(listed.Items) != 1 || listed.Items[0].ID != created.ID || listed.Page != 1 || listed.PageSize != 1 {
 			t.Fatalf("filtered list = %+v, %v", listed, err)
 		}
-		all, err := service.List(ctx, deviceservice.AdminScope(), deviceservice.ListRequest{Page: 1, PageSize: 2})
+		all, err := service.List(ctx, superAdminScope, deviceservice.ListRequest{Page: 1, PageSize: 2})
 		if err != nil || all.Total != 2 || len(all.Items) != 2 {
 			t.Fatalf("admin list = %+v, %v", all, err)
 		}
@@ -126,7 +128,7 @@ func TestDeviceServicePostgresLifecycleScopeAndState(t *testing.T) {
 		if all.Items[0].ID != wantIDs[0] || all.Items[1].ID != wantIDs[1] {
 			t.Fatalf("stable order = %s, %s; want %v", all.Items[0].ID, all.Items[1].ID, wantIDs)
 		}
-		defaults, err := service.List(ctx, deviceservice.AdminScope(), deviceservice.ListRequest{})
+		defaults, err := service.List(ctx, superAdminScope, deviceservice.ListRequest{})
 		if err != nil || defaults.Page != 1 || defaults.PageSize != 20 || defaults.Total != 2 {
 			t.Fatalf("default pagination = %+v, %v", defaults, err)
 		}
@@ -147,7 +149,7 @@ func TestDeviceServicePostgresLifecycleScopeAndState(t *testing.T) {
 		if err := db.QueryRow(`SELECT count(*) FROM webhook_deliveries WHERE project_id = $1`, projectOneID).Scan(&deliveriesBeforeRename); err != nil {
 			t.Fatal(err)
 		}
-		updated, err := service.Update(ctx, deviceservice.AdminScope(), created.ID, deviceservice.UpdateRequest{Name: &newName}, metadata)
+		updated, err := service.Update(ctx, superAdminScope, created.ID, deviceservice.UpdateRequest{Name: &newName}, metadata)
 		if err != nil || updated.Name != newName {
 			t.Fatalf("rename = %+v, %v", updated, err)
 		}
@@ -162,7 +164,7 @@ func TestDeviceServicePostgresLifecycleScopeAndState(t *testing.T) {
 		if err := db.QueryRow(`SELECT count(*) FROM audit_logs WHERE resource_id = $1`, created.ID).Scan(&auditsBeforeNoop); err != nil {
 			t.Fatal(err)
 		}
-		if noOp, err := service.Update(ctx, deviceservice.AdminScope(), created.ID, deviceservice.UpdateRequest{Name: &newName}, metadata); err != nil || noOp.Name != newName {
+		if noOp, err := service.Update(ctx, superAdminScope, created.ID, deviceservice.UpdateRequest{Name: &newName}, metadata); err != nil || noOp.Name != newName {
 			t.Fatalf("name no-op = %+v, %v", noOp, err)
 		}
 		var auditsAfterNoop int
@@ -170,31 +172,31 @@ func TestDeviceServicePostgresLifecycleScopeAndState(t *testing.T) {
 			t.Fatalf("name no-op created Audit: before=%d after=%d err=%v", auditsBeforeNoop, auditsAfterNoop, err)
 		}
 		disabled := domain.LifecycleStatusDisabled
-		updated, err = service.Update(ctx, deviceservice.AdminScope(), created.ID, deviceservice.UpdateRequest{LifecycleStatus: &disabled}, metadata)
+		updated, err = service.Update(ctx, superAdminScope, created.ID, deviceservice.UpdateRequest{LifecycleStatus: &disabled}, metadata)
 		if err != nil || updated.LifecycleStatus != disabled {
 			t.Fatalf("disable = %+v, %v", updated, err)
 		}
 		active := domain.LifecycleStatusActive
-		updated, err = service.Update(ctx, deviceservice.AdminScope(), created.ID, deviceservice.UpdateRequest{LifecycleStatus: &active}, metadata)
+		updated, err = service.Update(ctx, superAdminScope, created.ID, deviceservice.UpdateRequest{LifecycleStatus: &active}, metadata)
 		if err != nil || updated.LifecycleStatus != active {
 			t.Fatalf("reactivate = %+v, %v", updated, err)
 		}
 		deleted := domain.LifecycleStatusDeleted
-		if _, err := service.Update(ctx, deviceservice.AdminScope(), created.ID, deviceservice.UpdateRequest{Name: &newName, LifecycleStatus: &deleted}, metadata); !errors.Is(err, deviceservice.ErrInvalidRequest) {
+		if _, err := service.Update(ctx, superAdminScope, created.ID, deviceservice.UpdateRequest{Name: &newName, LifecycleStatus: &deleted}, metadata); !errors.Is(err, deviceservice.ErrInvalidRequest) {
 			t.Fatalf("combined name/delete error = %v", err)
 		}
-		updated, err = service.Update(ctx, deviceservice.AdminScope(), created.ID, deviceservice.UpdateRequest{LifecycleStatus: &deleted}, metadata)
+		updated, err = service.Update(ctx, superAdminScope, created.ID, deviceservice.UpdateRequest{LifecycleStatus: &deleted}, metadata)
 		if err != nil || updated.LifecycleStatus != deleted {
 			t.Fatalf("delete = %+v, %v", updated, err)
 		}
-		if _, err := service.Update(ctx, deviceservice.AdminScope(), created.ID, deviceservice.UpdateRequest{Name: &newName}, metadata); !errors.Is(err, deviceservice.ErrDeviceImmutable) {
+		if _, err := service.Update(ctx, superAdminScope, created.ID, deviceservice.UpdateRequest{Name: &newName}, metadata); !errors.Is(err, deviceservice.ErrDeviceImmutable) {
 			t.Fatalf("deleted rename error = %v", err)
 		}
 		if historical, err := service.Get(ctx, deviceservice.ProjectScope(projectOneID), created.ID); err != nil || historical.LifecycleStatus != deleted {
 			t.Fatalf("deleted historical read = %+v, %v", historical, err)
 		}
 
-		_, err = service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
+		_, err = service.Create(ctx, superAdminScope, deviceservice.CreateRequest{
 			ProjectID: projectTwoID, Name: "Replacement", DeviceTypeCode: domain.DeviceTypeSmartLock,
 			ProviderCode: domain.ProviderCodeWWTIOT, ProviderProfile: domain.ProviderProfileWWTIOTV2,
 			ProviderDeviceID: &wwtiotID,
@@ -227,7 +229,8 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 		store := repository.NewPostgresStore(db)
 		seedProjects(t, ctx, store)
 		service := newService(t, store)
-		metadata := deviceservice.RequestMetadata{ActorType: domain.ActorTypeAdmin, ActorID: "admin-rollback", RequestID: "request-rollback"}
+		metadata := deviceservice.RequestMetadata{ActorType: domain.ActorTypeUser, ActorUserID: deviceServiceUserID, RequestID: "request-rollback"}
+		superAdminScope := deviceservice.HumanScope(deviceServiceUserID, true)
 		providerID := "CONCURRENT-LOCK"
 
 		results := make(chan error, 2)
@@ -236,7 +239,7 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 			wait.Add(1)
 			go func(projectID string) {
 				defer wait.Done()
-				_, err := service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
+				_, err := service.Create(ctx, superAdminScope, deviceservice.CreateRequest{
 					ProjectID: projectID, Name: projectID, DeviceTypeCode: domain.DeviceTypeSmartLock,
 					ProviderCode: domain.ProviderCodeWWTIOT, ProviderProfile: domain.ProviderProfileWWTIOTV2,
 					ProviderDeviceID: &providerID,
@@ -271,7 +274,7 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 			wait.Add(1)
 			go func() {
 				defer wait.Done()
-				_, err := service.Update(ctx, deviceservice.AdminScope(), deviceID, deviceservice.UpdateRequest{LifecycleStatus: &disabled}, metadata)
+				_, err := service.Update(ctx, superAdminScope, deviceID, deviceservice.UpdateRequest{LifecycleStatus: &disabled}, metadata)
 				results <- err
 			}()
 		}
@@ -299,7 +302,7 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 			t.Fatal(err)
 		}
 		rollbackProviderID := "ROLLBACK-DELIVERY"
-		if _, err := service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
+		if _, err := service.Create(ctx, superAdminScope, deviceservice.CreateRequest{
 			ProjectID: projectOneID, Name: "Must Roll Back", DeviceTypeCode: domain.DeviceTypeSmartLock,
 			ProviderCode: domain.ProviderCodeWWTIOT, ProviderProfile: domain.ProviderProfileWWTIOTV2,
 			ProviderDeviceID: &rollbackProviderID,
@@ -318,7 +321,7 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 			t.Fatal(err)
 		}
 		rollbackAuditProviderID := "ROLLBACK-AUDIT"
-		if _, err := service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
+		if _, err := service.Create(ctx, superAdminScope, deviceservice.CreateRequest{
 			ProjectID: projectOneID, Name: "Must Roll Back Audit", DeviceTypeCode: domain.DeviceTypeSmartLock,
 			ProviderCode: domain.ProviderCodeWWTIOT, ProviderProfile: domain.ProviderProfileWWTIOTV2,
 			ProviderDeviceID: &rollbackAuditProviderID,
@@ -340,15 +343,15 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 		if _, err := db.Exec(`ALTER TABLE audit_logs ADD CONSTRAINT reject_device_update_test CHECK (action <> 'device.updated') NOT VALID`); err != nil {
 			t.Fatal(err)
 		}
-		before, err := service.Get(ctx, deviceservice.AdminScope(), deviceID)
+		before, err := service.Get(ctx, superAdminScope, deviceID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		rolledBackName := "Must Roll Back"
-		if _, err := service.Update(ctx, deviceservice.AdminScope(), deviceID, deviceservice.UpdateRequest{Name: &rolledBackName}, metadata); err == nil {
+		if _, err := service.Update(ctx, superAdminScope, deviceID, deviceservice.UpdateRequest{Name: &rolledBackName}, metadata); err == nil {
 			t.Fatal("rename committed without Audit")
 		}
-		after, err := service.Get(ctx, deviceservice.AdminScope(), deviceID)
+		after, err := service.Get(ctx, superAdminScope, deviceID)
 		if err != nil || after.Name != before.Name {
 			t.Fatalf("rename rollback = %+v, %v", after, err)
 		}
@@ -360,10 +363,10 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 			t.Fatal(err)
 		}
 		active := domain.LifecycleStatusActive
-		if _, err := service.Update(ctx, deviceservice.AdminScope(), deviceID, deviceservice.UpdateRequest{LifecycleStatus: &active}, metadata); err == nil {
+		if _, err := service.Update(ctx, superAdminScope, deviceID, deviceservice.UpdateRequest{LifecycleStatus: &active}, metadata); err == nil {
 			t.Fatal("lifecycle committed without Event")
 		}
-		after, err = service.Get(ctx, deviceservice.AdminScope(), deviceID)
+		after, err = service.Get(ctx, superAdminScope, deviceID)
 		if err != nil || after.LifecycleStatus != domain.LifecycleStatusDisabled {
 			t.Fatalf("lifecycle rollback = %+v, %v", after, err)
 		}
@@ -379,7 +382,7 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 			t.Fatal(err)
 		}
 		deleted := domain.LifecycleStatusDeleted
-		if _, err := service.Update(ctx, deviceservice.AdminScope(), deviceID, deviceservice.UpdateRequest{LifecycleStatus: &deleted}, metadata); err == nil {
+		if _, err := service.Update(ctx, superAdminScope, deviceID, deviceservice.UpdateRequest{LifecycleStatus: &deleted}, metadata); err == nil {
 			t.Fatal("lifecycle committed without Audit")
 		}
 		var eventsAfter int
@@ -390,7 +393,7 @@ func TestDeviceServicePostgresConflictConcurrencyAndRollback(t *testing.T) {
 		if before.ProjectID == projectOneID {
 			conflictingProject = projectTwoID
 		}
-		if _, err := service.Create(ctx, deviceservice.AdminScope(), deviceservice.CreateRequest{
+		if _, err := service.Create(ctx, superAdminScope, deviceservice.CreateRequest{
 			ProjectID: conflictingProject, Name: "Still Conflicts", DeviceTypeCode: domain.DeviceTypeSmartLock,
 			ProviderCode: domain.ProviderCodeWWTIOT, ProviderProfile: domain.ProviderProfileWWTIOTV2,
 			ProviderDeviceID: &providerID,
@@ -440,10 +443,16 @@ func seedProjects(t *testing.T, ctx context.Context, store *repository.PostgresS
 	t.Helper()
 	now := time.Date(2026, 7, 31, 15, 0, 0, 0, time.UTC)
 	err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
+		if err := tx.Users().Create(ctx, domain.User{
+			ID: deviceServiceUserID, Email: "admin@example.test", PasswordHash: "hash", DisplayName: "Test Admin",
+			IsSuperAdmin: true, Status: domain.UserStatusActive, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
 		for index, projectID := range []string{projectOneID, projectTwoID} {
 			if err := tx.Projects().Create(ctx, domain.Project{
 				ID: projectID, Name: fmt.Sprintf("Project %d", index+1), APIKeyDigest: bytes.Repeat([]byte{byte(index + 1)}, 32),
-				IPWhitelist: []string{}, CreatedAt: now, UpdatedAt: now,
+				ManagerUserID: deviceServiceUserID, IPWhitelist: []string{}, CreatedAt: now, UpdatedAt: now,
 			}); err != nil {
 				return err
 			}

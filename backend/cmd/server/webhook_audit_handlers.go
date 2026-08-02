@@ -19,7 +19,7 @@ func registerWebhookAuditRoutes(mux *http.ServeMux, application *app) {
 	mux.HandleFunc("/v1/events", func(w http.ResponseWriter, r *http.Request) {
 		persistent := application.persistentWebhookAuditService()
 		if persistent != nil {
-			handlePersistentEvents(w, r, persistent)
+			handlePersistentEvents(w, r, persistent, application.humanScope(r))
 			return
 		}
 		handleMemoryEvents(w, r, application.webhooks)
@@ -30,13 +30,13 @@ func registerWebhookAuditRoutes(mux *http.ServeMux, application *app) {
 			writeWebhookError(w, http.StatusNotFound, "not_found", "resource not found")
 			return
 		}
-		handlePersistentEventDetail(w, r, persistent)
+		handlePersistentEventDetail(w, r, persistent, application.humanScope(r))
 	})
 
 	mux.HandleFunc("/v1/webhook-deliveries", func(w http.ResponseWriter, r *http.Request) {
 		persistent := application.persistentWebhookAuditService()
 		if persistent != nil {
-			handlePersistentDeliveries(w, r, persistent)
+			handlePersistentDeliveries(w, r, persistent, application.humanScope(r))
 			return
 		}
 		if r.Method != http.MethodGet {
@@ -49,7 +49,7 @@ func registerWebhookAuditRoutes(mux *http.ServeMux, application *app) {
 	mux.HandleFunc("/v1/webhook-deliveries/", func(w http.ResponseWriter, r *http.Request) {
 		persistent := application.persistentWebhookAuditService()
 		if persistent != nil {
-			handlePersistentDeliveryDetail(w, r, persistent)
+			handlePersistentDeliveryDetail(w, r, persistent, application.humanScope(r))
 			return
 		}
 		handleMemoryDeliveryAction(w, r, application.webhooks)
@@ -58,7 +58,7 @@ func registerWebhookAuditRoutes(mux *http.ServeMux, application *app) {
 	mux.HandleFunc("/v1/audit-logs", func(w http.ResponseWriter, r *http.Request) {
 		persistent := application.persistentWebhookAuditService()
 		if persistent != nil {
-			handlePersistentAudits(w, r, persistent)
+			handlePersistentAudits(w, r, persistent, application.humanScope(r))
 			return
 		}
 		handleMemoryAudits(w, r, application.webhooks)
@@ -69,11 +69,11 @@ func registerWebhookAuditRoutes(mux *http.ServeMux, application *app) {
 			writeWebhookError(w, http.StatusNotFound, "not_found", "resource not found")
 			return
 		}
-		handlePersistentAuditDetail(w, r, persistent)
+		handlePersistentAuditDetail(w, r, persistent, application.humanScope(r))
 	})
 }
 
-func handlePersistentEvents(w http.ResponseWriter, r *http.Request, service *webhookaudit.PersistentService) {
+func handlePersistentEvents(w http.ResponseWriter, r *http.Request, service *webhookaudit.PersistentService, scope webhookaudit.Scope) {
 	if r.Method != http.MethodGet {
 		writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
@@ -83,7 +83,7 @@ func handlePersistentEvents(w http.ResponseWriter, r *http.Request, service *web
 		writePersistentServiceError(w, err)
 		return
 	}
-	result, err := service.ListEvents(r.Context(), webhookaudit.EventListRequest{
+	result, err := service.ListEvents(r.Context(), scope, webhookaudit.EventListRequest{
 		ProjectID: queryValue(query, "project_id"), DeviceID: queryValue(query, "device_id"),
 		CommandID: queryValue(query, "command_id"), EventType: queryValue(query, "event_type"),
 		Page: page, PageSize: pageSize,
@@ -95,7 +95,7 @@ func handlePersistentEvents(w http.ResponseWriter, r *http.Request, service *web
 	writePaginatedWebhookJSON(w, result.Items, result.Page, result.PageSize, result.Total)
 }
 
-func handlePersistentEventDetail(w http.ResponseWriter, r *http.Request, service *webhookaudit.PersistentService) {
+func handlePersistentEventDetail(w http.ResponseWriter, r *http.Request, service *webhookaudit.PersistentService, scope webhookaudit.Scope) {
 	id, ok := resourceID(r.URL.Path, "/v1/events/")
 	if !ok {
 		writeWebhookError(w, http.StatusNotFound, "not_found", "resource not found")
@@ -109,7 +109,7 @@ func handlePersistentEventDetail(w http.ResponseWriter, r *http.Request, service
 		writePersistentServiceError(w, webhookaudit.ErrInvalidRequest)
 		return
 	}
-	event, err := service.GetEvent(r.Context(), id)
+	event, err := service.GetEvent(r.Context(), scope, id)
 	if err != nil {
 		writePersistentServiceError(w, err)
 		return
@@ -117,7 +117,7 @@ func handlePersistentEventDetail(w http.ResponseWriter, r *http.Request, service
 	writeWebhookJSON(w, http.StatusOK, "ok", event)
 }
 
-func handlePersistentDeliveries(w http.ResponseWriter, r *http.Request, service *webhookaudit.PersistentService) {
+func handlePersistentDeliveries(w http.ResponseWriter, r *http.Request, service *webhookaudit.PersistentService, scope webhookaudit.Scope) {
 	if r.Method != http.MethodGet {
 		writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
@@ -127,7 +127,7 @@ func handlePersistentDeliveries(w http.ResponseWriter, r *http.Request, service 
 		writePersistentServiceError(w, err)
 		return
 	}
-	result, err := service.ListDeliveries(r.Context(), webhookaudit.DeliveryListRequest{
+	result, err := service.ListDeliveries(r.Context(), scope, webhookaudit.DeliveryListRequest{
 		ProjectID: queryValue(query, "project_id"), EventID: queryValue(query, "event_id"), Status: queryValue(query, "status"),
 		Page: page, PageSize: pageSize,
 	})
@@ -138,7 +138,7 @@ func handlePersistentDeliveries(w http.ResponseWriter, r *http.Request, service 
 	writePaginatedWebhookJSON(w, result.Items, result.Page, result.PageSize, result.Total)
 }
 
-func handlePersistentDeliveryDetail(w http.ResponseWriter, r *http.Request, service *webhookaudit.PersistentService) {
+func handlePersistentDeliveryDetail(w http.ResponseWriter, r *http.Request, service *webhookaudit.PersistentService, scope webhookaudit.Scope) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1/webhook-deliveries/")
 	id, action, hasAction := strings.Cut(path, "/")
 	if id == "" || strings.Contains(action, "/") {
@@ -159,8 +159,8 @@ func handlePersistentDeliveryDetail(w http.ResponseWriter, r *http.Request, serv
 			return
 		}
 		user, _ := userFromRequest(r)
-		delivery, err := service.ReplayDead(r.Context(), id, webhookaudit.ReplayRequest{
-			ActorID: user.ID, IPAddress: clientIP(r), RequestID: httpjson.RequestID(r.Context()),
+		delivery, err := service.ReplayDead(r.Context(), scope, id, webhookaudit.ReplayRequest{
+			ActorUserID: user.ID, IPAddress: clientIP(r), RequestID: httpjson.RequestID(r.Context()),
 		})
 		if err != nil {
 			writePersistentServiceError(w, err)
@@ -177,7 +177,7 @@ func handlePersistentDeliveryDetail(w http.ResponseWriter, r *http.Request, serv
 		writePersistentServiceError(w, webhookaudit.ErrInvalidRequest)
 		return
 	}
-	delivery, err := service.GetDelivery(r.Context(), id)
+	delivery, err := service.GetDelivery(r.Context(), scope, id)
 	if err != nil {
 		writePersistentServiceError(w, err)
 		return
@@ -185,7 +185,7 @@ func handlePersistentDeliveryDetail(w http.ResponseWriter, r *http.Request, serv
 	writeWebhookJSON(w, http.StatusOK, "ok", delivery)
 }
 
-func handlePersistentAudits(w http.ResponseWriter, r *http.Request, service *webhookaudit.PersistentService) {
+func handlePersistentAudits(w http.ResponseWriter, r *http.Request, service *webhookaudit.PersistentService, scope webhookaudit.Scope) {
 	if r.Method != http.MethodGet {
 		writeWebhookError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
@@ -195,7 +195,7 @@ func handlePersistentAudits(w http.ResponseWriter, r *http.Request, service *web
 		writePersistentServiceError(w, err)
 		return
 	}
-	result, err := service.ListAudits(r.Context(), webhookaudit.AuditListRequest{
+	result, err := service.ListAudits(r.Context(), scope, webhookaudit.AuditListRequest{
 		ProjectID: queryValue(query, "project_id"), ActorType: queryValue(query, "actor_type"),
 		Action: queryValue(query, "action"), Result: queryValue(query, "result"),
 		ResourceType: queryValue(query, "resource_type"), ResourceID: queryValue(query, "resource_id"),
@@ -208,7 +208,7 @@ func handlePersistentAudits(w http.ResponseWriter, r *http.Request, service *web
 	writePaginatedWebhookJSON(w, result.Items, result.Page, result.PageSize, result.Total)
 }
 
-func handlePersistentAuditDetail(w http.ResponseWriter, r *http.Request, service *webhookaudit.PersistentService) {
+func handlePersistentAuditDetail(w http.ResponseWriter, r *http.Request, service *webhookaudit.PersistentService, scope webhookaudit.Scope) {
 	id, ok := resourceID(r.URL.Path, "/v1/audit-logs/")
 	if !ok {
 		writeWebhookError(w, http.StatusNotFound, "not_found", "resource not found")
@@ -222,7 +222,7 @@ func handlePersistentAuditDetail(w http.ResponseWriter, r *http.Request, service
 		writePersistentServiceError(w, webhookaudit.ErrInvalidRequest)
 		return
 	}
-	audit, err := service.GetAudit(r.Context(), id)
+	audit, err := service.GetAudit(r.Context(), scope, id)
 	if err != nil {
 		writePersistentServiceError(w, err)
 		return
@@ -349,6 +349,8 @@ func writePersistentServiceError(w http.ResponseWriter, err error) {
 		writeWebhookError(w, http.StatusBadRequest, "invalid_request", "invalid request")
 	case errors.Is(err, webhookaudit.ErrResourceNotFound):
 		writeWebhookError(w, http.StatusNotFound, "not_found", "resource not found")
+	case errors.Is(err, webhookaudit.ErrForbidden):
+		writeWebhookError(w, http.StatusForbidden, "forbidden", "operation is forbidden")
 	case errors.Is(err, webhookaudit.ErrWebhookDeliveryNotDead):
 		writeWebhookError(w, http.StatusConflict, "webhook_delivery_not_dead", "webhook delivery is not dead")
 	case errors.Is(err, webhookaudit.ErrWebhookNotConfigured):

@@ -20,6 +20,7 @@ import (
 	"github.com/qiyue2015/device-platform/internal/directdevice/omni"
 	"github.com/qiyue2015/device-platform/internal/domain"
 	"github.com/qiyue2015/device-platform/internal/httpjson"
+	"github.com/qiyue2015/device-platform/internal/userservice"
 	"github.com/qiyue2015/device-platform/internal/webhookaudit"
 	"github.com/qiyue2015/device-platform/internal/webhookworker"
 )
@@ -127,6 +128,14 @@ func TestAppRuntimeStateCanSwitchConcurrently(t *testing.T) {
 	readers.Wait()
 	if application.authenticationService() == nil {
 		t.Fatal("authentication service was not installed")
+	}
+}
+
+func TestReplaceRuntimeClearsUserServiceWithoutDatabase(t *testing.T) {
+	application := &app{users: &userservice.Service{}}
+	application.replaceRuntime(config{}, nil, nil, nil, nil, nil)
+	if application.userService() != nil {
+		t.Fatal("User service survived replacement with an unavailable database")
 	}
 }
 
@@ -883,6 +892,15 @@ func TestAuthCompatibilityLoginMeAndBearerGate(t *testing.T) {
 	server.ServeHTTP(allowed, req)
 	if allowed.Code != http.StatusOK {
 		t.Fatalf("expected v1 me with bearer 200, got %d", allowed.Code)
+	}
+	var meBody jsonResponse
+	decodeResponse(t, allowed, &meBody)
+	me, ok := meBody.Data.(map[string]interface{})
+	if !ok || me["id"] != "test-admin" || me["display_name"] != "Test Admin" || me["is_super_admin"] != true || me["status"] != "active" {
+		t.Fatalf("unexpected v1 me response: %+v", meBody.Data)
+	}
+	if _, exists := me["roles"]; exists {
+		t.Fatalf("v1 me must not expose the removed fixed admin role: %+v", me)
 	}
 
 	refreshBlocked := httptest.NewRecorder()
@@ -1731,12 +1749,13 @@ func dataFieldString(t *testing.T, envelope jsonResponse, key string) string {
 
 func setAdminBearer(req *http.Request) {
 	token, err := createJWT(currentUser{
-		ID:          "test-admin",
-		Name:        "Test Admin",
-		Nickname:    "Test Admin",
-		Email:       "admin@test.local",
-		DisplayName: "Test Admin",
-		IsAdmin:     true,
+		ID:           "test-admin",
+		Name:         "Test Admin",
+		Nickname:     "Test Admin",
+		Email:        "admin@test.local",
+		DisplayName:  "Test Admin",
+		IsSuperAdmin: true,
+		Status:       "active",
 	}, testJWTSecret, time.Now().UTC())
 	if err != nil {
 		panic(err)
@@ -1747,12 +1766,13 @@ func setAdminBearer(req *http.Request) {
 func testAdminToken(t testing.TB) string {
 	t.Helper()
 	token, err := createJWT(currentUser{
-		ID:          "test-admin",
-		Name:        "Test Admin",
-		Nickname:    "Test Admin",
-		Email:       "admin@test.local",
-		DisplayName: "Test Admin",
-		IsAdmin:     true,
+		ID:           "test-admin",
+		Name:         "Test Admin",
+		Nickname:     "Test Admin",
+		Email:        "admin@test.local",
+		DisplayName:  "Test Admin",
+		IsSuperAdmin: true,
+		Status:       "active",
 	}, testJWTSecret, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("create test admin token: %v", err)

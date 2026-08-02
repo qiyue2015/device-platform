@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/qiyue2015/device-platform/internal/access"
 	"github.com/qiyue2015/device-platform/internal/domain"
 	"github.com/qiyue2015/device-platform/internal/storage/repository"
 )
@@ -45,13 +46,19 @@ func newPersistentService(store repository.WebhookAuditStore, config PersistentC
 	return &PersistentService{store: store, random: config.Random, clock: config.Clock}, nil
 }
 
-func (s *PersistentService) ListEvents(ctx context.Context, request EventListRequest) (ListResult[PersistentEvent], error) {
+func (s *PersistentService) ListEvents(ctx context.Context, scope Scope, request EventListRequest) (ListResult[PersistentEvent], error) {
+	if err := validateHumanScope(scope); err != nil {
+		return ListResult[PersistentEvent]{}, err
+	}
 	page, pageSize, err := normalizePagination(request.Page, request.PageSize)
 	if err != nil {
 		return ListResult[PersistentEvent]{}, err
 	}
 	if !validOptionalUUID(request.ProjectID) || !validOptionalUUID(request.DeviceID) || !validOptionalUUID(request.CommandID) {
 		return ListResult[PersistentEvent]{}, ErrInvalidRequest
+	}
+	if err := s.authorizeProjectFilter(ctx, scope, request.ProjectID); err != nil {
+		return ListResult[PersistentEvent]{}, err
 	}
 	var eventType *domain.EventType
 	if request.EventType != nil {
@@ -62,7 +69,7 @@ func (s *PersistentService) ListEvents(ctx context.Context, request EventListReq
 		eventType = &value
 	}
 	items, total, err := s.store.Events().List(ctx, repository.ListEventsRequest{
-		ProjectID: request.ProjectID, DeviceID: request.DeviceID, CommandID: request.CommandID,
+		ProjectID: request.ProjectID, ManagerUserID: scope.ManagerUserID(), DeviceID: request.DeviceID, CommandID: request.CommandID,
 		EventType: eventType, Limit: pageSize, Offset: (page - 1) * pageSize,
 	})
 	if err != nil {
@@ -75,8 +82,8 @@ func (s *PersistentService) ListEvents(ctx context.Context, request EventListReq
 	return ListResult[PersistentEvent]{Items: result, Page: page, PageSize: pageSize, Total: total}, nil
 }
 
-func (s *PersistentService) GetEvent(ctx context.Context, eventID string) (PersistentEvent, error) {
-	if !validUUID(eventID) {
+func (s *PersistentService) GetEvent(ctx context.Context, scope Scope, eventID string) (PersistentEvent, error) {
+	if validateHumanScope(scope) != nil || !validUUID(eventID) {
 		return PersistentEvent{}, ErrInvalidRequest
 	}
 	event, err := s.store.Events().Get(ctx, eventID)
@@ -86,16 +93,25 @@ func (s *PersistentService) GetEvent(ctx context.Context, eventID string) (Persi
 	if err != nil {
 		return PersistentEvent{}, err
 	}
+	if err := s.authorizeProject(ctx, scope, event.ProjectID); err != nil {
+		return PersistentEvent{}, err
+	}
 	return safeEvent(event), nil
 }
 
-func (s *PersistentService) ListDeliveries(ctx context.Context, request DeliveryListRequest) (ListResult[PersistentDelivery], error) {
+func (s *PersistentService) ListDeliveries(ctx context.Context, scope Scope, request DeliveryListRequest) (ListResult[PersistentDelivery], error) {
+	if err := validateHumanScope(scope); err != nil {
+		return ListResult[PersistentDelivery]{}, err
+	}
 	page, pageSize, err := normalizePagination(request.Page, request.PageSize)
 	if err != nil {
 		return ListResult[PersistentDelivery]{}, err
 	}
 	if !validOptionalUUID(request.ProjectID) || !validOptionalUUID(request.EventID) {
 		return ListResult[PersistentDelivery]{}, ErrInvalidRequest
+	}
+	if err := s.authorizeProjectFilter(ctx, scope, request.ProjectID); err != nil {
+		return ListResult[PersistentDelivery]{}, err
 	}
 	var status *domain.WebhookDeliveryStatus
 	if request.Status != nil {
@@ -106,7 +122,7 @@ func (s *PersistentService) ListDeliveries(ctx context.Context, request Delivery
 		status = &value
 	}
 	items, total, err := s.store.Webhooks().ListDeliveries(ctx, repository.ListWebhookDeliveriesRequest{
-		ProjectID: request.ProjectID, EventID: request.EventID, Status: status,
+		ProjectID: request.ProjectID, ManagerUserID: scope.ManagerUserID(), EventID: request.EventID, Status: status,
 		Limit: pageSize, Offset: (page - 1) * pageSize,
 	})
 	if err != nil {
@@ -119,8 +135,8 @@ func (s *PersistentService) ListDeliveries(ctx context.Context, request Delivery
 	return ListResult[PersistentDelivery]{Items: result, Page: page, PageSize: pageSize, Total: total}, nil
 }
 
-func (s *PersistentService) GetDelivery(ctx context.Context, deliveryID string) (PersistentDelivery, error) {
-	if !validUUID(deliveryID) {
+func (s *PersistentService) GetDelivery(ctx context.Context, scope Scope, deliveryID string) (PersistentDelivery, error) {
+	if validateHumanScope(scope) != nil || !validUUID(deliveryID) {
 		return PersistentDelivery{}, ErrInvalidRequest
 	}
 	delivery, err := s.store.Webhooks().GetDelivery(ctx, deliveryID)
@@ -130,6 +146,9 @@ func (s *PersistentService) GetDelivery(ctx context.Context, deliveryID string) 
 	if err != nil {
 		return PersistentDelivery{}, err
 	}
+	if err := s.authorizeProject(ctx, scope, delivery.ProjectID); err != nil {
+		return PersistentDelivery{}, err
+	}
 	attempts, err := s.store.Webhooks().ListAttempts(ctx, deliveryID)
 	if err != nil {
 		return PersistentDelivery{}, err
@@ -137,13 +156,29 @@ func (s *PersistentService) GetDelivery(ctx context.Context, deliveryID string) 
 	return safeDelivery(delivery, attempts), nil
 }
 
-func (s *PersistentService) ReplayDead(ctx context.Context, deliveryID string, request ReplayRequest) (PersistentDelivery, error) {
-	if !validUUID(deliveryID) {
+func (s *PersistentService) ReplayDead(ctx context.Context, scope Scope, deliveryID string, request ReplayRequest) (PersistentDelivery, error) {
+	if validateHumanScope(scope) != nil || !validUUID(deliveryID) {
 		return PersistentDelivery{}, ErrInvalidRequest
 	}
 	request, err := normalizeReplayRequest(request)
 	if err != nil {
 		return PersistentDelivery{}, err
+	}
+	current, err := s.store.Webhooks().GetDelivery(ctx, deliveryID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PersistentDelivery{}, ErrResourceNotFound
+	}
+	if err != nil {
+		return PersistentDelivery{}, err
+	}
+	if err := s.authorizeProject(ctx, scope, current.ProjectID); err != nil {
+		return PersistentDelivery{}, err
+	}
+	if !scope.IsSuperAdmin() {
+		return PersistentDelivery{}, ErrForbidden
+	}
+	if scope.UserID != "" && scope.UserID != request.ActorUserID {
+		return PersistentDelivery{}, ErrInvalidRequest
 	}
 	deliveryIDNew, err := randomUUID(s.random)
 	if err != nil {
@@ -164,7 +199,7 @@ func (s *PersistentService) ReplayDead(ctx context.Context, deliveryID string, r
 		}
 		projectID, resourceID := replay.ProjectID, replay.ID
 		return tx.Audits().Create(ctx, domain.AuditLog{
-			ID: auditID, ActorType: domain.ActorTypeAdmin, ActorID: optionalString(request.ActorID), ProjectID: &projectID,
+			ID: auditID, ActorType: domain.ActorTypeUser, ActorUserID: optionalString(request.ActorUserID), ProjectID: &projectID,
 			Action: "webhook.delivery_replayed", Result: domain.AuditResultSuccess,
 			ResourceType: "webhook_delivery", ResourceID: &resourceID,
 			IPAddress: optionalString(request.IPAddress), RequestID: optionalString(request.RequestID),
@@ -187,13 +222,19 @@ func (s *PersistentService) ReplayDead(ctx context.Context, deliveryID string, r
 	return safeDelivery(replay, nil), nil
 }
 
-func (s *PersistentService) ListAudits(ctx context.Context, request AuditListRequest) (ListResult[PersistentAudit], error) {
+func (s *PersistentService) ListAudits(ctx context.Context, scope Scope, request AuditListRequest) (ListResult[PersistentAudit], error) {
+	if err := validateHumanScope(scope); err != nil {
+		return ListResult[PersistentAudit]{}, err
+	}
 	page, pageSize, err := normalizePagination(request.Page, request.PageSize)
 	if err != nil {
 		return ListResult[PersistentAudit]{}, err
 	}
 	if !validOptionalUUID(request.ProjectID) || !validOptionalText(request.ResourceType, 120) || !validOptionalText(request.ResourceID, 255) {
 		return ListResult[PersistentAudit]{}, ErrInvalidRequest
+	}
+	if err := s.authorizeProjectFilter(ctx, scope, request.ProjectID); err != nil {
+		return ListResult[PersistentAudit]{}, err
 	}
 	var actorType *domain.ActorType
 	if request.ActorType != nil {
@@ -215,7 +256,7 @@ func (s *PersistentService) ListAudits(ctx context.Context, request AuditListReq
 		result = &value
 	}
 	items, total, err := s.store.Audits().List(ctx, repository.ListAuditsRequest{
-		ProjectID: request.ProjectID, ActorType: actorType, Action: request.Action, Result: result,
+		ProjectID: request.ProjectID, ManagerUserID: scope.ManagerUserID(), ActorType: actorType, Action: request.Action, Result: result,
 		ResourceType: request.ResourceType, ResourceID: request.ResourceID, Limit: pageSize, Offset: (page - 1) * pageSize,
 	})
 	if err != nil {
@@ -228,8 +269,8 @@ func (s *PersistentService) ListAudits(ctx context.Context, request AuditListReq
 	return ListResult[PersistentAudit]{Items: mapped, Page: page, PageSize: pageSize, Total: total}, nil
 }
 
-func (s *PersistentService) GetAudit(ctx context.Context, auditID string) (PersistentAudit, error) {
-	if !validUUID(auditID) {
+func (s *PersistentService) GetAudit(ctx context.Context, scope Scope, auditID string) (PersistentAudit, error) {
+	if validateHumanScope(scope) != nil || !validUUID(auditID) {
 		return PersistentAudit{}, ErrInvalidRequest
 	}
 	audit, err := s.store.Audits().Get(ctx, auditID)
@@ -237,6 +278,13 @@ func (s *PersistentService) GetAudit(ctx context.Context, auditID string) (Persi
 		return PersistentAudit{}, ErrResourceNotFound
 	}
 	if err != nil {
+		return PersistentAudit{}, err
+	}
+	if audit.ProjectID == nil {
+		if !scope.IsSuperAdmin() {
+			return PersistentAudit{}, ErrResourceNotFound
+		}
+	} else if err := s.authorizeProject(ctx, scope, *audit.ProjectID); err != nil {
 		return PersistentAudit{}, err
 	}
 	return safeAudit(audit), nil
@@ -273,10 +321,35 @@ func safeDelivery(delivery domain.WebhookDelivery, attempts []domain.WebhookDeli
 
 func safeAudit(audit domain.AuditLog) PersistentAudit {
 	return PersistentAudit{
-		ID: audit.ID, ActorType: audit.ActorType, ActorID: audit.ActorID, ProjectID: audit.ProjectID,
+		ID: audit.ID, ActorType: audit.ActorType, ActorUserID: audit.ActorUserID, ActorID: audit.ActorID, ProjectID: audit.ProjectID,
 		Action: audit.Action, Result: audit.Result, ResourceType: audit.ResourceType, ResourceID: audit.ResourceID,
 		IPAddress: audit.IPAddress, RequestID: audit.RequestID, Metadata: cloneMap(audit.Metadata), OccurredAt: audit.OccurredAt,
 	}
+}
+
+func validateHumanScope(scope Scope) error {
+	if scope.Validate() != nil || !scope.IsHuman() || scope.UserID != "" && !validUUID(scope.UserID) {
+		return ErrInvalidRequest
+	}
+	return nil
+}
+
+func (s *PersistentService) authorizeProjectFilter(ctx context.Context, scope Scope, projectID *string) error {
+	if scope.Kind != access.ScopeUser || projectID == nil {
+		return nil
+	}
+	return s.authorizeProject(ctx, scope, *projectID)
+}
+
+func (s *PersistentService) authorizeProject(ctx context.Context, scope Scope, projectID string) error {
+	if scope.IsSuperAdmin() {
+		return nil
+	}
+	project, err := s.store.Projects().Get(ctx, projectID)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && !scope.CanAccessProject(project) {
+		return ErrResourceNotFound
+	}
+	return err
 }
 
 func normalizePagination(page, pageSize int) (int, int, error) {
@@ -293,10 +366,10 @@ func normalizePagination(page, pageSize int) (int, int, error) {
 }
 
 func normalizeReplayRequest(request ReplayRequest) (ReplayRequest, error) {
-	request.ActorID = strings.TrimSpace(request.ActorID)
+	request.ActorUserID = strings.TrimSpace(request.ActorUserID)
 	request.RequestID = strings.TrimSpace(request.RequestID)
 	request.IPAddress = strings.TrimSpace(request.IPAddress)
-	if request.ActorID == "" || request.RequestID == "" || len(request.RequestID) > 255 || len(request.ActorID) > 255 {
+	if !validUUID(request.ActorUserID) || request.RequestID == "" || len(request.RequestID) > 255 {
 		return ReplayRequest{}, ErrInvalidRequest
 	}
 	if request.IPAddress != "" {
@@ -346,7 +419,7 @@ func validDeliveryStatus(value domain.WebhookDeliveryStatus) bool {
 
 func validActorType(value domain.ActorType) bool {
 	switch value {
-	case domain.ActorTypeAdmin, domain.ActorTypeProject, domain.ActorTypeProvider, domain.ActorTypeSystem:
+	case domain.ActorTypeUser, domain.ActorTypeProject, domain.ActorTypeProvider, domain.ActorTypeSystem:
 		return true
 	default:
 		return false
@@ -355,8 +428,8 @@ func validActorType(value domain.ActorType) bool {
 
 func validAuditAction(value string) bool {
 	switch value {
-	case "auth.login", "auth.refresh", "auth.logout",
-		"project.created", "project.updated", "project.api_key_rotated", "project.webhook_secret_rotated",
+	case "auth.login", "auth.refresh", "auth.logout", "user.created", "user.status_changed",
+		"project.created", "project.updated", "project.transferred", "project.api_key_rotated", "project.webhook_secret_rotated",
 		"project.webhook_secret_decryption_failed", "device.created", "device.updated", "device.lifecycle_changed",
 		"command.created", "command.cancelled", "provider.callback_rejected", "provider.message_received",
 		"provider.message_rejected", "webhook.delivery_replayed", "simulator.updated":

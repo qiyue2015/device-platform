@@ -36,10 +36,9 @@ type UpdateRequest struct {
 }
 
 type RequestMetadata struct {
-	ActorType domain.ActorType
-	ActorID   string
-	IPAddress string
-	RequestID string
+	ActorUserID string
+	IPAddress   string
+	RequestID   string
 }
 
 func NewService(store repository.SimulatorStore, random io.Reader) *Service {
@@ -96,7 +95,7 @@ func (s *Service) createAudit(ctx context.Context, tx repository.SimulatorTx, co
 		return err
 	}
 	return tx.Audits().Create(ctx, domain.AuditLog{
-		ID: id, ActorType: metadata.ActorType, ActorID: optional(metadata.ActorID),
+		ID: id, ActorType: domain.ActorTypeUser, ActorUserID: optional(metadata.ActorUserID),
 		Action: "simulator.updated", Result: domain.AuditResultSuccess,
 		ResourceType: "simulator", IPAddress: optional(metadata.IPAddress), RequestID: optional(metadata.RequestID),
 		Metadata: map[string]any{
@@ -124,10 +123,18 @@ func validUpdate(request UpdateRequest) bool {
 }
 
 func validMetadata(metadata RequestMetadata) bool {
-	if metadata.ActorType != domain.ActorTypeAdmin || strings.TrimSpace(metadata.ActorID) == "" || strings.TrimSpace(metadata.RequestID) == "" {
+	if !validUUID(strings.TrimSpace(metadata.ActorUserID)) || strings.TrimSpace(metadata.RequestID) == "" {
 		return false
 	}
 	return strings.TrimSpace(metadata.IPAddress) == "" || net.ParseIP(strings.TrimSpace(metadata.IPAddress)) != nil
+}
+
+func validUUID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' || value != strings.ToLower(value) {
+		return false
+	}
+	decoded, err := hex.DecodeString(strings.ReplaceAll(value, "-", ""))
+	return err == nil && len(decoded) == 16
 }
 
 func optional(value string) *string {

@@ -12,17 +12,8 @@ import (
 )
 
 func validateScope(scope Scope) (Scope, error) {
-	switch scope.Kind {
-	case ScopeAdmin:
-		if scope.ProjectID != "" {
-			return Scope{}, fmt.Errorf("%w: admin scope cannot carry a Project", ErrInvalidRequest)
-		}
-	case ScopeProject:
-		scope.ProjectID = strings.TrimSpace(scope.ProjectID)
-		if !validUUID(scope.ProjectID) {
-			return Scope{}, fmt.Errorf("%w: Project scope is invalid", ErrInvalidRequest)
-		}
-	default:
+	if scope.Validate() != nil || scope.Kind == ScopeProject && !validUUID(scope.ProjectID) ||
+		scope.IsHuman() && scope.UserID != "" && !validUUID(scope.UserID) {
 		return Scope{}, fmt.Errorf("%w: scope is invalid", ErrInvalidRequest)
 	}
 	return scope, nil
@@ -30,6 +21,7 @@ func validateScope(scope Scope) (Scope, error) {
 
 func validateMetadata(scope Scope, metadata RequestMetadata) (RequestMetadata, error) {
 	metadata.ActorID = strings.TrimSpace(metadata.ActorID)
+	metadata.ActorUserID = strings.TrimSpace(metadata.ActorUserID)
 	metadata.RequestID = strings.TrimSpace(metadata.RequestID)
 	if metadata.RequestID == "" || len(metadata.RequestID) > 255 {
 		return RequestMetadata{}, fmt.Errorf("%w: request_id is required", ErrInvalidRequest)
@@ -41,10 +33,11 @@ func validateMetadata(scope Scope, metadata RequestMetadata) (RequestMetadata, e
 		}
 		metadata.IPAddress = address.Unmap().String()
 	}
-	if scope.Kind == ScopeAdmin && metadata.ActorType != domain.ActorTypeAdmin {
-		return RequestMetadata{}, fmt.Errorf("%w: admin scope requires an admin actor", ErrInvalidRequest)
+	if scope.IsHuman() && (metadata.ActorType != domain.ActorTypeUser || !validUUID(metadata.ActorUserID) ||
+		scope.UserID != "" && metadata.ActorUserID != scope.UserID || metadata.ActorID != "") {
+		return RequestMetadata{}, fmt.Errorf("%w: human scope requires its authenticated User actor", ErrInvalidRequest)
 	}
-	if scope.Kind == ScopeProject && (metadata.ActorType != domain.ActorTypeProject || metadata.ActorID != scope.ProjectID) {
+	if scope.Kind == ScopeProject && (metadata.ActorType != domain.ActorTypeProject || metadata.ActorID != scope.ProjectID || metadata.ActorUserID != "") {
 		return RequestMetadata{}, fmt.Errorf("%w: Project scope requires its authenticated Project actor", ErrInvalidRequest)
 	}
 	return metadata, nil

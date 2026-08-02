@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qiyue2015/device-platform/internal/domain"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -27,7 +28,7 @@ const (
 	authEmailIPLimit       = 5
 	authIPLimit            = 20
 	jwtIssuer              = "device-platform"
-	jwtAudience            = "device-platform-admin"
+	jwtAudience            = "device-platform-user"
 	defaultMemoryJWTSecret = "0123456789abcdef0123456789abcdef"
 )
 
@@ -51,13 +52,16 @@ type authRequestMetadata struct {
 }
 
 type currentUser struct {
-	ID                string `json:"id"`
-	Name              string `json:"name"`
-	Nickname          string `json:"nickname"`
-	Email             string `json:"email"`
-	DisplayName       string `json:"display_name"`
-	IsAdmin           bool   `json:"is_admin"`
-	SessionGeneration int64  `json:"-"`
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Nickname          string    `json:"nickname"`
+	Email             string    `json:"email"`
+	DisplayName       string    `json:"display_name"`
+	IsSuperAdmin      bool      `json:"is_super_admin"`
+	Status            string    `json:"status"`
+	SessionGeneration int64     `json:"-"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type authenticator interface {
@@ -80,7 +84,7 @@ func newDBAuthenticator(db *sql.DB, secret string) dbAuthenticator {
 }
 
 func (a dbAuthenticator) Login(ctx context.Context, email, password string, metadata authRequestMetadata) (currentUser, error) {
-	return loginAdmin(ctx, a.db, email, password, metadata, a.now().UTC())
+	return loginUser(ctx, a.db, email, password, metadata, a.now().UTC())
 }
 
 func (a dbAuthenticator) IssueToken(user currentUser) (string, error) {
@@ -94,16 +98,16 @@ func (a dbAuthenticator) ParseToken(ctx context.Context, token string) (currentU
 	}
 	var user currentUser
 	err = a.db.QueryRowContext(ctx, `
-		SELECT id::text, email, display_name, is_admin, session_generation
+		SELECT id::text, email, display_name, is_super_admin, status, session_generation, created_at, updated_at
 		FROM users WHERE id = $1
-	`, claims.ID).Scan(&user.ID, &user.Email, &user.DisplayName, &user.IsAdmin, &user.SessionGeneration)
+	`, claims.ID).Scan(&user.ID, &user.Email, &user.DisplayName, &user.IsSuperAdmin, &user.Status, &user.SessionGeneration, &user.CreatedAt, &user.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return currentUser{}, errUnauthorized
 	}
 	if err != nil {
 		return currentUser{}, fmt.Errorf("%w: validate session", errAuthDependencyUnavailable)
 	}
-	if !user.IsAdmin || user.SessionGeneration != claims.SessionGeneration {
+	if user.Status != "active" || user.SessionGeneration != claims.SessionGeneration {
 		return currentUser{}, errUnauthorized
 	}
 	user.Name = user.DisplayName
@@ -119,7 +123,7 @@ func (a dbAuthenticator) RecordRefresh(ctx context.Context, user currentUser, me
 	defer tx.Rollback()
 	var generation int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT session_generation FROM users WHERE id = $1 AND is_admin FOR SHARE
+		SELECT session_generation FROM users WHERE id = $1 AND status = 'active' FOR SHARE
 	`, user.ID).Scan(&generation)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && generation != user.SessionGeneration) {
 		return errUnauthorized
@@ -148,7 +152,7 @@ func (a dbAuthenticator) Logout(ctx context.Context, user currentUser, metadata 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE users
 		SET session_generation = session_generation + 1, updated_at = $1
-		WHERE id = $2 AND session_generation = $3 AND is_admin
+		WHERE id = $2 AND session_generation = $3 AND status = 'active'
 	`, a.now().UTC(), user.ID, user.SessionGeneration)
 	if err != nil {
 		return fmt.Errorf("%w: invalidate session", errAuthDependencyUnavailable)
@@ -190,12 +194,13 @@ func newMemoryAuthenticator(email, displayName, password, secret string) (*memor
 	}
 	return &memoryAuthenticator{
 		user: currentUser{
-			ID:          "test-admin",
-			Name:        displayName,
-			Nickname:    displayName,
-			Email:       email,
-			DisplayName: displayName,
-			IsAdmin:     true,
+			ID:           "test-admin",
+			Name:         displayName,
+			Nickname:     displayName,
+			Email:        email,
+			DisplayName:  displayName,
+			IsSuperAdmin: true,
+			Status:       "active",
 		},
 		passwordHash: hash,
 		secret:       secret,
@@ -278,7 +283,7 @@ func createJWT(user currentUser, secret string, now time.Time) (string, error) {
 		"sub":                user.ID,
 		"email":              user.Email,
 		"name":               user.DisplayName,
-		"is_admin":           user.IsAdmin,
+		"is_super_admin":     user.IsSuperAdmin,
 		"session_generation": user.SessionGeneration,
 		"iat":                now.Unix(),
 		"exp":                now.Add(tokenTTL).Unix(),
@@ -336,7 +341,7 @@ func parseJWT(token, secret string, now time.Time) (currentUser, error) {
 		Subject           string `json:"sub"`
 		Email             string `json:"email"`
 		Name              string `json:"name"`
-		IsAdmin           bool   `json:"is_admin"`
+		IsSuperAdmin      bool   `json:"is_super_admin"`
 		SessionGeneration int64  `json:"session_generation"`
 		IssuedAt          int64  `json:"iat"`
 		Expires           int64  `json:"exp"`
@@ -345,7 +350,7 @@ func parseJWT(token, secret string, now time.Time) (currentUser, error) {
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return currentUser{}, errors.New("invalid token claims")
 	}
-	if claims.Issuer != jwtIssuer || claims.Audience != jwtAudience || claims.Subject == "" || claims.Email == "" || !claims.IsAdmin || claims.TokenID == "" || claims.SessionGeneration < 0 {
+	if claims.Issuer != jwtIssuer || claims.Audience != jwtAudience || claims.Subject == "" || claims.Email == "" || claims.TokenID == "" || claims.SessionGeneration < 0 {
 		return currentUser{}, errors.New("invalid token user")
 	}
 	if claims.IssuedAt <= 0 || claims.IssuedAt > now.Unix() || claims.Expires <= now.Unix() || claims.Expires <= claims.IssuedAt {
@@ -357,12 +362,13 @@ func parseJWT(token, secret string, now time.Time) (currentUser, error) {
 		Nickname:          claims.Name,
 		Email:             claims.Email,
 		DisplayName:       claims.Name,
-		IsAdmin:           claims.IsAdmin,
+		IsSuperAdmin:      claims.IsSuperAdmin,
+		Status:            "active",
 		SessionGeneration: claims.SessionGeneration,
 	}, nil
 }
 
-func loginAdmin(ctx context.Context, db *sql.DB, email, password string, metadata authRequestMetadata, now time.Time) (currentUser, error) {
+func loginUser(ctx context.Context, db *sql.DB, email, password string, metadata authRequestMetadata, now time.Time) (currentUser, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	emailIPDigest := authDigest(email + "\x00" + metadata.IPAddress)
 	ipDigest := authDigest(metadata.IPAddress)
@@ -402,10 +408,10 @@ func loginAdmin(ctx context.Context, db *sql.DB, email, password string, metadat
 	var user currentUser
 	var passwordHash string
 	err = tx.QueryRowContext(ctx, `
-			SELECT id::text, email, password_hash, display_name, is_admin, session_generation
+			SELECT id::text, email, password_hash, display_name, is_super_admin, status, session_generation, created_at, updated_at
 			FROM users
 			WHERE lower(email) = $1
-		`, email).Scan(&user.ID, &user.Email, &passwordHash, &user.DisplayName, &user.IsAdmin, &user.SessionGeneration)
+		`, email).Scan(&user.ID, &user.Email, &passwordHash, &user.DisplayName, &user.IsSuperAdmin, &user.Status, &user.SessionGeneration, &user.CreatedAt, &user.UpdatedAt)
 	userExists := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return currentUser{}, fmt.Errorf("%w: read administrator", errAuthDependencyUnavailable)
@@ -414,7 +420,7 @@ func loginAdmin(ctx context.Context, db *sql.DB, email, password string, metadat
 		passwordHash = dummyPasswordHash
 	}
 	passwordValid := checkPassword(passwordHash, password)
-	valid := email != "" && password != "" && userExists && user.IsAdmin && passwordValid
+	valid := email != "" && password != "" && userExists && user.Status == "active" && passwordValid
 	if !valid {
 		if err := insertLoginFailure(ctx, tx, "email_ip", emailIPDigest, now); err != nil {
 			return currentUser{}, fmt.Errorf("%w: record email login failure", errAuthDependencyUnavailable)
@@ -528,12 +534,23 @@ func insertAuthAudit(ctx context.Context, exec authSQLExecutor, action, result s
 	if candidate := strings.TrimSpace(metadata.IPAddress); net.ParseIP(candidate) != nil {
 		ipAddress = candidate
 	}
+	actorType := string(domain.ActorTypeSystem)
+	var actorUserID any
+	var machineActorID any = "anonymous"
+	var resourceID any
+	if actorID != nil {
+		actorType = string(domain.ActorTypeUser)
+		actorUserID = *actorID
+		machineActorID = nil
+		resourceID = *actorID
+	}
 	_, err = exec.ExecContext(ctx, `
 		INSERT INTO audit_logs (
-			id, actor_type, actor_id, action, result, resource_type,
-			resource_id, ip_address, request_id, metadata, occurred_at
-		) VALUES ($1, 'admin', $2, $3, $4, 'auth_session', $2, $5, $6, $7, $8)
-	`, id, actorID, action, result, ipAddress, nullableString(metadata.RequestID), encodedMetadata, now)
+			id, actor_type, actor_user_id, actor_id, action, result,
+			resource_type, resource_id, ip_address, request_id, metadata, occurred_at
+		) VALUES ($1, $2, $3, $4, $5, $6, 'auth_session', $7, $8, $9, $10, $11)
+	`, id, actorType, actorUserID, machineActorID, action, result, resourceID,
+		ipAddress, nullableString(metadata.RequestID), encodedMetadata, now)
 	return err
 }
 

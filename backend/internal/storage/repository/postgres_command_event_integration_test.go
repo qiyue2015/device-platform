@@ -536,9 +536,9 @@ func TestPostgresCommandExpiredDispatchingRecoveryFencesWorker(t *testing.T) {
 			updated   bool
 			err       error
 		}
-		results := make(chan recoveryResult, 3)
+		results := make(chan recoveryResult, 2)
 		var workers sync.WaitGroup
-		workers.Add(3)
+		workers.Add(2)
 		go func() {
 			defer workers.Done()
 			<-start
@@ -565,17 +565,6 @@ func TestPostgresCommandExpiredDispatchingRecoveryFencesWorker(t *testing.T) {
 			})
 			results <- recoveryResult{operation: "recover", updated: updated, err: err}
 		}()
-		go func() {
-			defer workers.Done()
-			<-start
-			var updated bool
-			err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
-				var err error
-				updated, err = tx.Commands().ExpireResultObservation(ctx, command.ID)
-				return err
-			})
-			results <- recoveryResult{operation: "result-timeout", updated: updated, err: err}
-		}()
 		close(start)
 		workers.Wait()
 		close(results)
@@ -596,6 +585,24 @@ func TestPostgresCommandExpiredDispatchingRecoveryFencesWorker(t *testing.T) {
 		attempts, err := store.Commands().ListAttempts(ctx, command.ID)
 		if err != nil || len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != domain.AttemptOutcomeIndeterminate || attempts[0].ConfirmationLevel != domain.ConfirmationTransportSent || attempts[0].EvidenceStatus != domain.EvidenceUnverified {
 			t.Fatalf("recovered Attempt mismatch: attempts=%+v err=%v", attempts, err)
+		}
+
+		if err := store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
+			expired, err := tx.Commands().ExpireResultObservation(ctx, command.ID)
+			if err != nil || !expired {
+				return fmt.Errorf("result timeout after recovery updated=%v: %w", expired, err)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		timedOut, err := store.Commands().Get(ctx, command.ID)
+		if err != nil || timedOut.Status != domain.CommandStatusTimeout || timedOut.ReasonCode == nil || *timedOut.ReasonCode != "result_observation_timeout" || timedOut.ConfirmationLevel != domain.ConfirmationTransportSent || timedOut.EvidenceStatus != domain.EvidenceUnverified {
+			t.Fatalf("timed out Command mismatch: command=%+v err=%v", timedOut, err)
+		}
+		attempts, err = store.Commands().ListAttempts(ctx, command.ID)
+		if err != nil || len(attempts) != 1 || attempts[0].Outcome == nil || *attempts[0].Outcome != domain.AttemptOutcomeIndeterminate || attempts[0].ConfirmationLevel != domain.ConfirmationTransportSent || attempts[0].EvidenceStatus != domain.EvidenceUnverified {
+			t.Fatalf("timed out Attempt mismatch: attempts=%+v err=%v", attempts, err)
 		}
 	})
 }
@@ -1046,12 +1053,13 @@ func createCommandFixtures(t *testing.T, ctx context.Context, store *repository.
 	}
 	err = store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
 		if err := tx.Projects().Create(ctx, domain.Project{
-			ID:           commandProjectID,
-			Name:         "Command Repository Project",
-			APIKeyDigest: bytes.Repeat([]byte{0x31}, 32),
-			IPWhitelist:  []string{},
-			CreatedAt:    now,
-			UpdatedAt:    now,
+			ID:            commandProjectID,
+			Name:          "Command Repository Project",
+			ManagerUserID: repositoryManagerID,
+			APIKeyDigest:  bytes.Repeat([]byte{0x31}, 32),
+			IPWhitelist:   []string{},
+			CreatedAt:     now,
+			UpdatedAt:     now,
 		}); err != nil {
 			return err
 		}

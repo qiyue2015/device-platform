@@ -23,6 +23,7 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/qiyue2015/device-platform/internal/access"
 	"github.com/qiyue2015/device-platform/internal/domain"
 	"github.com/qiyue2015/device-platform/internal/projectservice"
 	"github.com/qiyue2015/device-platform/internal/storage"
@@ -33,6 +34,7 @@ const (
 	webhookWorkerEventID    = "77000000-0000-4000-8000-000000000001"
 	webhookWorkerDeliveryID = "78000000-0000-4000-8000-000000000001"
 	webhookWorkerDeviceID   = "31000000-0000-4000-8000-000000000001"
+	webhookWorkerAdminID    = "79000000-0000-4000-8000-000000000001"
 )
 
 type receivedWebhook struct {
@@ -64,8 +66,8 @@ func TestPersistentWebhookWorkerDeliversSignedSnapshotAndHistory(t *testing.T) {
 		service, projectID, secret := createWebhookWorkerFixture(t, store, endpoint.URL)
 		rawBody := []byte(`{"schema_version":1,"event_id":"` + webhookWorkerEventID + `","data":{"safe":true}}`)
 		createWorkerDelivery(t, store, projectID, webhookWorkerEventID, webhookWorkerDeliveryID, rawBody)
-		if _, err := service.RotateWebhookSecret(context.Background(), projectID, projectservice.RequestMetadata{
-			ActorType: domain.ActorTypeAdmin, ActorID: "admin-test", RequestID: "79000000-0000-4000-8000-000000000002",
+		if _, err := service.RotateWebhookSecret(context.Background(), access.SuperAdmin(webhookWorkerAdminID), projectID, projectservice.RequestMetadata{
+			ActorUserID: webhookWorkerAdminID, RequestID: "79000000-0000-4000-8000-000000000002",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -438,8 +440,10 @@ func createWebhookWorkerFixture(t *testing.T, store *repository.PostgresStore, e
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := service.Create(context.Background(), projectservice.CreateRequest{Name: "Webhook Worker", WebhookURL: &endpoint}, projectservice.RequestMetadata{
-		ActorType: domain.ActorTypeAdmin, ActorID: "admin-test", RequestID: "79000000-0000-4000-8000-000000000001",
+	created, err := service.Create(context.Background(), access.SuperAdmin(webhookWorkerAdminID), projectservice.CreateRequest{
+		Name: "Webhook Worker", ManagerUserID: webhookWorkerAdminID, WebhookURL: &endpoint,
+	}, projectservice.RequestMetadata{
+		ActorUserID: webhookWorkerAdminID, RequestID: "79000000-0000-4000-8000-000000000001",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -537,6 +541,12 @@ func withWebhookWorkerDatabase(t *testing.T, fn func(*sql.DB, *repository.Postgr
 	}
 	defer db.Close()
 	if err := storage.ApplyMigrations(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status)
+		VALUES ($1, 'admin@example.test', 'hash', 'Test Admin', true, 'active')
+	`, webhookWorkerAdminID); err != nil {
 		t.Fatal(err)
 	}
 	fn(db, repository.NewPostgresStore(db))

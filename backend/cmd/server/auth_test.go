@@ -57,7 +57,7 @@ func TestJWTContractAndMemorySessionInvalidation(t *testing.T) {
 }
 
 func TestParseJWTRejectsWrongIssuerAndAlgorithmEvenWithValidSignature(t *testing.T) {
-	user := currentUser{ID: "test-admin", Email: "admin@example.test", DisplayName: "Admin", IsAdmin: true}
+	user := currentUser{ID: "test-admin", Email: "admin@example.test", DisplayName: "Admin", IsSuperAdmin: true, Status: "active"}
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	token, err := createJWT(user, testJWTSecret, now)
 	if err != nil {
@@ -83,7 +83,7 @@ func TestParseJWTRejectsWrongIssuerAndAlgorithmEvenWithValidSignature(t *testing
 }
 
 func TestParseJWTRejectsWrongAudienceAndInvalidTimes(t *testing.T) {
-	user := currentUser{ID: "test-admin", Email: "admin@example.test", DisplayName: "Admin", IsAdmin: true}
+	user := currentUser{ID: "test-admin", Email: "admin@example.test", DisplayName: "Admin", IsSuperAdmin: true, Status: "active"}
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	token, err := createJWT(user, testJWTSecret, now)
 	if err != nil {

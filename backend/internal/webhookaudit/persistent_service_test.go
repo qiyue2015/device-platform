@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qiyue2015/device-platform/internal/access"
 	"github.com/qiyue2015/device-platform/internal/domain"
 	"github.com/qiyue2015/device-platform/internal/storage/repository"
 )
@@ -20,6 +21,7 @@ type unusedPersistentStore struct {
 func (*unusedPersistentStore) Events() repository.EventQueries     { return nil }
 func (*unusedPersistentStore) Webhooks() repository.WebhookQueries { return nil }
 func (*unusedPersistentStore) Audits() repository.AuditQueries     { return nil }
+func (*unusedPersistentStore) Projects() repository.ProjectQueries { return nil }
 func (s *unusedPersistentStore) TransactWebhookAudit(context.Context, func(repository.WebhookAuditTx) error) error {
 	s.transactions++
 	return errors.New("unexpected transaction")
@@ -47,42 +49,43 @@ func TestPersistentServiceRejectsInvalidRequestsBeforePersistence(t *testing.T) 
 	invalidAction := "future"
 	invalidResult := "pending"
 	empty := ""
+	scope := access.SuperAdmin("90000000-0000-4000-8000-000000000001")
 
 	checks := []func() error{
-		func() error { _, err := service.ListEvents(ctx, EventListRequest{Page: -1}); return err },
+		func() error { _, err := service.ListEvents(ctx, scope, EventListRequest{Page: -1}); return err },
 		func() error {
-			_, err := service.ListEvents(ctx, EventListRequest{ProjectID: &invalidUUID})
+			_, err := service.ListEvents(ctx, scope, EventListRequest{ProjectID: &invalidUUID})
 			return err
 		},
 		func() error {
-			_, err := service.ListEvents(ctx, EventListRequest{EventType: &invalidEventType})
+			_, err := service.ListEvents(ctx, scope, EventListRequest{EventType: &invalidEventType})
 			return err
 		},
-		func() error { _, err := service.GetEvent(ctx, invalidUUID); return err },
+		func() error { _, err := service.GetEvent(ctx, scope, invalidUUID); return err },
 		func() error {
-			_, err := service.ListDeliveries(ctx, DeliveryListRequest{Status: &invalidStatus})
+			_, err := service.ListDeliveries(ctx, scope, DeliveryListRequest{Status: &invalidStatus})
 			return err
 		},
-		func() error { _, err := service.GetDelivery(ctx, invalidUUID); return err },
+		func() error { _, err := service.GetDelivery(ctx, scope, invalidUUID); return err },
 		func() error {
-			_, err := service.ListAudits(ctx, AuditListRequest{ActorType: &invalidActorType})
-			return err
-		},
-		func() error {
-			_, err := service.ListAudits(ctx, AuditListRequest{Action: &invalidAction})
+			_, err := service.ListAudits(ctx, scope, AuditListRequest{ActorType: &invalidActorType})
 			return err
 		},
 		func() error {
-			_, err := service.ListAudits(ctx, AuditListRequest{Result: &invalidResult})
+			_, err := service.ListAudits(ctx, scope, AuditListRequest{Action: &invalidAction})
 			return err
 		},
 		func() error {
-			_, err := service.ListAudits(ctx, AuditListRequest{ResourceType: &empty})
+			_, err := service.ListAudits(ctx, scope, AuditListRequest{Result: &invalidResult})
 			return err
 		},
-		func() error { _, err := service.GetAudit(ctx, invalidUUID); return err },
 		func() error {
-			_, err := service.ReplayDead(ctx, "65000000-0000-0000-0000-000000000001", ReplayRequest{RequestID: "request"})
+			_, err := service.ListAudits(ctx, scope, AuditListRequest{ResourceType: &empty})
+			return err
+		},
+		func() error { _, err := service.GetAudit(ctx, scope, invalidUUID); return err },
+		func() error {
+			_, err := service.ReplayDead(ctx, scope, "65000000-0000-0000-0000-000000000001", ReplayRequest{RequestID: "request"})
 			return err
 		},
 	}
@@ -142,17 +145,10 @@ func TestPersistentDeliveryDTOIsSafeAndDistinguishesDetailAttempts(t *testing.T)
 	}
 }
 
-func TestPersistentServiceIdentifierFailureDoesNotStartReplayTransaction(t *testing.T) {
-	store := &unusedPersistentStore{}
-	service, err := newPersistentService(store, PersistentConfig{Random: bytes.NewReader(nil)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = service.ReplayDead(context.Background(), "65000000-0000-0000-0000-000000000001", ReplayRequest{
-		ActorID: "admin-id", IPAddress: "192.0.2.1", RequestID: "request-id",
-	})
-	if !errors.Is(err, ErrIdentifierGeneration) || store.transactions != 0 {
-		t.Fatalf("identifier failure err=%v transactions=%d", err, store.transactions)
+func TestPersistentIdentifierFailure(t *testing.T) {
+	_, err := randomUUID(bytes.NewReader(nil))
+	if !errors.Is(err, ErrIdentifierGeneration) {
+		t.Fatalf("identifier failure err=%v", err)
 	}
 }
 

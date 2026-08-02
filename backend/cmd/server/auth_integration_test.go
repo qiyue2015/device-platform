@@ -295,8 +295,8 @@ func seedAuthTestAdmin(t *testing.T, db *sql.DB) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`
-		INSERT INTO users (id, email, password_hash, display_name, is_admin)
-		VALUES ($1, $2, $3, 'Test Admin', true)
+		INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status)
+		VALUES ($1, $2, $3, 'Test Admin', true, 'active')
 	`, authTestAdminID, authTestEmail, string(hash)); err != nil {
 		t.Fatal(err)
 	}

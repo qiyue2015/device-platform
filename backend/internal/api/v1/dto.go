@@ -15,13 +15,22 @@ type ErrorResponse struct {
 }
 
 type ProjectResponse struct {
-	ID                string    `json:"id"`
-	Name              string    `json:"name"`
-	WebhookURL        *string   `json:"webhook_url"`
-	WebhookConfigured bool      `json:"webhook_configured"`
-	IPWhitelist       []string  `json:"ip_whitelist"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                string                 `json:"id"`
+	Name              string                 `json:"name"`
+	ManagerUserID     string                 `json:"manager_user_id"`
+	Manager           ProjectManagerResponse `json:"manager"`
+	WebhookURL        **string               `json:"webhook_url,omitempty"`
+	WebhookConfigured *bool                  `json:"webhook_configured,omitempty"`
+	IPWhitelist       *[]string              `json:"ip_whitelist,omitempty"`
+	CreatedAt         time.Time              `json:"created_at"`
+	UpdatedAt         time.Time              `json:"updated_at"`
+}
+
+type ProjectManagerResponse struct {
+	ID          string            `json:"id"`
+	Email       string            `json:"email"`
+	DisplayName string            `json:"display_name"`
+	Status      domain.UserStatus `json:"status"`
 }
 
 type ProjectCredentialResponse struct {
@@ -30,10 +39,22 @@ type ProjectCredentialResponse struct {
 	WebhookSecret string `json:"webhook_secret,omitempty"`
 }
 
+type OpenProjectResponse struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type CreateProjectRequest struct {
-	Name        string   `json:"name"`
-	WebhookURL  *string  `json:"webhook_url,omitempty"`
-	IPWhitelist []string `json:"ip_whitelist,omitempty"`
+	Name          string   `json:"name"`
+	ManagerUserID string   `json:"manager_user_id"`
+	WebhookURL    *string  `json:"webhook_url,omitempty"`
+	IPWhitelist   []string `json:"ip_whitelist,omitempty"`
+}
+
+type TransferProjectRequest struct {
+	ManagerUserID string `json:"manager_user_id"`
 }
 
 type UpdateProjectRequest struct {
@@ -236,6 +257,7 @@ type WebhookDeliveryResponse struct {
 type AuditLogResponse struct {
 	ID           string             `json:"id"`
 	ActorType    domain.ActorType   `json:"actor_type"`
+	ActorUserID  *string            `json:"actor_user_id"`
 	ActorID      *string            `json:"actor_id"`
 	ProjectID    *string            `json:"project_id"`
 	Action       string             `json:"action"`

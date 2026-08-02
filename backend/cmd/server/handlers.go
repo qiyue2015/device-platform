@@ -150,14 +150,13 @@ func (a *app) handleMe(w http.ResponseWriter, r *http.Request) error {
 		return newAPIError(http.StatusUnauthorized, "unauthorized", "login required")
 	}
 	writeOK(w, map[string]interface{}{
-		"id":              user.ID,
-		"name":            user.DisplayName,
-		"nickname":        user.DisplayName,
-		"email":           user.Email,
-		"email_verified":  true,
-		"mobile":          "",
-		"mobile_verified": false,
-		"roles":           []string{"admin"},
+		"id":             user.ID,
+		"email":          user.Email,
+		"display_name":   user.DisplayName,
+		"is_super_admin": user.IsSuperAdmin,
+		"status":         user.Status,
+		"created_at":     user.CreatedAt,
+		"updated_at":     user.UpdatedAt,
 	})
 	return nil
 }

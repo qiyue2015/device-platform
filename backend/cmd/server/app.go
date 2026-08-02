@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qiyue2015/device-platform/internal/access"
 	"github.com/qiyue2015/device-platform/internal/cloudapi/wwtiot"
 	"github.com/qiyue2015/device-platform/internal/commandservice"
 	"github.com/qiyue2015/device-platform/internal/commandworker"
@@ -25,6 +26,7 @@ import (
 	simulatorruntime "github.com/qiyue2015/device-platform/internal/simulator"
 	"github.com/qiyue2015/device-platform/internal/storage"
 	"github.com/qiyue2015/device-platform/internal/storage/repository"
+	"github.com/qiyue2015/device-platform/internal/userservice"
 	"github.com/qiyue2015/device-platform/internal/webhookaudit"
 	"github.com/qiyue2015/device-platform/internal/webhookworker"
 )
@@ -43,6 +45,7 @@ type app struct {
 	projects       httpapi.ProjectService
 	devices        httpapi.DeviceResourceService
 	commands       httpapi.CommandResourceService
+	users          *userservice.Service
 	simulator      *simulatorruntime.Service
 	cloudProviders cloudProviderRegistry
 	gateway        *gateway.Service
@@ -81,6 +84,7 @@ type runtimeSnapshot struct {
 	projects       httpapi.ProjectService
 	devices        httpapi.DeviceResourceService
 	commands       httpapi.CommandResourceService
+	users          *userservice.Service
 	simulator      *simulatorruntime.Service
 	webhookAudit   *webhookaudit.PersistentService
 	cloudProviders cloudProviderRegistry
@@ -96,6 +100,7 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 	var projects httpapi.ProjectService
 	var devices *deviceservice.Service
 	var commands httpapi.CommandResourceService
+	var users *userservice.Service
 	if cfg.Installed {
 		var err error
 		db, err = sql.Open("postgres", cfg.DatabaseURL)
@@ -125,10 +130,16 @@ func newApp(cfg config, logger *slog.Logger) (*app, error) {
 			_ = db.Close()
 			return nil, fmt.Errorf("initialize Command service: %w", err)
 		}
+		users, err = userservice.New(store, userservice.Config{})
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("initialize User service: %w", err)
+		}
 	}
 	cloudProviders := newCloudProviderRegistry(cfg)
 	application := newAppWithServices(cfg, logger, db, auth, nil, nil, nil, cloudProviders, projects, devices)
 	application.commands = commands
+	application.users = users
 	if db != nil {
 		store := repository.NewPostgresStore(db)
 		omniRuntime, err := newOmniRuntime(store, cfg)
@@ -179,10 +190,12 @@ func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authen
 	}
 	var simulatorService *simulatorruntime.Service
 	var webhookAuditService *webhookaudit.PersistentService
+	var userService *userservice.Service
 	if db != nil {
 		store := repository.NewPostgresStore(db)
 		simulatorService = simulatorruntime.NewService(store, nil)
 		webhookAuditService = webhookaudit.NewPersistentService(store)
+		userService, _ = userservice.New(store, userservice.Config{})
 	}
 	return &app{
 		cfg:            cfg,
@@ -193,6 +206,7 @@ func newAppWithServices(cfg config, logger *slog.Logger, db *sql.DB, auth authen
 		commandRouter:  commandRouter,
 		projects:       projects,
 		devices:        devices,
+		users:          userService,
 		simulator:      simulatorService,
 		cloudProviders: cloudProviders,
 		gateway:        gatewayService,
@@ -227,6 +241,7 @@ func (a *app) routes() http.Handler {
 		ProjectMetadata:  a.projectRequestMetadata,
 		DeviceMetadata:   a.deviceRequestMetadata,
 		CommandMetadata:  a.commandRequestMetadata,
+		HumanScope:       a.humanScope,
 	}
 	legacyOpenRouter := httpapi.NewOpenRouterWithResourceServices(a.commandRouter, projectBridge, nil, routerHooks)
 	resourceOpenRouter := httpapi.NewOpenRouterWithDomainServices(a.commandRouter, projectBridge, deviceBridge, commandBridge, routerHooks)
@@ -243,6 +258,8 @@ func (a *app) routes() http.Handler {
 	})
 	mux.Handle("/v1/open/", openRouter)
 	protectedV1 := http.NewServeMux()
+	protectedV1.HandleFunc("/v1/users", a.handle(a.handleUsers))
+	protectedV1.HandleFunc("/v1/users/", a.handle(a.handleUserByID))
 	registerWebhookAuditRoutes(protectedV1, a)
 	protectedV1.HandleFunc("/v1/simulator", a.handle(a.handleSimulator))
 	protectedV1.HandleFunc("/v1/simulator/gateway", a.handle(a.handleSimulator))
@@ -349,6 +366,12 @@ func (a *app) authenticationService() authenticator {
 	return a.auth
 }
 
+func (a *app) userService() *userservice.Service {
+	a.runtimeMu.RLock()
+	defer a.runtimeMu.RUnlock()
+	return a.users
+}
+
 func (a *app) replaceRuntime(cfg config, db *sql.DB, auth authenticator, projects httpapi.ProjectService, devices httpapi.DeviceResourceService, commands httpapi.CommandResourceService) *sql.DB {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
@@ -359,10 +382,12 @@ func (a *app) replaceRuntime(cfg config, db *sql.DB, auth authenticator, project
 	a.projects = projects
 	a.devices = devices
 	a.commands = commands
+	a.users = nil
 	a.simulator = nil
 	a.webhookAudit = nil
 	if db != nil {
 		store := repository.NewPostgresStore(db)
+		a.users, _ = userservice.New(store, userservice.Config{})
 		a.simulator = simulatorruntime.NewService(store, nil)
 		a.webhookAudit = webhookaudit.NewPersistentService(store)
 	}
@@ -392,6 +417,10 @@ func (a *app) buildInstallRuntime(result installResult, db *sql.DB) (runtimeSnap
 	if err != nil {
 		return runtimeSnapshot{}, fmt.Errorf("initialize Command service: %w", err)
 	}
+	users, err := userservice.New(store, userservice.Config{})
+	if err != nil {
+		return runtimeSnapshot{}, fmt.Errorf("initialize User service: %w", err)
+	}
 	omniRuntime, err := newOmniRuntime(store, cfg)
 	if err != nil {
 		return runtimeSnapshot{}, fmt.Errorf("initialize Omni runtime: %w", err)
@@ -407,7 +436,7 @@ func (a *app) buildInstallRuntime(result installResult, db *sql.DB) (runtimeSnap
 		return runtimeSnapshot{}, fmt.Errorf("initialize Webhook worker: %w", err)
 	}
 	return runtimeSnapshot{
-		cfg: cfg, db: db, auth: newDBAuthenticator(db, result.JWTSecret), projects: projects, devices: devices, commands: commands,
+		cfg: cfg, db: db, auth: newDBAuthenticator(db, result.JWTSecret), projects: projects, devices: devices, commands: commands, users: users,
 		simulator: simulatorruntime.NewService(store, nil), webhookAudit: webhookaudit.NewPersistentService(store),
 		cloudProviders: cloudProviders, commandWorker: commandWorker, webhookWorker: webhookWorker,
 		omniRuntime: omniRuntime,
@@ -432,6 +461,7 @@ func (a *app) publishRuntimeSnapshot(snapshot runtimeSnapshot) (*sql.DB, func())
 	a.projects = snapshot.projects
 	a.devices = snapshot.devices
 	a.commands = snapshot.commands
+	a.users = snapshot.users
 	a.simulator = snapshot.simulator
 	a.webhookAudit = snapshot.webhookAudit
 	a.cloudProviders = snapshot.cloudProviders
@@ -706,22 +736,32 @@ func (a *app) setCommandResourceService(service httpapi.CommandResourceService) 
 func (a *app) projectRequestMetadata(r *http.Request) projectservice.RequestMetadata {
 	user, _ := userFromRequest(r)
 	return projectservice.RequestMetadata{
-		ActorType: domain.ActorTypeAdmin, ActorID: user.ID, IPAddress: clientIP(r), RequestID: httpjson.RequestID(r.Context()),
+		ActorUserID: user.ID, IPAddress: clientIP(r), RequestID: httpjson.RequestID(r.Context()),
 	}
 }
 
 func (a *app) deviceRequestMetadata(r *http.Request) deviceservice.RequestMetadata {
 	user, _ := userFromRequest(r)
 	return deviceservice.RequestMetadata{
-		ActorType: domain.ActorTypeAdmin, ActorID: user.ID, IPAddress: clientIP(r), RequestID: httpjson.RequestID(r.Context()),
+		ActorType: domain.ActorTypeUser, ActorUserID: user.ID,
+		IPAddress: clientIP(r), RequestID: httpjson.RequestID(r.Context()),
 	}
 }
 
 func (a *app) commandRequestMetadata(r *http.Request) commandservice.RequestMetadata {
 	user, _ := userFromRequest(r)
 	return commandservice.RequestMetadata{
-		ActorType: domain.ActorTypeAdmin, ActorID: user.ID, IPAddress: clientIP(r), RequestID: httpjson.RequestID(r.Context()),
+		ActorType: domain.ActorTypeUser, ActorUserID: user.ID,
+		IPAddress: clientIP(r), RequestID: httpjson.RequestID(r.Context()),
 	}
+}
+
+func (a *app) humanScope(r *http.Request) access.Scope {
+	user, _ := userFromRequest(r)
+	if user.IsSuperAdmin {
+		return access.SuperAdmin(user.ID)
+	}
+	return access.User(user.ID)
 }
 
 func deviceServiceConfig(cfg config) deviceservice.Config {

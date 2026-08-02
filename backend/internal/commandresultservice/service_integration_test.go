@@ -126,7 +126,7 @@ func seedResultCommand(t *testing.T, ctx context.Context, store *repository.Post
 	err = store.WithinTransaction(ctx, func(tx *repository.PostgresTx) error {
 		if err := tx.Projects().Create(ctx, domain.Project{
 			ID: resultProjectID, Name: "Result Project", APIKeyDigest: bytes.Repeat([]byte{0x31}, 32),
-			IPWhitelist: []string{}, CreatedAt: queuedAt, UpdatedAt: queuedAt,
+			ManagerUserID: resultManagerUserID, IPWhitelist: []string{}, CreatedAt: queuedAt, UpdatedAt: queuedAt,
 		}); err != nil {
 			return err
 		}
@@ -221,5 +221,13 @@ func withResultDatabase(t *testing.T, fn func(*sql.DB, *repository.PostgresStore
 	if err := storage.ApplyMigrations(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`
+		INSERT INTO users (id, email, password_hash, display_name, is_super_admin, status)
+		VALUES ($1, 'result-manager@example.test', 'hash', 'Result Manager', true, 'active')
+	`, resultManagerUserID); err != nil {
+		t.Fatal(err)
+	}
 	fn(db, repository.NewPostgresStore(db))
 }
+
+const resultManagerUserID = "71000000-0000-0000-0000-000000000001"

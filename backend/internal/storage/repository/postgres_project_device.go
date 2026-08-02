@@ -27,6 +27,10 @@ func NewPostgresStore(db *sql.DB) *PostgresStore {
 	return &PostgresStore{db: db}
 }
 
+func (s *PostgresStore) Users() UserQueries {
+	return &postgresUserRepository{exec: s.db}
+}
+
 func (s *PostgresStore) Projects() ProjectQueries {
 	return &postgresProjectRepository{exec: s.db}
 }
@@ -83,6 +87,12 @@ func (s *PostgresStore) TransactProject(ctx context.Context, fn func(ProjectTx) 
 	})
 }
 
+func (s *PostgresStore) TransactUser(ctx context.Context, fn func(UserTx) error) error {
+	return s.WithinTransaction(ctx, func(tx *PostgresTx) error {
+		return fn(tx)
+	})
+}
+
 func (s *PostgresStore) TransactDevice(ctx context.Context, fn func(DeviceTx) error) error {
 	return s.WithinTransaction(ctx, func(tx *PostgresTx) error {
 		return fn(tx)
@@ -115,6 +125,10 @@ func (s *PostgresStore) TransactProviderMessage(ctx context.Context, fn func(Pro
 
 type PostgresTx struct {
 	tx *sql.Tx
+}
+
+func (tx *PostgresTx) Users() UserRepository {
+	return &postgresUserRepository{exec: tx.tx}
 }
 
 func (tx *PostgresTx) Projects() ProjectRepository {
@@ -162,11 +176,11 @@ type postgresProjectRepository struct {
 }
 
 func (r *postgresProjectRepository) Get(ctx context.Context, id string) (domain.Project, error) {
-	return scanProject(r.exec.QueryRowContext(ctx, projectSelect+` WHERE id = $1`, id))
+	return scanProject(r.exec.QueryRowContext(ctx, projectSelect+` WHERE p.id = $1`, id))
 }
 
 func (r *postgresProjectRepository) GetByAPIKeyDigest(ctx context.Context, digest []byte) (domain.Project, error) {
-	return scanProject(r.exec.QueryRowContext(ctx, projectSelect+` WHERE api_key_hash = $1`, digest))
+	return scanProject(r.exec.QueryRowContext(ctx, projectSelect+` WHERE p.api_key_hash = $1`, digest))
 }
 
 func (r *postgresProjectRepository) GetWebhookSecretVersion(ctx context.Context, projectID string, version int) (domain.WebhookSecretVersion, error) {
@@ -201,16 +215,18 @@ func (r *postgresProjectRepository) List(ctx context.Context, request ListProjec
 	var total int64
 	if err := r.exec.QueryRowContext(ctx, `
 		SELECT count(*)
-		FROM projects
-		WHERE ($1::text IS NULL OR name = $1)
-	`, nullableString(request.Name)).Scan(&total); err != nil {
+		FROM projects p
+		WHERE ($1::text IS NULL OR p.name = $1)
+		  AND ($2::uuid IS NULL OR p.manager_user_id = $2)
+	`, nullableString(request.Name), nullableString(request.ManagerUserID)).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := r.exec.QueryContext(ctx, projectSelect+`
-		WHERE ($1::text IS NULL OR name = $1)
-		ORDER BY created_at DESC, id DESC
-		LIMIT $2 OFFSET $3
-	`, nullableString(request.Name), request.Limit, request.Offset)
+		WHERE ($1::text IS NULL OR p.name = $1)
+		  AND ($2::uuid IS NULL OR p.manager_user_id = $2)
+		ORDER BY p.created_at DESC, p.id DESC
+		LIMIT $3 OFFSET $4
+	`, nullableString(request.Name), nullableString(request.ManagerUserID), request.Limit, request.Offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -232,12 +248,13 @@ func (r *postgresProjectRepository) List(ctx context.Context, request ListProjec
 func (r *postgresProjectRepository) Create(ctx context.Context, project domain.Project) error {
 	_, err := r.exec.ExecContext(ctx, `
 		INSERT INTO projects (
-			id, name, api_key_hash, webhook_url, webhook_config_version,
+			id, name, manager_user_id, api_key_hash, webhook_url, webhook_config_version,
 			current_webhook_secret_version, ip_whitelist, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 	`,
 		project.ID,
 		project.Name,
+		project.ManagerUserID,
 		project.APIKeyDigest,
 		nullableString(project.WebhookURL),
 		project.WebhookConfigVersion,
@@ -250,7 +267,18 @@ func (r *postgresProjectRepository) Create(ctx context.Context, project domain.P
 }
 
 func (r *postgresProjectRepository) GetForUpdate(ctx context.Context, id string) (domain.Project, error) {
-	return scanProject(r.exec.QueryRowContext(ctx, projectSelect+` WHERE id = $1 FOR UPDATE`, id))
+	return scanProject(r.exec.QueryRowContext(ctx, projectSelect+` WHERE p.id = $1 FOR UPDATE OF p`, id))
+}
+
+func (r *postgresProjectRepository) CountByManager(ctx context.Context, managerUserID string) (int64, error) {
+	var count int64
+	err := r.exec.QueryRowContext(ctx, `SELECT count(*) FROM projects WHERE manager_user_id = $1`, managerUserID).Scan(&count)
+	return count, err
+}
+
+func (r *postgresProjectRepository) SetManager(ctx context.Context, id, managerUserID string) error {
+	_, err := r.exec.ExecContext(ctx, `UPDATE projects SET manager_user_id = $2, updated_at = now() WHERE id = $1`, id, managerUserID)
+	return err
 }
 
 func (r *postgresProjectRepository) Rename(ctx context.Context, id, name string) error {
@@ -305,9 +333,13 @@ func (r *postgresProjectRepository) RetireWebhookSecretVersion(ctx context.Conte
 }
 
 const projectSelect = `
-	SELECT id::text, name, api_key_hash, webhook_url, webhook_config_version,
-		current_webhook_secret_version, ip_whitelist, created_at, updated_at
-	FROM projects`
+	SELECT p.id::text, p.name, p.manager_user_id::text,
+		u.id::text, u.email, u.password_hash, u.display_name, u.is_super_admin,
+		u.status, u.session_generation, u.created_at, u.updated_at,
+		p.api_key_hash, p.webhook_url, p.webhook_config_version,
+		p.current_webhook_secret_version, p.ip_whitelist, p.created_at, p.updated_at
+	FROM projects p
+	JOIN users u ON u.id = p.manager_user_id`
 
 type rowScanner interface {
 	Scan(...any) error
@@ -320,6 +352,16 @@ func scanProject(row rowScanner) (domain.Project, error) {
 	err := row.Scan(
 		&project.ID,
 		&project.Name,
+		&project.ManagerUserID,
+		&project.Manager.ID,
+		&project.Manager.Email,
+		&project.Manager.PasswordHash,
+		&project.Manager.DisplayName,
+		&project.Manager.IsSuperAdmin,
+		&project.Manager.Status,
+		&project.Manager.SessionGeneration,
+		&project.Manager.CreatedAt,
+		&project.Manager.UpdatedAt,
 		&project.APIKeyDigest,
 		&webhookURL,
 		&project.WebhookConfigVersion,
@@ -494,12 +536,14 @@ func (r *postgresDeviceRepository) List(ctx context.Context, request ListDevices
 	}
 	const where = `
 		WHERE ($1::uuid IS NULL OR d.project_id = $1)
-			AND ($2::text IS NULL OR dt.code = $2)
-			AND ($3::text IS NULL OR d.provider_code = $3)
-			AND ($4::text IS NULL OR d.connection_status = $4)
-			AND ($5::text IS NULL OR d.lifecycle_status = $5)`
+			AND ($2::uuid IS NULL OR p.manager_user_id = $2)
+			AND ($3::text IS NULL OR dt.code = $3)
+			AND ($4::text IS NULL OR d.provider_code = $4)
+			AND ($5::text IS NULL OR d.connection_status = $5)
+			AND ($6::text IS NULL OR d.lifecycle_status = $6)`
 	args := []any{
 		nullableString(request.ProjectID),
+		nullableString(request.ManagerUserID),
 		nullableString(request.DeviceTypeCode),
 		nullableString(request.ProviderCode),
 		nullableConnectionStatus(request.ConnectionStatus),
@@ -507,12 +551,12 @@ func (r *postgresDeviceRepository) List(ctx context.Context, request ListDevices
 	}
 	var total int64
 	if err := r.exec.QueryRowContext(ctx, `
-		SELECT count(*) FROM devices d JOIN device_types dt ON dt.id = d.device_type_id
+		SELECT count(*) FROM devices d JOIN projects p ON p.id = d.project_id JOIN device_types dt ON dt.id = d.device_type_id
 	`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := r.exec.QueryContext(ctx, deviceSelect+where+`
-		ORDER BY d.created_at DESC, d.id DESC LIMIT $6 OFFSET $7
+		ORDER BY d.created_at DESC, d.id DESC LIMIT $7 OFFSET $8
 	`, append(args, request.Limit, request.Offset)...)
 	if err != nil {
 		return nil, 0, err
@@ -645,6 +689,7 @@ const deviceSelect = `
 		d.transport_protocol, d.adapter, d.connection_status, d.lifecycle_status,
 		d.created_at, d.updated_at
 	FROM devices d
+	JOIN projects p ON p.id = d.project_id
 	JOIN device_types dt ON dt.id = d.device_type_id`
 
 func scanDevice(row rowScanner) (domain.Device, error) {
