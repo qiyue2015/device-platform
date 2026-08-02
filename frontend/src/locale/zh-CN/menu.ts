@@ -9,6 +9,8 @@ export default {
   'menu.group.resources': '资源管理',
   'menu.group.commands': '指令管理',
   'menu.group.operations': '调试与审计',
+  'menu.users': '用户管理',
+  'menu.users.index': '用户管理',
   'menu.projects': '项目管理',
   'menu.projects.index': '项目管理',
   'menu.devices': '设备管理',

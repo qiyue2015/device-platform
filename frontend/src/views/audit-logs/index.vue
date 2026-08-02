@@ -56,7 +56,7 @@
         </template>
         <template #actor="{ record }">
           <div class="dp-cell-primary">{{ record.actor_type }}</div>
-          <div class="dp-cell-secondary dp-monospace">{{ record.actor_id || '-' }}</div>
+          <div class="dp-cell-secondary dp-monospace">{{ record.actor_user_id || record.actor_id || '-' }}</div>
         </template>
         <template #resource="{ record }">
           <div class="dp-cell-primary">{{ record.resource_type }}</div>
@@ -93,7 +93,9 @@
   });
   const projectCount = computed(() => audits.value.filter((audit) => !!audit.project_id).length);
   const deviceCount = computed(() => audits.value.filter((audit) => audit.resource_type === 'device').length);
-  const actorCount = computed(() => new Set(audits.value.map((audit) => `${audit.actor_type}:${audit.actor_id || ''}`)).size);
+  const actorCount = computed(
+    () => new Set(audits.value.map((audit) => `${audit.actor_type}:${audit.actor_user_id || audit.actor_id || ''}`)).size
+  );
   const columns = computed(() => [
     { title: t('devicePlatform.audit.columns.action'), slotName: 'actionName', width: 260 },
     { title: t('devicePlatform.audit.columns.actor'), slotName: 'actor', width: 180 },

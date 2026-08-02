@@ -9,6 +9,8 @@ export default {
   'menu.group.resources': 'Resources',
   'menu.group.commands': 'Commands',
   'menu.group.operations': 'Debugging & Audit',
+  'menu.users': 'Users',
+  'menu.users.index': 'Users',
   'menu.projects': 'Projects',
   'menu.projects.index': 'Projects',
   'menu.devices': 'Devices',

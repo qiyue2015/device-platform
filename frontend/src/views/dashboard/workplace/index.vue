@@ -20,10 +20,11 @@
       <a-grid-item :span="{ xs: 24, lg: 10 }">
         <a-card title="Quick Actions" :bordered="false">
           <a-space direction="vertical" fill>
-            <a-button type="primary" @click="$router.push('/projects/index')">Create Project</a-button>
+            <a-button v-if="isSuperAdmin" type="primary" @click="$router.push('/projects/index')">Create Project</a-button>
+            <a-button v-else type="primary" @click="$router.push('/projects/index')">Manage Projects</a-button>
             <a-button @click="$router.push('/devices/index')">Add Device</a-button>
             <a-button @click="$router.push('/commands/index')">Send Command</a-button>
-            <a-button @click="$router.push('/simulator/index')">Simulator</a-button>
+            <a-button v-if="isSuperAdmin" @click="$router.push('/simulator/index')">Simulator</a-button>
           </a-space>
         </a-card>
       </a-grid-item>
@@ -42,7 +43,8 @@
         <a-card title="Audit Logs" :bordered="false">
           <a-table size="small" row-key="id" :pagination="false" :data="audits" :columns="auditColumns">
             <template #actor="{ record }">
-              {{ record.actor_type }}<span v-if="record.actor_id"> / {{ record.actor_id }}</span>
+              {{ record.actor_type
+              }}<span v-if="record.actor_user_id || record.actor_id"> / {{ record.actor_user_id || record.actor_id }}</span>
             </template>
           </a-table>
         </a-card>
@@ -53,6 +55,7 @@
 
 <script lang="ts" setup>
   import { computed, onMounted, reactive, ref } from 'vue';
+  import { useUserStore } from '@/store';
   import {
     AuditLogRecord,
     CommandRecord,
@@ -69,6 +72,8 @@
 
   defineOptions({ name: 'DashboardWorkplace' });
 
+  const userStore = useUserStore();
+  const isSuperAdmin = computed(() => userStore.is_super_admin);
   const projects = ref<ProjectRecord[]>([]);
   const devices = ref<DeviceRecord[]>([]);
   const commands = ref<CommandRecord[]>([]);

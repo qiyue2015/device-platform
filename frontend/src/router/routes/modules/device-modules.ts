@@ -3,6 +3,27 @@ import { AppRouteRecordRaw } from '../types';
 
 const routes: AppRouteRecordRaw[] = [
   {
+    path: '/users',
+    name: 'Users',
+    component: DEFAULT_LAYOUT,
+    meta: {
+      locale: 'menu.users',
+      icon: 'icon-user-group',
+      requiresAuth: true,
+      menuGroup: 'menu.group.resources',
+      menuGroupOrder: 1,
+      order: 0,
+    },
+    children: [
+      {
+        path: 'index',
+        name: 'UsersIndex',
+        component: () => import('@/views/users/index.vue'),
+        meta: { locale: 'menu.users.index', requiresAuth: true, roles: ['super-admin'] },
+      },
+    ],
+  },
+  {
     path: '/projects',
     name: 'Projects',
     component: DEFAULT_LAYOUT,
@@ -166,7 +187,7 @@ const routes: AppRouteRecordRaw[] = [
         path: 'index',
         name: 'SimulatorIndex',
         component: () => import('@/views/simulator/index.vue'),
-        meta: { locale: 'menu.simulator.index', requiresAuth: true, roles: ['*'] },
+        meta: { locale: 'menu.simulator.index', requiresAuth: true, roles: ['super-admin'] },
       },
     ],
   },

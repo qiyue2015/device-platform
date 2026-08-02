@@ -74,9 +74,7 @@
   const userStore = useUserStore();
   const { logout } = useUser();
   const { isFullscreen, toggle: toggleFullScreen } = useFullscreen();
-  const avatarInitial = computed(() =>
-    (userStore.nickname || userStore.name || userStore.email || 'A').slice(0, 1).toUpperCase()
-  );
+  const avatarInitial = computed(() => (userStore.display_name || userStore.email || 'A').slice(0, 1).toUpperCase());
   const theme = computed(() => {
     return appStore.theme;
   });

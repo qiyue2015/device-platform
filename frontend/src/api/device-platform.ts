@@ -23,9 +23,16 @@ export interface PageParams {
 export interface ProjectRecord {
   id: string;
   name: string;
-  webhook_url: string | null;
-  webhook_configured: boolean;
-  ip_whitelist: string[];
+  manager_user_id: string;
+  manager: {
+    id: string;
+    email: string;
+    display_name: string;
+    status: 'active' | 'disabled';
+  };
+  webhook_url?: string | null;
+  webhook_configured?: boolean;
+  ip_whitelist?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -192,6 +199,7 @@ export interface WebhookDeliveryRecord {
 export interface AuditLogRecord {
   id: string;
   actor_type: string;
+  actor_user_id: string | null;
   actor_id: string | null;
   project_id: string | null;
   action: string;
@@ -217,11 +225,11 @@ async function queryPage<T>(url: string, filters: object = {}): Promise<APIEnvel
   return { ...response, data: response.data.items || [] };
 }
 
-export function queryProjects(filters: { name?: string } & PageParams = {}) {
+export function queryProjects(filters: { name?: string; manager_user_id?: string } & PageParams = {}) {
   return queryPage<ProjectRecord>('/v1/projects', filters);
 }
 
-export function createProject(data: { name: string; webhook_url?: string; ip_whitelist?: string[] }) {
+export function createProject(data: { name: string; manager_user_id: string; webhook_url?: string; ip_whitelist?: string[] }) {
   return axios.post<ProjectCredentialRecord>('/v1/projects', data);
 }
 
@@ -235,6 +243,10 @@ export function rotateProjectAPIKey(id: string) {
 
 export function rotateProjectWebhookSecret(id: string) {
   return axios.post<ProjectCredentialRecord>(`/v1/projects/${id}/webhook-secret/rotate`);
+}
+
+export function transferProject(id: string, managerUserId: string) {
+  return axios.post<ProjectRecord>(`/v1/projects/${id}/transfer`, { manager_user_id: managerUserId });
 }
 
 export function queryDeviceTypes(filters: PageParams = {}) {

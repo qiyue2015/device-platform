@@ -7,10 +7,12 @@ import { UserState } from './types';
 const useUserStore = defineStore('user', {
   state: (): UserState => ({
     id: '',
-    name: undefined,
-    nickname: undefined,
     email: undefined,
-    email_verified: false,
+    display_name: undefined,
+    is_super_admin: false,
+    status: undefined,
+    created_at: undefined,
+    updated_at: undefined,
     roles: [],
   }),
 
@@ -29,7 +31,10 @@ const useUserStore = defineStore('user', {
     },
     async info() {
       const res = await getUserInfo();
-      this.setInfo(res.data);
+      this.setInfo({
+        ...res.data,
+        roles: [res.data.is_super_admin ? 'super-admin' : 'user'],
+      });
     },
     async login(loginForm: LoginData) {
       try {

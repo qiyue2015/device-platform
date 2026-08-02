@@ -67,6 +67,7 @@
               {{ t('devicePlatform.webhooks.action.detail') }}
             </a-button>
             <a-popconfirm
+              v-if="isSuperAdmin"
               :content="t('devicePlatform.webhooks.confirm.resend')"
               :disabled="record.status !== 'dead'"
               @ok="handleResendWebhook(record.id)"
@@ -112,6 +113,7 @@
   import { useI18n } from 'vue-i18n';
   import { Message } from '@arco-design/web-vue';
   import useLoading from '@/hooks/loading';
+  import { useUserStore } from '@/store';
   import { getBusinessStatusMeta } from '@/utils/device-platform-status';
   import {
     WebhookDeliveryRecord,
@@ -124,7 +126,9 @@
   defineOptions({ name: 'WebhooksIndex' });
 
   const { t } = useI18n();
+  const userStore = useUserStore();
   const { loading, setLoading } = useLoading(false);
+  const isSuperAdmin = computed(() => userStore.is_super_admin);
   const webhooks = ref<WebhookDeliveryRecord[]>([]);
   const deliveryDetail = ref<WebhookDeliveryRecord>();
   const detailVisible = ref(false);
