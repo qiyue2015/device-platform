@@ -1,8 +1,8 @@
 ---
 title: Device Platform 文档
-updated: 2026-08-01
+updated: 2026-08-02
 status: governed-contract-set
-contract_revision: 2026-08-01
+contract_revision: 2026-08-02
 ---
 
 # Device Platform 文档
@@ -20,7 +20,7 @@ contract_revision: 2026-08-01
 | 5    | [Messaging](./messaging-contract.md)                             | 内部消息 Envelope、Subject、Outbox/Inbox、Ack、重投和版本规则  |
 | 6    | [Device Type: smart-lock](./device-types/smart-lock.md)          | 智能锁规范化 action、payload 和安全策略                        |
 | 6    | [Provider: WWTIOT](./providers/wwtiot.md)                        | WWTIOT 厂商协议事实、action 映射、证据上限和厂商 Unknown       |
-| 6    | [Provider: Omni](./providers/omni.md)                            | Omni 直连协议 profile、action 映射、证据上限和厂商 Unknown    |
+| 6    | [Provider: Omni](./providers/omni.md)                            | Omni 直连协议 profile、action 映射、证据上限和厂商 Unknown     |
 | 7    | [ADR-0001](./architecture/technology-stack-adr.md)               | 已接受的技术栈、理由、代价和重新开启条件                       |
 | 7    | [Runtime Architecture](./architecture/runtime-architecture.md)   | 运行单元、数据流、基础设施职责和故障隔离                       |
 | 7    | [Reliability and Capacity](./operations/reliability-capacity.md) | 容量、SLO/RPO/RTO、降级、故障演练和上线证据                    |
@@ -33,16 +33,16 @@ contract_revision: 2026-08-01
 
 ## 核心概念所有权
 
-| 概念                                     | 唯一权威来源            | 其他文档允许做什么                          |
-| ---------------------------------------- | ----------------------- | ------------------------------------------- |
-| 产品范围、责任主体、非目标               | Platform Boundary       | 引用，不得增加产品能力                      |
-| 当前真实链路、完成定义、产品裁决         | Platform Target         | 细化验收证据，不得降低门槛                  |
-| 对象、关系、不变量、生命周期、事务、恢复 | Domain Model            | API 只表达 wire 形式，架构只说明如何实现    |
-| HTTP 认证、路径、DTO、幂等响应、错误码   | API                     | Device Type/Provider 只细化其从属字段和映射 |
-| 内部异步传输                             | Messaging               | Runtime 只分配运行责任                      |
-| 规范化设备能力                           | Device Type             | Provider 只做厂商映射                       |
-| 厂商协议事实和证据上限                   | Provider                | Core 不得猜测或提升证据等级                 |
-| 技术选型与运行约束                       | ADR/Runtime/Reliability | 不得改变产品范围或领域语义                  |
+| 概念                                                      | 唯一权威来源            | 其他文档允许做什么                          |
+| --------------------------------------------------------- | ----------------------- | ------------------------------------------- |
+| 产品范围、责任主体、非目标                                | Platform Boundary       | 引用，不得增加产品能力                      |
+| 当前真实链路、完成定义、产品裁决                          | Platform Target         | 细化验收证据，不得降低门槛                  |
+| User/Project 对象、授权关系、不变量、生命周期、事务、恢复 | Domain Model            | API 只表达 wire 形式，架构只说明如何实现    |
+| HTTP 认证、路径、DTO、幂等响应、错误码                    | API                     | Device Type/Provider 只细化其从属字段和映射 |
+| 内部异步传输                                              | Messaging               | Runtime 只分配运行责任                      |
+| 规范化设备能力                                            | Device Type             | Provider 只做厂商映射                       |
+| 厂商协议事实和证据上限                                    | Provider                | Core 不得猜测或提升证据等级                 |
+| 技术选型与运行约束                                        | ADR/Runtime/Reliability | 不得改变产品范围或领域语义                  |
 
 代码、数据库 schema、管理后台、测试、配置和历史 Git 记录都不是合同来源。它们只能作为某次实现验收的证据，不能反向改写本文档集。
 

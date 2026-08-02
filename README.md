@@ -1,8 +1,8 @@
 # Device Platform
 
-Device Platform 是由一名管理员维护的 IoT 设备接入与控制平台。当前唯一目标是依据共享单车智能锁的真实接入和使用，形成可实际运行、可持久化、状态可信的核心链路；通用性来自已确认的平台边界和统一 Gateway/Provider 接入方式，不来自对未来业务的预建。
+Device Platform 是由唯一超级管理员治理、允许多个普通 User 在分配的 Project 范围内执行技术管理的 IoT 设备接入与控制平台。当前设备目标是依据共享单车智能锁的真实接入和使用，形成可实际运行、可持久化、状态可信的核心链路；通用性来自已确认的平台边界和统一 Gateway/Provider 接入方式，不来自对未来业务的预建。
 
-当前产品范围只有一个共享单车 Project 和一个 `smart-lock` Device Type；WWTIOT cloud API 与 Omni direct-device TCP 都是当前必须接入的 Provider。当前代码已经让两者经过同一持久 Device、Command、Attempt、Result、DeviceState、Event、Webhook 和 Audit 模型：WWTIOT 下行最多证明 `provider_accepted`，Omni 当前只安全启用 `query_status` 并最多证明 `transport_sent`。真实 callback/设备身份、Device ACK、final result 与锁体行为仍无验收证据，详见 [Current State](./docs/current-state.md)。
+当前产品范围只有一个共享单车 Project 和一个 `smart-lock` Device Type；WWTIOT cloud API 与 Omni direct-device TCP 都是当前必须接入的 Provider。backend 已实现安装时唯一超级管理员、普通 User 管理、Project `manager_user_id` 分配/转交、集中 Project scope 和实际 `actor_user_id` Audit；普通 User 只能管理分配给自己的 Project、Device、Command 与技术记录，平台级安全操作继续只允许超级管理员。现有代码已经让两类 Provider 经过同一持久 Device、Command、Attempt、Result、DeviceState、Event、Webhook 和 Audit 模型：WWTIOT 下行最多证明 `provider_accepted`，Omni 当前只安全启用 `query_status` 并最多证明 `transport_sent`。真实 callback/设备身份、Device ACK、final result 与锁体行为仍无验收证据，详见 [Current State](./docs/current-state.md)。
 
 ## 仓库结构
 
@@ -21,7 +21,7 @@ Device Platform 是由一名管理员维护的 IoT 设备接入与控制平台�
 2. [Platform Target Contract](./docs/platform-target-contract.md)：当前真实目标与完成定义。
 3. [Domain Model Contract](./docs/domain-model-contract.md)：对象、关系、不变量、事务边界和恢复责任。
 4. [API Contract](./docs/api-contract.md)：接口、认证和生命周期语义。
-5. [Current State](./docs/current-state.md)：`2026-08-01` 的双 Provider 实现事实、验证证据与真实验收缺口。
+5. [Current State](./docs/current-state.md)：`2026-08-02` 的实现事实、验证证据与真实验收缺口。
 6. [Local Development](./docs/local-development.md)：启动、检查和当前可验证范围。
 
 历史交付过程由 Git 保存，不作为当前权威文档。下级文档、schema、模板菜单和当前代码不能反向扩大产品边界。

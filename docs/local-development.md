@@ -1,6 +1,6 @@
 ---
 title: 本地开发与验证
-updated: 2026-08-01
+updated: 2026-08-02
 status: operational-guide
 ---
 
@@ -10,13 +10,13 @@ status: operational-guide
 
 ## 本地依赖
 
-| Service | 默认地址或用途 |
-| ------- | -------------- |
-| PostgreSQL | `localhost:5432`，权威领域事实与 worker lease |
-| Redis | `localhost:6379`，认证限流和可重建运行依赖 |
-| Backend API | `http://localhost:8080` |
-| Frontend | `http://localhost:5173`，端口占用时以 Vite 输出为准 |
-| NATS | 当前代码未实现，不是本地启动依赖 |
+| Service     | 默认地址或用途                                      |
+| ----------- | --------------------------------------------------- |
+| PostgreSQL  | `localhost:5432`，权威领域事实与 worker lease       |
+| Redis       | `localhost:6379`，认证限流和可重建运行依赖          |
+| Backend API | `http://localhost:8080`                             |
+| Frontend    | `http://localhost:5173`，端口占用时以 Vite 输出为准 |
+| NATS        | 当前代码未实现，不是本地启动依赖                    |
 
 从仓库根目录准备忽略提交的环境文件并检查服务：
 
@@ -124,7 +124,7 @@ pnpm build
 
 ## 当前允许验证
 
-- setup、单管理员认证、Project/Device/Command 和只读诊断页面。
+- setup、唯一超级管理员与普通 User 认证、User 启停、Project manager 分配/转交、Project 范围的 Device/Command/Event/Webhook/Audit 授权，以及停用 token 失效和高风险操作超级管理员门禁。
 - WWTIOT V2 请求映射、响应分类、timeout、恢复与 callback 固定失败关闭。
 - Omni 两 profile codec、listener/session、RawMessage/Audit、query_status 单次写入、timeout 和 runtime fatal 行为。
 - Project、Device、Provider/profile 隔离，以及 Event/Webhook/Audit 的持久事务与恢复。
