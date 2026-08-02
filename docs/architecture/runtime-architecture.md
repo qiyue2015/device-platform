@@ -1,6 +1,6 @@
 ---
 title: 后端目标运行架构
-updated: 2026-08-01
+updated: 2026-08-02
 status: accepted-target
 decision: ADR-0001
 ---
@@ -15,24 +15,24 @@ decision: ADR-0001
 
 后端保持模块化单体代码库，允许按运行责任编译和部署以下进程：
 
-| 运行单元         | 责任                                                                               |
-| ---------------- | ---------------------------------------------------------------------------------- |
-| API              | 管理/Open API、认证、校验、事务写入和查询，不同步等待异步 Provider 或 Webhook 完成 |
-| Outbox Publisher | 从 PostgreSQL 领取未发布 Outbox，发布到 JetStream，并记录发布进度                  |
-| Command Worker   | 消费 Command 唤醒消息，按领域 lease 和状态机调用 Provider adapter                  |
-| Provider Message Worker | 处理已认证并持久化的 Provider RawMessage，去重并追加 Result/State/Event     |
-| Omni TCP Listener       | 接受有界 TCP 连接和 frame，按显式 profile 解析、管理 session 并持久化允许的 RawMessage |
-| Webhook Worker   | 消费 Delivery 唤醒消息，执行签名 HTTP 投递、重试和 dead 管理                       |
-| Recovery Scanner | 扫描到期 lease、deadline、未发布 Outbox 和待投递记录，保证通知丢失后仍可恢复       |
+| 运行单元                | 责任                                                                                                |
+| ----------------------- | --------------------------------------------------------------------------------------------------- |
+| API                     | User/Project/Open API 认证、集中授权、校验、事务写入和查询，不同步等待异步 Provider 或 Webhook 完成 |
+| Outbox Publisher        | 从 PostgreSQL 领取未发布 Outbox，发布到 JetStream，并记录发布进度                                   |
+| Command Worker          | 消费 Command 唤醒消息，按领域 lease 和状态机调用 Provider adapter                                   |
+| Provider Message Worker | 处理已认证并持久化的 Provider RawMessage，去重并追加 Result/State/Event                             |
+| Omni TCP Listener       | 接受有界 TCP 连接和 frame，按显式 profile 解析、管理 session 并持久化允许的 RawMessage              |
+| Webhook Worker          | 消费 Delivery 唤醒消息，执行签名 HTTP 投递、重试和 dead 管理                                        |
+| Recovery Scanner        | 扫描到期 lease、deadline、未发布 Outbox 和待投递记录，保证通知丢失后仍可恢复                        |
 
-这些进程共享领域模块和数据库合同，但分别配置并发、连接池、资源配额和扩容策略。Handler 不直接跨模块查询其他模块拥有的表；Provider SDK 类型不得进入领域层。
+这些进程共享领域模块和数据库合同，但分别配置并发、连接池、资源配额和扩容策略。人类授权必须由 API 入口解析 User 后进入统一 authorization service/scope，并在 service 查询和 mutation 中强制执行；不得散落为 handler 菜单判断或由 repository 接受未经验证的任意 Project ID。Handler 不直接跨模块查询其他模块拥有的表；Provider SDK 类型不得进入领域层。
 
 首次安装跨运行配置、migration、管理员、secret 与完成事实的崩溃恢复口径尚由 [Platform Target](../platform-target-contract.md#需要产品所有者裁决)阻塞。裁决前 Runtime 不得在 roll-forward、补偿或 fail-stop 之间选择实现默认值；裁决后必须在本文补充 setup coordinator/journal 的状态、责任、崩溃点和可观察恢复结果，再进入安装恢复验收。
 
 ## 目标拓扑
 
 ```text
-Admin / Project Application / WWTIOT Callback / Omni TCP Device
+Web User / Project Application / WWTIOT Callback / Omni TCP Device
                        |
                        v
                     Go API
@@ -60,7 +60,7 @@ OpenTelemetry: API -> Outbox -> NATS -> Worker -> Provider/Webhook
 
 ### Command
 
-1. API 校验 Project、Device、Capability 和幂等键。
+1. 人类入口先由统一授权层校验 User 的超级管理员或 Project scope；Open API 入口独立校验 Project 机器身份，随后共同校验 Project、Device、Capability 和幂等键。
 2. 同一 PostgreSQL 事务写入 Command、Audit、领域 Event 和 Outbox。
 3. API 返回已受理的持久 Command，不等待 Provider。
 4. Outbox Publisher 发布 `command.dispatch.requested`。
@@ -85,7 +85,7 @@ OpenTelemetry: API -> Outbox -> NATS -> Worker -> Provider/Webhook
 
 ## 读取与状态职责
 
-- 后台和 Open API 读取 PostgreSQL 中的权威业务状态；
+- Web User 按集中授权 scope、Open API 按独立 Project 机器 scope 读取 PostgreSQL 权威状态；普通 User 的每条列表、详情与写入查询都必须带 Project 归属约束，超级管理员 scope 才能省略该限制；
 - Redis 中的在线 TTL 只表示可重建的近期观察，不能覆盖 Provider 合同和 Device 持久事实；`online_only` 门槛无法读取 TTL 或证据已过期时，判定为没有可信新鲜 `online` 证据并失败关闭，不能使用缓存旧值或持久旧状态降级放行；
 - JetStream 消息不作为查询模型，管理后台不能直接从 Broker 推导 Command 状态；
 - 高频连接观察只有在真实 Provider 合同确认后才能启用。重复观察可以在 Redis 合并；TTL 到期由谁触发 PostgreSQL `online -> unknown|offline`、何时产生 Event 及如何崩溃恢复，必须随 Provider 在线语义 Unknown 一并冻结，Runtime 不得只做读取时动态投影或自行增加 scanner；
@@ -93,15 +93,15 @@ OpenTelemetry: API -> Outbox -> NATS -> Worker -> Provider/Webhook
 
 ## 故障隔离
 
-| 故障             | 必须成立的行为                                                                                                            |
-| -------------- | ------------------------------------------------------------------------------------------------------------------ |
-| NATS 不可用       | API 仍可在受控容量内提交权威事实与 Outbox；Publisher 积压并告警，恢复后续发；不得丢失已受理 Command                                                   |
-| PostgreSQL 不可用 | 需要权威写入的 API 和 Worker 失败关闭；不得只写 NATS 后返回成功                                                                          |
-| Redis 不可用      | 缓存可重建；恢复扫描、Result/Webhook/Audit 和非 `online_only` 主链继续；`online_only` 创建与派发在无可信新鲜 `online` 证据时按 profile 失败关闭，权威事实不丢失 |
-| Worker 崩溃      | JetStream 重新投递，数据库 lease 到期后恢复；重复消费不重复最终效果                                                                         |
-| Provider 超时    | 按 Attempt 证据与`indeterminate`合同处理，不因消息重投自动重放危险动作                                                                    |
-| Omni TCP 重连/冲突 | 新旧 session 按稳定代际隔离；重复 IMEI、profile 不匹配、半帧或超长帧不跨 Device 关联，不产生可信 Result/State，也不自动重发 Command       |
-| Webhook 端点故障   | 只积压对应 Delivery，不阻塞 Command 和其他 Project；有界重试后进入 dead                                                                |
+| 故障               | 必须成立的行为                                                                                                                                                  |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| NATS 不可用        | API 仍可在受控容量内提交权威事实与 Outbox；Publisher 积压并告警，恢复后续发；不得丢失已受理 Command                                                             |
+| PostgreSQL 不可用  | 需要权威写入的 API 和 Worker 失败关闭；不得只写 NATS 后返回成功                                                                                                 |
+| Redis 不可用       | 缓存可重建；恢复扫描、Result/Webhook/Audit 和非 `online_only` 主链继续；`online_only` 创建与派发在无可信新鲜 `online` 证据时按 profile 失败关闭，权威事实不丢失 |
+| Worker 崩溃        | JetStream 重新投递，数据库 lease 到期后恢复；重复消费不重复最终效果                                                                                             |
+| Provider 超时      | 按 Attempt 证据与`indeterminate`合同处理，不因消息重投自动重放危险动作                                                                                          |
+| Omni TCP 重连/冲突 | 新旧 session 按稳定代际隔离；重复 IMEI、profile 不匹配、半帧或超长帧不跨 Device 关联，不产生可信 Result/State，也不自动重发 Command                             |
+| Webhook 端点故障   | 只积压对应 Delivery，不阻塞 Command 和其他 Project；有界重试后进入 dead                                                                                         |
 
 ## 部署边界
 

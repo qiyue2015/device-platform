@@ -1,8 +1,8 @@
 ---
 title: 领域模型与一致性合同
-updated: 2026-08-01
+updated: 2026-08-02
 status: product-decision-required
-contract_revision: 2026-08-01
+contract_revision: 2026-08-02
 ---
 
 # 领域模型与一致性合同
@@ -11,7 +11,7 @@ contract_revision: 2026-08-01
 
 ## 模型原则
 
-- `Project` 是机器接入与数据隔离边界，不是租户、组织或人类权限容器。
+- `Project` 同时是机器接入与数据隔离边界，以及普通 User 的人类授权范围；它仍不是租户、组织或客户账户。
 - `Device` 是平台管理的技术设备；自行车、用户、订单、计费等业务实体不进入本模型。
 - Platform Core 保存通用 envelope、状态与一致性事实；具体 action 语义来自只读 Device Type Capability profile，厂商转换来自 Provider adapter。
 - 规范化资源使用平台生成的不可变 UUID。Provider identity、幂等 key、外部 request ID 只用于各自明确的关联范围，不能混作平台资源 ID。
@@ -20,6 +20,7 @@ contract_revision: 2026-08-01
 ## 对象与关系
 
 ```text
+User 1 --- n Project                    (by manager_user_id)
 Project 1 --- n Device n --- 1 DeviceType
 Project 1 --- n Command n --- 1 Device
 Command 1 --- n CommandAttempt
@@ -34,10 +35,24 @@ DomainTransaction 1 --- n InternalOutbox
 Consumer 1 --- n ConsumerInbox          (by consumer_name + message_id)
 ```
 
+### User
+
+保存 `id`、规范化唯一 `email`、`display_name`、`password_hash`、`is_super_admin`、`status=active|disabled`、`session_generation` 和时间戳。
+
+- 安装事务创建全平台唯一超级管理员。`is_super_admin=true` 在数据库中至多一行，且该 User 必须保持 `status=active`；产品 API 不提供创建第二个超级管理员、停用超级管理员、删除 User 或改变 `is_super_admin` 的入口。
+- 普通 User 只能由超级管理员创建，不存在自行注册、邀请注册或公开注册。创建后固定 `is_super_admin=false`；email trim 后小写并全平台唯一。
+- `status=disabled` 的普通 User 不能登录，已有 Bearer token 立即失效。停用事务必须递增 `session_generation`，使停用前签发的所有 token 失效。
+- 一个普通 User 可以通过多个 Project 的 `manager_user_id` 管理多个 Project；User 不直接拥有 Device、Command、Result、Event 或 Audit。
+- 普通 User 只有在不再管理任何 Project 时才能从 `active` 进入 `disabled`。`disabled -> active` 允许由超级管理员执行；重新启用不恢复任何历史 Project 管理关系。
+- 超级管理员的全局资源访问来自稳定身份属性，不依赖任何 Project 的 `manager_user_id`。
+
 ### Project
 
-保存 `id`、`name`、`api_key_hash`、可选 `webhook_url`、版本化加密 `webhook_secret`、`ip_whitelist` 和时间戳。
+保存 `id`、`name`、必需的 `manager_user_id`、`api_key_hash`、可选 `webhook_url`、版本化加密 `webhook_secret`、`ip_whitelist` 和时间戳。
 
+- Project 只能由超级管理员创建，创建时 `manager_user_id` 必须引用一个 `status=active` 的 User。既有 Project 在迁移时回填为安装创建的超级管理员，迁移提交后该字段不可为空。
+- 每个 Project 同时只有一个管理 User，不建立 `project_members`、负责人加成员、多负责人或多对多关系。未来出现真实多人协作需求时，可以新增 `project_members`，把现有 `manager_user_id` 回填为首个成员并替换集中授权判断；Device、Command、Provider 与其他 Project 从属模型不得因此重构。
+- 只有超级管理员可以改变 `manager_user_id`。转交目标必须是有效 `active` User；转交只改变后续人类授权，不改变 Project 机器凭据、Device 归属或历史技术记录。
 - API Key 明文只在创建或轮换成功的单次响应中出现；列表、详情、日志、Event、Audit 和数据库均不得保存或返回明文。
 - API Key 轮换替换旧 hash，旧 key 立即失效，并写入技术审计。
 - 当前目标中每个 Project 同时只能有一个启用的 Webhook endpoint；`webhook_url` 与 `webhook_secret` 属于 Project aggregate 的唯一 Webhook 配置，不建立 endpoint 集合或由另一服务独立维护的端点状态。持久化可以使用版本化子表保存历史 snapshot，但 API 与领域写入只有一个 Project 配置入口。
@@ -189,7 +204,7 @@ failed  -> sending | dead
 
 ### AuditLog
 
-AuditLog 记录管理员、Open API 机器身份、Provider message 或 system worker 的关键技术操作。它保存 actor、Project、资源、action、result、来源 IP、request ID、脱敏 metadata 和时间。
+AuditLog 记录人类 User、Open API Project 机器身份、Provider message 或 system worker 的关键技术操作。它保存 `actor_type`、按 actor 类型必需的实际 `actor_user_id` 或机器/系统标识、Project、资源、action、result、来源 IP、request ID、脱敏 metadata 和时间。人类请求不得只保存笼统的 `admin` actor；超级管理员与普通 User 都必须追溯到实际 User ID。
 
 审计记录不是领域 Event，也不承载共享单车业务审计。API 合同要求审计的领域写入应与该写入处于同一事务；登录失败等没有领域事务的安全事件独立持久化。worker 的状态事实由 Attempt 与 Event 记录，除安全或人工操作外不重复制造 Audit。
 
@@ -197,27 +212,31 @@ AuditLog 记录管理员、Open API 机器身份、Provider message 或 system w
 
 以下操作各自在一个数据库事务中完成：
 
-1. 创建/更新 Project、API Key 轮换、Webhook 配置变更及对应 Audit。
-2. 创建 Device、lifecycle 变更、Device Type 校验及对应 Audit/Event/Outbox；仅名称变更没有稳定领域 Event，只与 `device.updated` Audit 在同一事务完成。
-3. 创建 Command：锁定并校验 Project/Device、写 Command 与幂等约束、初始 Event/Outbox 和 Audit。
-4. 领取 Command：仅对无有效 lease 的 `queued` Command 条件创建 `phase=claimed` Attempt 和 lease；Command 仍为 `queued`，有有效 lease 时取消与 deadline scanner 都不得越过该所有权。
-5. 承诺派发：短事务校验 lease/Attempt 仍有效，并以数据库权威时间重新检查绝对 `dispatch_deadline_at`。当 `now >= dispatch_deadline_at` 时，将 Attempt 完成为 `not_dispatched/dispatch_deadline_exceeded`、Command 改为 `timeout` 并写 Event/Outbox，且不发请求；有效 lease 只保护领取所有权，不能延长派发期限。未到期时再执行已冻结的 Provider 配置和 profile preflight。`online_only` Device 已非可信 `online` 时，将 Attempt 完成为 `not_dispatched/device_not_online`、Command 改为 `failed` 并写 Event/Outbox，且不发请求。全部通过时才将 Attempt 改为 `dispatching`、Command 改为 `sent`，设置 `sent_at` 与 result deadline 并写状态 Event/Outbox，事务提交后立即执行外部调用。Device 在入队后发生 lifecycle 变化的处理尚待产品裁决，不能由实现并入本步骤。
-6. 处理 Provider 响应：条件完成 Attempt、更新 Command 的证据聚合，写 Event/Outbox 与所需 Audit；`indeterminate` 不把 Command 写入额外的混合生命周期状态。
-7. 接收 Provider 上行：按 Provider 合同完成认证、profile/parser 校验和防重放；可信消息在一个事务中按 Provider 去重键保存不可变 RawMessage 与处理 Outbox，持久化成功后才返回协议成功。合同允许保留的 `unverified` 消息只写 RawMessage/诊断，不创建可信处理 Outbox。
-8. 处理已持久化 RawMessage：在另一个事务中锁定未处理消息，按去重键追加 CommandResult、更新 DeviceState 和 Command 证据聚合、写 Event/Outbox，并标记处理完成；只有存在已确认且无歧义的命令关联规则时才关联 Command，迟到结果不得改写终态。
-9. Event 事务已经原子创建初始 Webhook Delivery；独立 Webhook 事务只负责领取/完成 DeliveryAttempt、进入 retry/dead，以及创建 manual replay，不能用于提交后补建初始 Delivery。
+1. 创建普通 User、启用普通 User 及对应 Audit。停用普通 User 时锁定该 User，确认不存在其管理的 Project，写 `status=disabled`、递增 `session_generation` 并写 Audit；任一检查失败都不提交部分状态。
+2. 创建 Project 时先锁定并校验目标 User 仍为 `active`，再写 Project、一次性凭据事实及 Audit。转交时锁定当前/目标 User 与 Project，重新校验目标有效后原子改变 `manager_user_id` 并写 Audit；任何并发结果都必须收敛为有效 User 或稳定失败，不能提交无管理人或指向 disabled User 的 Project。
+3. 更新 Project 基本信息、API Key 轮换、Webhook 配置变更及对应 Audit。
+4. 创建 Device、lifecycle 变更、Device Type 校验及对应 Audit/Event/Outbox；仅名称变更没有稳定领域 Event，只与 `device.updated` Audit 在同一事务完成。
+5. 创建 Command：锁定并校验 Project/Device、写 Command 与幂等约束、初始 Event/Outbox 和 Audit。
+6. 领取 Command：仅对无有效 lease 的 `queued` Command 条件创建 `phase=claimed` Attempt 和 lease；Command 仍为 `queued`，有有效 lease 时取消与 deadline scanner 都不得越过该所有权。
+7. 承诺派发：短事务校验 lease/Attempt 仍有效，并以数据库权威时间重新检查绝对 `dispatch_deadline_at`。当 `now >= dispatch_deadline_at` 时，将 Attempt 完成为 `not_dispatched/dispatch_deadline_exceeded`、Command 改为 `timeout` 并写 Event/Outbox，且不发请求；有效 lease 只保护领取所有权，不能延长派发期限。未到期时再执行已冻结的 Provider 配置和 profile preflight。`online_only` Device 已非可信 `online` 时，将 Attempt 完成为 `not_dispatched/device_not_online`、Command 改为 `failed` 并写 Event/Outbox，且不发请求。全部通过时才将 Attempt 改为 `dispatching`、Command 改为 `sent`，设置 `sent_at` 与 result deadline 并写状态 Event/Outbox，事务提交后立即执行外部调用。Device 在入队后发生 lifecycle 变化的处理尚待产品裁决，不能由实现并入本步骤。
+8. 处理 Provider 响应：条件完成 Attempt、更新 Command 的证据聚合，写 Event/Outbox 与所需 Audit；`indeterminate` 不把 Command 写入额外的混合生命周期状态。
+9. 接收 Provider 上行：按 Provider 合同完成认证、profile/parser 校验和防重放；可信消息在一个事务中按 Provider 去重键保存不可变 RawMessage 与处理 Outbox，持久化成功后才返回协议成功。合同允许保留的 `unverified` 消息只写 RawMessage/诊断，不创建可信处理 Outbox。
+10. 处理已持久化 RawMessage：在另一个事务中锁定未处理消息，按去重键追加 CommandResult、更新 DeviceState 和 Command 证据聚合、写 Event/Outbox，并标记处理完成；只有存在已确认且无歧义的命令关联规则时才关联 Command，迟到结果不得改写终态。
+11. Event 事务已经原子创建初始 Webhook Delivery；独立 Webhook 事务只负责领取/完成 DeliveryAttempt、进入 retry/dead，以及创建 manual replay，不能用于提交后补建初始 Delivery。
+
+User 停用、Project 创建和 Project 转交必须使用同一锁序约定：先按 UUID 顺序锁定涉及的 User，再锁定 Project。授权判断集中读取已认证 User 与 Project `manager_user_id`；Device、Command 或各 repository 不复制 `user_id`，也不能把前端菜单隐藏当作授权事实。
 
 外部 HTTP 调用不得包在长数据库事务中。`claimed` lease 过期且从未进入 `dispatching` 时，可以由 worker 重新领取同一 Attempt，因为合同保证尚未承诺外部调用。`dispatching` 一旦提交，进程在调用前后或结果落库前崩溃都无法证明未发送；恢复器将 Attempt 完成为 `indeterminate`、reason `provider_delivery_unknown`、confirmation `transport_sent`、evidence `unverified`，Command 保持 `sent` 并由原 result deadline 终止为 `timeout`。不可安全重放的 action 不自动重发。
 
 ## Worker 所有权与恢复
 
-| Worker                     | 领取对象                                            | 崩溃恢复                                                                                                                                                          | 重试边界                                      |
-| -------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| Command dispatcher         | 无有效 lease 的 `queued` Command                    | `claimed` 可安全重新领取并重做已冻结的 config/profile preflight；`dispatching` 过期把 Attempt 记为 `indeterminate`，Command 保持 `sent` 到原 deadline，不自动重放 | 仅 profile 与 Provider 合同共同明确允许时重试 |
-| Command deadline scanner   | 无有效 lease 的到期 `queued`，或到期 `sent`/`acked` | queued 的 claimed Attempt 完成为 `not_dispatched`；其余保留既有 outcome，Command 转 `timeout`                                                                     | 不发设备请求                                  |
-| Provider message receiver  | 厂商 HTTP callback 或 direct-device TCP frame       | 按 Provider 合同认证、校验并以 message dedupe key 原子保存一次 RawMessage；只有可信消息创建处理 Outbox                                                            | 接收重试不得重复创建 RawMessage               |
-| Callback worker            | 已持久化且未完成处理的 RawMessage                   | Inbox/处理状态与领域条件更新保证重复消息不产生重复 Result、State 或 Event                                                                                         | 只重放本地处理，不重放设备动作                |
-| Webhook dispatcher         | 到期 `pending`/`failed` Delivery                    | lease 到期可重新领取；每次 HTTP 调用保留独立 Attempt                                                                                                              | 有界重试，耗尽为 `dead`                       |
+| Worker                    | 领取对象                                            | 崩溃恢复                                                                                                                                                          | 重试边界                                      |
+| ------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| Command dispatcher        | 无有效 lease 的 `queued` Command                    | `claimed` 可安全重新领取并重做已冻结的 config/profile preflight；`dispatching` 过期把 Attempt 记为 `indeterminate`，Command 保持 `sent` 到原 deadline，不自动重放 | 仅 profile 与 Provider 合同共同明确允许时重试 |
+| Command deadline scanner  | 无有效 lease 的到期 `queued`，或到期 `sent`/`acked` | queued 的 claimed Attempt 完成为 `not_dispatched`；其余保留既有 outcome，Command 转 `timeout`                                                                     | 不发设备请求                                  |
+| Provider message receiver | 厂商 HTTP callback 或 direct-device TCP frame       | 按 Provider 合同认证、校验并以 message dedupe key 原子保存一次 RawMessage；只有可信消息创建处理 Outbox                                                            | 接收重试不得重复创建 RawMessage               |
+| Callback worker           | 已持久化且未完成处理的 RawMessage                   | Inbox/处理状态与领域条件更新保证重复消息不产生重复 Result、State 或 Event                                                                                         | 只重放本地处理，不重放设备动作                |
+| Webhook dispatcher        | 到期 `pending`/`failed` Delivery                    | lease 到期可重新领取；每次 HTTP 调用保留独立 Attempt                                                                                                              | 有界重试，耗尽为 `dead`                       |
 
 多实例领取使用数据库条件更新、行锁或 `FOR UPDATE SKIP LOCKED` 等等价机制。Redis 不能成为唯一事实来源。
 

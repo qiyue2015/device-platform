@@ -1,8 +1,8 @@
 ---
 title: API 合同
-updated: 2026-08-01
+updated: 2026-08-02
 status: product-decision-required
-contract_revision: 2026-08-01
+contract_revision: 2026-08-02
 ---
 
 # API 合同
@@ -14,12 +14,12 @@ contract_revision: 2026-08-01
 | Namespace       | 用途                 | 认证                             |
 | --------------- | -------------------- | -------------------------------- |
 | `/setup/...`    | 首次安装             | 仅安装前可用，并应受部署网络保护 |
-| `/v1/auth/...`  | 单管理员登录与会话   | 按具体端点                       |
-| `/v1/...`       | 已登录后台技术控制台 | 管理员 Bearer token              |
-| `/v1/admin/...` | 仅平台级技术管理     | 管理员 Bearer token              |
+| `/v1/auth/...`  | User 登录与会话      | 按具体端点                       |
+| `/v1/...`       | 已登录后台技术控制台 | User Bearer token                |
+| `/v1/admin/...` | 仅平台级技术管理     | 超级管理员 Bearer token          |
 | `/v1/open/...`  | 业务应用机器调用     | Project `X-API-Key`              |
 
-后台只存在一名管理员，不建设细粒度人类 RBAC。`/v1/admin` 表示平台级技术操作，不表示组织或员工权限产品。
+后台有一个唯一超级管理员和多个普通 User。普通 User 的授权只由 Project `manager_user_id` 决定，不引入菜单/按钮角色或 Project 成员表；`/v1/admin` 表示仅超级管理员可执行的平台级技术操作。
 
 ## 统一响应
 
@@ -70,7 +70,7 @@ POST /setup/test-redis
 POST /setup/install
 ```
 
-在没有待恢复副作用的正常分支，`GET /setup/status` 只返回 `needs_setup`、`installed` 和 `step="system"`，不返回路径、连接串或 secret。其余端点只在未安装时可用；安装完成后统一返回 `409 setup_completed`。同一持久配置或数据库上的并发安装至多一个成功，数据库必须独立强制仅有一个管理员。跨介质失败后的 status/install wire 在产品裁决前不属于已冻结分支。
+在没有待恢复副作用的正常分支，`GET /setup/status` 只返回 `needs_setup`、`installed` 和 `step="system"`，不返回路径、连接串或 secret。其余端点只在未安装时可用；安装完成后统一返回 `409 setup_completed`。同一持久配置或数据库上的并发安装至多一个成功，安装必须创建且只能创建一个超级管理员。跨介质失败后的 status/install wire 在产品裁决前不属于已冻结分支。
 
 `test-db` 与 `test-redis` 分别只接受严格 object `{"url":"..."}`，连接 timeout 为 5 秒。Database URL 只接受 `postgres`/`postgresql`，Redis URL 必须能由目标 Redis client 解析。成功只返回 `reachable=true`；响应、日志和审计都不得回显含凭据 URL。
 
@@ -87,27 +87,48 @@ server.addr
 server.log_level
 ```
 
-所有字段必需；拒绝未知字段。email trim 后转小写并按 email address 校验，最大 254 字符；display name trim 后长度 `2..80`；password UTF-8 byte length `8..128` 且必须与 confirm 相同；server address 是 `:port` 或 `host:port`，log level 只能是 `debug|info|warn|error`。安装只允许空管理员集合，创建唯一管理员，生成至少 32 byte 的 JWT secret 和独立的 32 byte Webhook secret encryption key；响应只返回 `installed=true`。
+所有字段必需；拒绝未知字段。email trim 后转小写并按 email address 校验，最大 254 字符；display name trim 后长度 `2..80`；password UTF-8 byte length `8..128` 且必须与 confirm 相同；server address 是 `:port` 或 `host:port`，log level 只能是 `debug|info|warn|error`。安装只允许空 User 集合，创建唯一 `is_super_admin=true,status=active` 的 User，生成至少 32 byte 的 JWT secret 和独立的 32 byte Webhook secret encryption key；响应只返回 `installed=true`。
 
-安装必须具有单一持久完成事实，并以可恢复方式协调运行配置、migration、唯一管理员和 secret。写入完成事实后不得回滚为“未安装”；恢复未闭合时服务保持 unready，且不得承载业务 API。完成事实写入前跨介质失败究竟 roll-forward、补偿还是 fail-stop，已进入 [Platform Target 的产品裁决](./platform-target-contract.md#需要产品所有者裁决)；裁决前不得实现或验收该崩溃分支，也不得从现有错误码猜测恢复策略。具体文件、锁、journal 或热切换机制在裁决后由 Runtime Architecture 细化，但不能降低上述不变量。
+安装必须具有单一持久完成事实，并以可恢复方式协调运行配置、migration、唯一超级管理员和 secret。写入完成事实后不得回滚为“未安装”；恢复未闭合时服务保持 unready，且不得承载业务 API。完成事实写入前跨介质失败究竟 roll-forward、补偿还是 fail-stop，已进入 [Platform Target 的产品裁决](./platform-target-contract.md#需要产品所有者裁决)；裁决前不得实现或验收该崩溃分支，也不得从现有错误码猜测恢复策略。具体文件、锁、journal 或热切换机制在裁决后由 Runtime Architecture 细化，但不能降低上述不变量。
 
 `GET /healthz` 只证明进程存活并返回 `200`。`GET /readyz` 只有在本进程已经发布完整可用运行时且无待恢复安装副作用时返回 `200`；未安装、恢复中或需要重启分别返回 `503 setup_required`、`503 setup_recovery_required`、`503 setup_restart_required`。
 
 Setup 失败码固定为：参数/schema 不合法 `400 invalid_install_request`；数据库或 Redis 连接失败分别为 `400 database_unavailable`、`400 redis_unavailable`；users 表不为空或管理员创建冲突为 `409 admin_creation_failed`；migration、运行配置、锁/完成标记、恢复或随机源失败分别为 `500 migration_failed`、`500 config_write_failed`、`500 install_lock_failed`、`500 install_recovery_failed`、`500 secret_generation_failed`。安装目标不可写为 `500 install_target_not_writable`。响应 message 必须脱敏，不包含连接串、SQL、文件内容或 secret。
 
-## 单管理员认证
+## User 认证与会话
 
-- `POST /v1/auth/login` 接受 `email` 与 `password`，只认证 setup 创建的唯一管理员。密码使用 bcrypt hash 持久化，不进入环境文件或日志。
-- `GET /v1/auth/me` 需要 Bearer token，只返回当前唯一管理员的安全身份字段；后台菜单固定来自前端冻结路由，不存在服务端菜单或菜单权限 API。
-- 成功返回 `access_token`、`token_type="Bearer"`、整数 `expires_in=86400`。token 使用 HS256、至少 32 byte 的部署 `JWT_SECRET`、24 小时期限，并固定包含 `iss="device-platform"`、`aud="device-platform-admin"`、管理员 ID `sub`、`session_generation`、`iat`、`exp` 和随机 `jti`；验证必须同时检查算法、issuer、audience、时间和 generation。
+- `POST /v1/auth/login` 接受 `email` 与 `password`，认证任一 `status=active` 的 User。密码使用 bcrypt hash 持久化，不进入环境文件或日志；disabled User 与不存在的 email 对外都返回 `401 invalid_credentials`。
+- `GET /v1/auth/me` 需要 Bearer token，返回 `id`、`email`、`display_name`、`is_super_admin`、`status` 与时间戳，不返回 password hash 或 session generation。菜单可以依据 `is_super_admin` 改善交互，但前端隐藏不构成授权。
+- 成功返回 `access_token`、`token_type="Bearer"`、整数 `expires_in=86400`。token 使用 HS256、至少 32 byte 的部署 `JWT_SECRET`、24 小时期限，并固定包含 `iss="device-platform"`、`aud="device-platform-user"`、User ID `sub`、`session_generation`、`iat`、`exp` 和随机 `jti`；验证必须同时检查算法、issuer、audience、时间和 generation。
 - `POST /v1/auth/refresh` 只接受尚未过期且 generation 有效的 Bearer token，并签发新的 24 小时 token；它不是无期限 refresh credential。
-- `POST /v1/auth/logout` 需要 Bearer token，并原子递增管理员 `session_generation`，使此前签发的全部 token 失效。单管理员模型不提供按设备选择 session 的产品能力。
-- 每次受保护请求必须从数据库确认管理员仍有效且 generation 匹配；仅验证 JWT 签名不足以支持 logout 失效语义。
+- `POST /v1/auth/logout` 需要 Bearer token，并原子递增当前 User 的 `session_generation`，使其此前签发的全部 token 失效。当前不提供按设备选择 session 的产品能力。
+- 每次受保护请求必须从数据库确认 User 仍为 active 且 generation 匹配；仅验证 JWT 签名不足以支持 logout 或停用失效语义。
 - login 成功/失败、refresh 和 logout 写入安全审计。对外错误统一为 `invalid_credentials` 或 `unauthorized`，不泄露账号是否存在。
 - login 失败按规范化 email + 认证层确认的 client IP 限制为 15 分钟内 5 次，并按 client IP 限制为 15 分钟内 20 次；超过后返回 `429 rate_limited` 与整数 `Retry-After`。计数必须跨进程重启保存，成功登录只清除对应 email + IP 计数，不清除 IP 总量计数。
 - 限流状态存储不可用时 login 返回 `503 auth_dependency_unavailable`，不能绕过限流继续认证；已登录 API 的 JWT/session generation 数据库校验也失败关闭。
 
-首次安装完成后，除 `GET /setup/status` 外的 `/setup/...` endpoint 返回 `409 setup_completed`。安装只创建一个管理员；当前不提供管理员、员工、角色或权限 CRUD。
+首次安装完成后，除 `GET /setup/status` 外的 `/setup/...` endpoint 返回 `409 setup_completed`。安装只创建唯一超级管理员；普通 User 由下述超级管理员 API 创建，不提供注册、邀请、角色或权限 CRUD。
+
+## 人类 User 与 Project 授权
+
+服务端在统一授权层把已认证 User 解析为以下 scope，所有 handler/service 查询和写入都必须使用该 scope，不能依赖前端菜单、请求 body 中自报的 User ID 或 repository 调用方自行约定：
+
+- 超级管理员 scope：可访问全部 Project 及其技术资源，并执行 User、Project 创建/转交、凭据、安全配置、dead delivery 重发、模拟器和全局诊断操作。
+- 普通 User scope：只可访问 `manager_user_id` 等于自身 ID 的 Project，及通过 `project_id` 从属的 Device、Command、Result、Event、Webhook Delivery 和 Audit；可更新 Project `name`、注册/维护 Device、执行 profile 支持的 Command 和读取技术记录。
+- Project 机器 scope：只用于 `/v1/open/...`，范围来自 API Key，不具有人类 User 或超级管理员能力。
+
+普通 User 请求其他 Project 或其从属资源时统一返回 `404 not_found`，避免泄露资源存在性。普通 User 对自己可见 Project 请求仅超级管理员操作时返回 `403 forbidden`。超级管理员身份不需要也不通过 `manager_user_id` 获得。
+
+User 管理只提供：
+
+```http
+GET    /v1/users
+POST   /v1/users
+GET    /v1/users/{id}
+PATCH  /v1/users/{id}
+```
+
+全部端点仅超级管理员可用。创建请求只接受 `email`、`display_name`、`password`，固定创建 `is_super_admin=false,status=active`；成功返回安全 User DTO。PATCH 只接受目标 `status=active|disabled`。不提供创建/变更超级管理员、删除 User、公开注册或邀请端点。email 重复返回 `409 user_email_conflict`；停用超级管理员返回 `409 super_admin_immutable`；User 仍管理 Project 时停用返回 `409 user_has_managed_projects`，且不得改变 status 或 session generation。
 
 ## Project 机器认证与隔离
 
@@ -142,25 +163,43 @@ POST   /v1/open/device-commands/{command_id}/cancel
 
 冻结实现至少提供以下后台技术接口；列表接口统一支持 `page`、`page_size` 与资源所需过滤条件，并在 `meta` 返回分页信息：
 
-| Resource    | Routes                                                                                                                                          | 语义                                                                                 |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| Project     | `GET/POST /v1/projects`、`GET/PATCH /v1/projects/{id}`、`POST /v1/projects/{id}/api-key/rotate`、`POST /v1/projects/{id}/webhook-secret/rotate` | 创建、查看、更新机器接入配置；明文 API key 或 Webhook secret 仅各自创建/轮换时返回。 |
-| Device Type | `GET /v1/device-types`、`GET /v1/device-types/{code}`                                                                                           | 只读查看随发布交付的 capability profile。                                            |
-| Provider    | `GET /v1/cloud-providers`                                                                                                                       | 只读查看注册与配置状态，不返回或修改 secret。                                        |
-| Device      | `GET/POST /v1/devices`、`GET/PATCH /v1/devices/{id}`                                                                                            | 管理技术设备和 lifecycle；不提供业务资产关系。                                       |
-| Command     | `GET/POST /v1/device-commands`、`GET /v1/device-commands/{id}`、`POST /v1/device-commands/{id}/cancel`                                          | 后台诊断性创建、查询与允许的取消，使用同一 Command 服务。                            |
-| Event       | `GET /v1/events`、`GET /v1/events/{id}`                                                                                                         | 只读技术事件；不开放任意 Event 注入接口。                                            |
-| Webhook     | `GET /v1/webhook-deliveries`、`GET /v1/webhook-deliveries/{id}`、`POST /v1/webhook-deliveries/{id}/resend`                                      | 查看投递及 Attempt；只允许 dead delivery 受审计重发。                                |
-| Audit       | `GET /v1/audit-logs`、`GET /v1/audit-logs/{id}`                                                                                                 | 只读技术审计。                                                                       |
-| Simulator   | `GET/PATCH /v1/simulator`                                                                                                                       | 管理显式 simulator Provider 的可重复行为；不建立平行命令域。                         |
+| Resource    | Routes                                                                                                                                                                             | 语义                                                                           |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| User        | `GET/POST /v1/users`、`GET/PATCH /v1/users/{id}`                                                                                                                                   | 超级管理员创建、查看、启用或停用普通 User。                                    |
+| Project     | `GET/POST /v1/projects`、`GET/PATCH /v1/projects/{id}`、`POST /v1/projects/{id}/transfer`、`POST /v1/projects/{id}/api-key/rotate`、`POST /v1/projects/{id}/webhook-secret/rotate` | 创建、查看、转交和更新；明文 API key 或 Webhook secret 仅各自创建/轮换时返回。 |
+| Device Type | `GET /v1/device-types`、`GET /v1/device-types/{code}`                                                                                                                              | 只读查看随发布交付的 capability profile。                                      |
+| Provider    | `GET /v1/cloud-providers`                                                                                                                                                          | 只读查看注册与配置状态，不返回或修改 secret。                                  |
+| Device      | `GET/POST /v1/devices`、`GET/PATCH /v1/devices/{id}`                                                                                                                               | 管理技术设备和 lifecycle；不提供业务资产关系。                                 |
+| Command     | `GET/POST /v1/device-commands`、`GET /v1/device-commands/{id}`、`POST /v1/device-commands/{id}/cancel`                                                                             | 后台诊断性创建、查询与允许的取消，使用同一 Command 服务。                      |
+| Event       | `GET /v1/events`、`GET /v1/events/{id}`                                                                                                                                            | 只读技术事件；不开放任意 Event 注入接口。                                      |
+| Webhook     | `GET /v1/webhook-deliveries`、`GET /v1/webhook-deliveries/{id}`、`POST /v1/webhook-deliveries/{id}/resend`                                                                         | 查看投递及 Attempt；只允许 dead delivery 受审计重发。                          |
+| Audit       | `GET /v1/audit-logs`、`GET /v1/audit-logs/{id}`                                                                                                                                    | 只读技术审计。                                                                 |
+| Simulator   | `GET/PATCH /v1/simulator`                                                                                                                                                          | 管理显式 simulator Provider 的可重复行为；不建立平行命令域。                   |
 
-上表只冻结路由和领域效果。Project/Device PATCH、Command cancel、凭据 rotate、Webhook resend 与 simulator PATCH 的成功 `data` DTO 尚未由上级合同唯一裁决，候选口径、阻塞与关闭证据见 [Platform Target](./platform-target-contract.md#需要产品所有者裁决)。裁决前不得为这些 mutation 生成稳定 SDK 或通过 wire 验收；这不影响其只读资源 DTO 和失败响应合同。
+User 创建/状态 PATCH 和 Project transfer 成功返回更新后的安全资源 DTO；Project/Device PATCH、Command cancel、凭据 rotate、Webhook resend 与 simulator PATCH 的成功 `data` DTO 仍按 [Platform Target](./platform-target-contract.md#需要产品所有者裁决)保持原有阻塞。新增权限合同不替代该未决 wire，也不改变已冻结的只读 DTO 和失败响应。
+
+管理 API 权限固定如下：
+
+| 能力                                           | 超级管理员         | 普通 User                                             |
+| ---------------------------------------------- | ------------------ | ----------------------------------------------------- |
+| User 创建、列表、详情、启用/停用               | 允许               | 禁止，`403 forbidden`                                 |
+| Project 创建、转交、API Key/secret 轮换        | 允许               | 禁止；可见 Project 返回 `403 forbidden`               |
+| Project 列表/详情                              | 全部               | 仅自己管理的 Project                                  |
+| Project `name` 更新                            | 允许               | 仅自己管理的 Project                                  |
+| `ip_whitelist`、Webhook endpoint/secret 更新   | 允许               | 禁止，`403 forbidden`                                 |
+| Device 创建、列表、详情、名称与 lifecycle 更新 | 全部 Project       | 仅自己管理的 Project                                  |
+| Command 创建、列表、详情、允许的取消           | 全部 Project       | 仅自己管理的 Project                                  |
+| Event、Webhook Delivery、Audit 读取            | 全局或任一 Project | 仅自己管理的 Project；不返回平台级或其他 Project 记录 |
+| dead Webhook Delivery 重发                     | 允许               | 禁止，`403 forbidden`                                 |
+| Device Type、Provider registry 读取            | 允许               | 允许，供 Device 注册和技术诊断使用                    |
+| Simulator 配置与全局诊断                       | 允许               | 禁止，`403 forbidden`                                 |
 
 列表只接受以下资源过滤参数，均为 exact match；未列出的 query key 返回 `400 invalid_request`：
 
 | List route                 | 允许过滤参数                                                                               |
 | -------------------------- | ------------------------------------------------------------------------------------------ |
-| `/v1/projects`             | `name`                                                                                     |
+| `/v1/users`                | `email`、`status`                                                                          |
+| `/v1/projects`             | `name`、`manager_user_id`                                                                  |
 | `/v1/devices`              | `project_id`、`device_type_code`、`provider_code`、`connection_status`、`lifecycle_status` |
 | `/v1/device-commands`      | `project_id`、`device_id`、`command_type`、`status`                                        |
 | `/v1/events`               | `project_id`、`device_id`、`command_id`、`event_type`                                      |
@@ -173,6 +212,7 @@ POST   /v1/open/device-commands/{command_id}/cancel
 
 | List resource    | 排序                              |
 | ---------------- | --------------------------------- |
+| User             | `created_at DESC, id DESC`        |
 | Project          | `created_at DESC, id DESC`        |
 | Device Type      | `code ASC`                        |
 | Provider         | `code ASC`                        |
@@ -182,7 +222,7 @@ POST   /v1/open/device-commands/{command_id}/cancel
 | Webhook Delivery | `created_at DESC, id DESC`        |
 | Audit            | `occurred_at DESC, id DESC`       |
 
-Admin 与 Open API 的同类资源使用相同排序。Device Type 与 Provider registry 也接受通用 `page`、`page_size`，除此之外不接受过滤或排序 query；调用方不能改变排序字段或方向。
+人类 User API 与 Open API 的同类资源使用相同排序。普通 User 不得通过 `manager_user_id` 过滤参数扩大 scope；超级管理员可以使用该过滤条件，普通 User 省略或提交自身 ID 的结果都只限自身 Project，提交其他 ID 返回 `403 forbidden`。Device Type 与 Provider registry 也接受通用 `page`、`page_size`，除此之外不接受过滤或排序 query；调用方不能改变排序字段或方向。
 
 Open API 的 Project scope 始终来自认证，不接受 `project_id` query。`GET /v1/open/projects/{project_id}` 的 path ID 必须等于认证得到的 Project ID；不相等时按不可见资源返回 `404 not_found`。枚举过滤值必须属于对应稳定枚举；UUID 过滤值必须合法，否则返回 `400`，不能静默产生空列表。
 
@@ -213,11 +253,21 @@ delay_ms: required integer; 0..60000
 
 ## 资源 DTO
 
+### User
+
+User 安全 DTO 固定返回 `id`、`email`、`display_name`、`is_super_admin`、`status`、`created_at`、`updated_at`，不返回 `password_hash` 或 `session_generation`。列表与详情采用同一字段集。
+
+超级管理员创建普通 User 时提交 `email`、`display_name`、`password`；email 和 display name 采用 setup 相同规范，password UTF-8 byte length 为 `8..128`。创建响应不返回密码。User 状态 PATCH 只接受 `status`，重复提交当前状态返回当前资源且不重复递增 generation 或写状态变化 Audit。
+
 ### Project
 
-创建请求允许 `name`、可选 `webhook_url` 和 `ip_whitelist`；名称 trim 后长度 `1..120`。IP whitelist 每项必须是合法单 IP 或 CIDR，规范化并去重。非本地 Webhook URL 必须是 HTTPS，不允许 embedded credential 或 fragment。
+创建请求仅超级管理员可用，允许 `name`、必需 `manager_user_id`、可选 `webhook_url` 和 `ip_whitelist`；目标 User 不存在返回 `404 not_found`，目标 User 已 disabled 返回 `409 project_manager_inactive`。名称 trim 后长度 `1..120`。IP whitelist 每项必须是合法单 IP 或 CIDR，规范化并去重。非本地 Webhook URL 必须是 HTTPS，不允许 embedded credential 或 fragment。
 
-Project 常规读取返回 `id`、`name`、`webhook_url`、`webhook_configured`、`ip_whitelist`、`created_at`、`updated_at`，绝不返回 API key hash、Webhook secret 或 secret hash。当前目标每个 Project 同时只能配置一个 `webhook_url`，不提供 endpoint 集合或每事件路由。创建响应额外一次性返回 `api_key`；设置首个 Webhook endpoint 或显式轮换时额外一次性返回 `webhook_secret`。Webhook secret 固定为 `whsec_` 加 32 个随机 byte 的无 padding base64url 编码，完整 UTF-8 字符串作为 HMAC key。PATCH 只允许更新 `name`、`webhook_url` 与完整替换的 `ip_whitelist`。
+超级管理员 Project DTO 返回 `id`、`name`、`manager_user_id`、管理 User 的安全摘要 `manager={id,email,display_name,status}`、`webhook_url`、`webhook_configured`、`ip_whitelist`、`created_at`、`updated_at`。普通 User 对自己 Project 的 DTO 只返回 `id`、`name`、`manager_user_id`、同一 manager 摘要与时间戳，不返回 Webhook 或 IP whitelist 安全配置。两类 DTO 都绝不返回 API key hash、Webhook secret 或 secret hash。当前目标每个 Project 同时只能配置一个 `webhook_url`，不提供 endpoint 集合或每事件路由。创建响应额外一次性返回 `api_key`；设置首个 Webhook endpoint 或显式轮换时额外一次性返回 `webhook_secret`。Webhook secret 固定为 `whsec_` 加 32 个随机 byte 的无 padding base64url 编码，完整 UTF-8 字符串作为 HMAC key。PATCH 对超级管理员允许更新 `name`、`webhook_url` 与完整替换的 `ip_whitelist`；对普通 User 只允许单独更新 `name`，提交其他字段返回 `403 forbidden`。
+
+Project 机器身份调用 `GET /v1/open/projects/{project_id}` 时只返回 `id`、`name`、`created_at`、`updated_at`。Open Project DTO 不返回 `manager_user_id`、manager 人类身份摘要、Webhook 配置、IP whitelist 或任何凭据字段；这些数据既不是机器授权所需事实，也不属于 Device/Command 技术证据链。
+
+`POST /v1/projects/{id}/transfer` 仅超级管理员可用，只接受 `{"manager_user_id":"uuid"}`。目标必须是 active User；成功返回更新后的 Project 安全 DTO。转交给当前 manager 是幂等读取，不写 Audit；真实变化写 `project.transferred` Audit，metadata 只包含原/新 manager User ID，不包含凭据。
 
 `webhook_url` 首次从 `null` 设为 URL 时生成 secret；改变非空 URL 继续使用当前 secret，除非调用 rotate。设为 `null` 只停止为后续 Event 创建 Delivery，既有 Delivery 继续使用其配置 snapshot；重新启用时复用当前 secret 且不返回明文。`webhook-secret/rotate` 只在 endpoint 非空时允许，生成新 version；新 Event 使用新 version，既有 Delivery 保持旧 version。API key rotate 与 Webhook secret rotate 均在新凭据提交后立即使旧凭据不再用于新请求/新 Delivery。
 
@@ -227,11 +277,11 @@ Device Type 读取返回 `code`、`revision`、`name` 和 actions；每个 actio
 
 Provider 读取返回 `code`、`name`、`access_type`、`transport_protocol`、`adapter`、`profiles` 和 `integration_status=unconfigured|configured_unverified|verified`，不返回 endpoint、UserID、UserKey、监听地址或签名材料。`profiles` 是只读 opaque identifier 列表；具体含义只来自 Provider 合同。当前 registry 固定为：
 
-| code        | name        | access_type    | transport_protocol | adapter            | profiles                                                     |
-| ----------- | ----------- | -------------- | ------------------ | ------------------ | ------------------------------------------------------------ |
-| `wwtiot`    | `WWTIOT`    | `cloud_api`    | `http`             | `wwtiot_cloud_api` | `wwtiot-cloud-api-v2`                                        |
-| `omni`      | `Omni`      | `direct_device` | `tcp`             | `omni_direct_tcp`  | `omni-bike-tcp-v2.0.7`, `omni-iot-tcp-v1.3.5`                |
-| `simulator` | `Simulator` | `simulator`    | `internal`         | `simulator`        | `simulator-v1`                                               |
+| code        | name        | access_type     | transport_protocol | adapter            | profiles                                      |
+| ----------- | ----------- | --------------- | ------------------ | ------------------ | --------------------------------------------- |
+| `wwtiot`    | `WWTIOT`    | `cloud_api`     | `http`             | `wwtiot_cloud_api` | `wwtiot-cloud-api-v2`                         |
+| `omni`      | `Omni`      | `direct_device` | `tcp`              | `omni_direct_tcp`  | `omni-bike-tcp-v2.0.7`, `omni-iot-tcp-v1.3.5` |
+| `simulator` | `Simulator` | `simulator`     | `internal`         | `simulator`        | `simulator-v1`                                |
 
 WWTIOT 必需配置缺失或格式无效时为 `unconfigured`；配置完整但尚未取得已验证响应真实性的受控真实环境证据时为 `configured_unverified`。Omni listener 配置缺失时为 `unconfigured`；配置完整但设备认证、profile 匹配和连接代际未验证时最多为 `configured_unverified`。当前合同没有定义自动提升 WWTIOT 或 Omni `verified` 的权威状态，真实联调记录不能通过隐式进程状态提升它。Simulator 是进程内受控 adapter，注册且配置可读写时为 `verified`。Provider `verified` 只评价 adapter 接入，不代表任何 Device 已执行命令或达到 Device final result。
 
@@ -240,7 +290,7 @@ WWTIOT 必需配置缺失或格式无效时为 `unconfigured`；配置完整但�
 创建请求允许：
 
 ```text
-project_id:         required for admin API
+project_id:         required for human User API; ordinary User must manage it
 name:               required, trimmed length 1..120
 device_type_code:   required; current value smart-lock
 provider_code:      required; current value wwtiot, omni or simulator
@@ -250,7 +300,7 @@ provider_device_id: required for wwtiot or omni; forbidden for simulator
 
 `provider_code` 当前只能是 `wwtiot|omni|simulator`。WWTIOT `provider_device_id` trim 后必须匹配平台约束 `[A-Za-z0-9._:-]{1,128}`；Omni 必须是 15 位十进制 IMEI；simulator Device 的 `provider_device_id` 由平台固定为新建 Device UUID。调用方必须显式提交 registry 中属于所选 Provider 的 `provider_profile`，不得让服务按 IMEI 或品牌猜测；simulator 固定为 `simulator-v1`。当前没有允许写入的 Device metadata key，因此创建和更新请求都拒绝 `metadata`。`access_type`、`transport_protocol` 和 `adapter` 由 Provider registry 推导；调用方不能写。新建 Device 固定以 `lifecycle_status=active`、`connection_status=unknown`、`current_state=null`、`last_seen_at=null` 开始。PATCH 只允许更新 `name` 和 lifecycle；Project、Device Type、Provider identity 与 profile 均不可更新。
 
-Device lifecycle 迁移和终态只以 Domain Model 为准。API PATCH 只接受 `name` 和目标 `lifecycle_status=active|disabled|deleted`；同一请求同时提供 `name` 与目标 `deleted` 返回 `400 invalid_request`。列表默认不隐藏 `deleted`，Admin 与所属 Project 仍可读取历史。每次有效 lifecycle 变化写 Audit 与 `device.lifecycle_changed` Event，其固定 `reason_code=admin_requested`；名称变化只写 `device.updated` Audit。未发生值变化的 name-only PATCH 返回当前资源且不写 Audit。
+Device lifecycle 迁移和终态只以 Domain Model 为准。API PATCH 只接受 `name` 和目标 `lifecycle_status=active|disabled|deleted`；同一请求同时提供 `name` 与目标 `deleted` 返回 `400 invalid_request`。列表默认不隐藏 `deleted`，有权人类 User 与所属 Project 机器身份仍可读取历史。每次有效 lifecycle 变化写 Audit 与 `device.lifecycle_changed` Event；为保持既有 Event wire，其固定 `reason_code=admin_requested` 表示来自人类技术管理入口，不等同于超级管理员身份。名称变化只写 `device.updated` Audit。未发生值变化的 name-only PATCH 返回当前资源且不写 Audit。
 
 Device 注册允许选择当前 `integration_status=unconfigured` 的已注册 Provider；这只建立技术资源，不允许创建 Command，后者仍返回 `409 provider_not_configured`。未知 `project_id`、Device Type、Provider code 或 Provider profile 返回 `404 not_found`；profile 不属于所选 Provider、非法/缺失/被禁止字段或非法 Provider device ID 返回 `400 invalid_request`；任何 lifecycle 的 Provider identity 冲突都返回 `409 provider_device_conflict`。profile 不参与放宽 identity 唯一性；`deleted` Device 永久保留 identity tombstone，当前 API 不提供释放或复用入口。
 
@@ -293,7 +343,7 @@ Event 类型由 Domain Model 冻结；HTTP 与 Webhook 的 v1 wire payload 必�
 
 | `event_type`                | 必需关联        | `payload` v1 必需字段                                                             |
 | --------------------------- | --------------- | --------------------------------------------------------------------------------- |
-| `device.created`            | Device          | `device_type_code`、`provider_code`、`provider_profile`、`lifecycle_status`        |
+| `device.created`            | Device          | `device_type_code`、`provider_code`、`provider_profile`、`lifecycle_status`       |
 | `device.lifecycle_changed`  | Device          | `from`、`to`、`reason_code`                                                       |
 | `device.connection_changed` | Device          | `from`、`to`、`evidence_status`                                                   |
 | `device.state_updated`      | Device          | `state`、`observed_at`、`evidence_status`                                         |
@@ -308,9 +358,9 @@ Event 类型由 Domain Model 冻结；HTTP 与 Webhook 的 v1 wire payload 必�
 
 Webhook Delivery 详情返回 `id`、`event_id`、`project_id`、target snapshot、配置 version、`status`、attempt count、next attempt time、`replay_of_delivery_id`、时间戳和按 attempt number 排序的独立 DeliveryAttempts；不返回 secret 或可重放签名。每个 DeliveryAttempt 返回 attempt number、开始/结束时间、HTTP status、截断脱敏 response 摘要和 error。
 
-Audit 读取固定返回 `id`、`actor_type`、`actor_id`、`project_id`、`action`、`result`、`resource_type`、`resource_id`、`ip_address`、`request_id`、脱敏 `metadata` 和 `occurred_at`。`actor_type` 只能是 `admin`、`project`、`provider` 或 `system`；`result` 只能是 `success` 或 `failure`。不适用的关联字段使用 `null`。
+Audit 读取固定返回 `id`、`actor_type`、`actor_user_id`、`actor_id`、`project_id`、`action`、`result`、`resource_type`、`resource_id`、`ip_address`、`request_id`、脱敏 `metadata` 和 `occurred_at`。`actor_type` 只能是 `user`、`project`、`provider` 或 `system`；人类请求必须使用 `actor_type=user`、非空 `actor_user_id` 和 `actor_id=null`，其他 actor 使用现有 `actor_id` 且 `actor_user_id=null`。`result` 只能是 `success` 或 `failure`；其余不适用关联字段使用 `null`。
 
-当前稳定 Audit action 为 `auth.login`、`auth.refresh`、`auth.logout`、`project.created`、`project.updated`、`project.api_key_rotated`、`project.webhook_secret_rotated`、`project.webhook_secret_decryption_failed`、`device.created`、`device.updated`、`device.lifecycle_changed`、`command.created`、`command.cancelled`、`provider.message_received`、`provider.message_rejected`、`webhook.delivery_replayed` 和 `simulator.updated`。首次安装以完成标记作为唯一完成事实，不写无法与文件标记原子提交的 `setup.completed` Audit。`project.webhook_secret_decryption_failed` 的 metadata 规则保持不变。worker 的普通状态迁移只写 Attempt/Event，不重复写 Audit。
+当前稳定 Audit action 为 `auth.login`、`auth.refresh`、`auth.logout`、`user.created`、`user.status_changed`、`project.created`、`project.updated`、`project.transferred`、`project.api_key_rotated`、`project.webhook_secret_rotated`、`project.webhook_secret_decryption_failed`、`device.created`、`device.updated`、`device.lifecycle_changed`、`command.created`、`command.cancelled`、`provider.message_received`、`provider.message_rejected`、`webhook.delivery_replayed` 和 `simulator.updated`。首次安装以完成标记作为唯一完成事实，不写无法与文件标记原子提交的 `setup.completed` Audit。`project.webhook_secret_decryption_failed` 的 metadata 规则保持不变。worker 的普通状态迁移只写 Attempt/Event，不重复写 Audit。
 
 Omni 上行 Audit 固定使用 `actor_type=provider`、`actor_id=omni`、`resource_type=device_raw_message` 和对应 RawMessage ID。通过 parser、显式 profile 与唯一当前 Device binding 校验的消息使用 `provider.message_received/result=success`，并关联已解析 Device 的 Project；该 success 只表示平台接收并持久化一条 `unverified` 技术消息，不表示真实性验证、Device ACK 或 final。schema、首报、identity、profile 或 lifecycle 校验失败时使用 `provider.message_rejected/result=failure`，无法映射时 Project/Device 关联为 `null`。两类 metadata 只允许 `provider_code`、`provider_profile`、`adapter`、平台生成的 `connection_id`、`frame_bytes`、`parse_status`、`evidence_status`、`duplicate`、`raw_message_id`，以及按分支适用的 `command`、`field_count`、稳定 `error_code`/`reject_code`；不得保存 IMEI、raw frame、socket error、secret 或认证材料。当前公开 WWTIOT callback 固定 503 且不读取 body，因此在该入口重新冻结并启用前不产生 Provider message Audit。
 
@@ -444,9 +494,9 @@ Command Attempt 与 Webhook Delivery Attempt 是两类独立技术记录，不�
 
 ## 技术审计
 
-以下平台内可观察行为至少应写入不可由普通业务调用覆盖的技术审计：管理员登录与安全变更、Project 凭据创建/轮换、Device 创建与生命周期变更、Command 创建/取消、Webhook 端点与 secret 变更、dead delivery 重发和模拟模式变更。当前 Provider secret/config 只由部署环境提供，不存在平台内配置 mutation；其变更记录属于部署审计，在形成新的在线配置合同前不得让实现自行新增领域 Audit action。
+以下平台内可观察行为至少应写入不可由普通业务调用覆盖的技术审计：User 登录/登出、`user.created`、`user.status_changed`、`project.created`、`project.updated`、`project.transferred`、Project 凭据创建/轮换、Device 创建与生命周期变更、Command 创建/取消、Webhook 端点与 secret 变更、dead delivery 重发和模拟模式变更。当前 Provider secret/config 只由部署环境提供，不存在平台内配置 mutation；其变更记录属于部署审计，在形成新的在线配置合同前不得让实现自行新增领域 Audit action。
 
-审计记录应包含 actor 类型与标识、Project/资源、动作、结果、来源 IP、request_id、发生时间和脱敏 metadata。技术审计不承载共享单车业务审计。
+审计记录应包含 actor 类型与标识、Project/资源、动作、结果、来源 IP、request_id、发生时间和脱敏 metadata。人类 Bearer 请求固定使用 `actor_type=user` 并保存实际 `actor_user_id`；不能继续写笼统 `admin`。Open API 继续记录 Project 机器 actor，Provider/worker 使用各自现有 actor。技术审计不承载共享单车业务审计。
 
 ## 合同一致性要求
 
@@ -457,17 +507,17 @@ Command Attempt 与 Webhook Delivery Attempt 是两类独立技术记录，不�
 
 ## 稳定错误码
 
-| HTTP | `error_code`                                                                                                                                                                                                                                                                                          |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 400  | `invalid_request`、`invalid_install_request`、`database_unavailable`、`redis_unavailable`                                                                                                                                                                                                             |
-| 401  | `invalid_credentials`、`unauthorized`                                                                                                                                                                                                                                                                 |
-| 403  | `forbidden`                                                                                                                                                                                                                                                                                           |
-| 404  | `not_found`                                                                                                                                                                                                                                                                                           |
-| 405  | `method_not_allowed`                                                                                                                                                                                                                                                                                  |
-| 409  | `setup_completed`、`admin_creation_failed`、`idempotency_key_conflict`、`invalid_state_transition`、`provider_device_conflict`、`device_disabled`、`device_deleted`、`device_not_online`、`provider_not_configured`、`provider_action_unsupported`、`provider_mapping_unknown`、`command_not_cancellable`、`webhook_delivery_not_dead`、`webhook_not_configured` |
-| 422  | `unsupported_capability`、`invalid_capability_payload`                                                                                                                                                                                                                                                |
-| 429  | `rate_limited`                                                                                                                                                                                                                                                                                        |
-| 503  | `setup_required`、`setup_recovery_required`、`setup_restart_required`、`auth_dependency_unavailable`、`provider_callback_unverified`                                                                                                                                                                  |
-| 500  | `internal_error`、`migration_failed`、`config_write_failed`、`install_lock_failed`、`install_recovery_failed`、`secret_generation_failed`、`install_target_not_writable`                                                                                                                              |
+| HTTP | `error_code`                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400  | `invalid_request`、`invalid_install_request`、`database_unavailable`、`redis_unavailable`                                                                                                                                                                                                                                                                                                                                                                                 |
+| 401  | `invalid_credentials`、`unauthorized`                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 403  | `forbidden`                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 404  | `not_found`                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 405  | `method_not_allowed`                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 409  | `setup_completed`、`admin_creation_failed`、`user_email_conflict`、`super_admin_immutable`、`user_has_managed_projects`、`project_manager_inactive`、`idempotency_key_conflict`、`invalid_state_transition`、`provider_device_conflict`、`device_disabled`、`device_deleted`、`device_not_online`、`provider_not_configured`、`provider_action_unsupported`、`provider_mapping_unknown`、`command_not_cancellable`、`webhook_delivery_not_dead`、`webhook_not_configured` |
+| 422  | `unsupported_capability`、`invalid_capability_payload`                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 429  | `rate_limited`                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 503  | `setup_required`、`setup_recovery_required`、`setup_restart_required`、`auth_dependency_unavailable`、`provider_callback_unverified`                                                                                                                                                                                                                                                                                                                                      |
+| 500  | `internal_error`、`migration_failed`、`config_write_failed`、`install_lock_failed`、`install_recovery_failed`、`secret_generation_failed`、`install_target_not_writable`                                                                                                                                                                                                                                                                                                  |
 
 安装的外部依赖、migration、配置写入和 secret 生成失败分别使用前文定义的稳定 setup error code；未分类服务端错误只返回 `internal_error` 和 request ID，不泄露内部细节。HTTP status 表示 API 处理结果；异步 Provider/设备结果只通过 Command status、reason code、Attempt 和 Event 表达，不能把 `provider_rejected` 或 `provider_response_invalid` 混作创建请求的同步 API error，也不能用 HTTP 2xx 暗示设备成功。

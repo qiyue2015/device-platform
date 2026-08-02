@@ -1,6 +1,6 @@
 ---
 title: ADR-0001 后端基础技术栈与消息基础设施
-updated: 2026-08-01
+updated: 2026-08-02
 status: accepted
 decision_id: ADR-0001
 ---
@@ -25,7 +25,7 @@ Device Platform 后端采用以下长期基础技术栈：
 
 ## 决策背景
 
-平台边界已经包含 Project/Device 管理、第三方 Provider、异步命令下发与结果确认、Provider callback、Webhook、Audit、幂等、重试和崩溃恢复。它们不是普通 CRUD 的可选增强，而是长期运行模型的基础能力。
+平台边界已经包含 User 身份、Project 范围授权、Project/Device 管理、第三方 Provider、异步命令下发与结果确认、Provider callback、Webhook、Audit、幂等、重试和崩溃恢复。它们不是普通 CRUD 的可选增强，而是长期运行模型的基础能力。
 
 设备规模、心跳频率和峰值尚未形成受验收的固定数字，因此不能把某次讨论中的 `1000` 台设备当作容量上限。基础设施需要在不虚构吞吐数字的前提下支持水平扩展、故障隔离和积压恢复，避免在产品规模增长后重写命令、回调与投递模型。
 
@@ -61,11 +61,11 @@ JetStream 不提供业务层“恰好一次”。平台统一采用至少一次�
 
 ## PostgreSQL、NATS 与 Redis 的固定职责
 
-| 组件           | 权威职责                                                                                                          | 明确不负责                                        |
-| -------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| PostgreSQL     | Project、Device、Command、Attempt、Result、RawMessage、Event、Outbox、Webhook Delivery、Audit、消费去重与恢复进度 | 不承担高频通知广播，不用轮询替代全部消息传输      |
-| NATS JetStream | 已持久事实的异步传播、任务唤醒、消费者解耦、积压和重新投递                                                        | 不成为 Command、设备状态或 Audit 的唯一事实来源   |
-| Redis          | 在线 TTL、可重建实时状态、缓存、限流、短期协调                                                                    | 不保存不可恢复的命令、结果、Outbox 或审计唯一副本 |
+| 组件           | 权威职责                                                                                                                         | 明确不负责                                        |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| PostgreSQL     | User、Project 管理关系、Device、Command、Attempt、Result、RawMessage、Event、Outbox、Webhook Delivery、Audit、消费去重与恢复进度 | 不承担高频通知广播，不用轮询替代全部消息传输      |
+| NATS JetStream | 已持久事实的异步传播、任务唤醒、消费者解耦、积压和重新投递                                                                       | 不成为 Command、设备状态或 Audit 的唯一事实来源   |
+| Redis          | 在线 TTL、可重建实时状态、缓存、限流、短期协调                                                                                   | 不保存不可恢复的命令、结果、Outbox 或审计唯一副本 |
 
 Broker 不可用时，已经提交到 PostgreSQL 的业务事实和 Outbox 仍然存在；恢复后继续发布。Redis 不可用时，命令和审计事实仍可恢复，高频可合并状态按可靠性规范降级；但 Redis 不可用不能绕过 Device Type profile，`online_only` 创建与派发在无法取得可信新鲜 `online` 证据时必须失败关闭。
 
